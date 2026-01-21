@@ -46,6 +46,10 @@ lerna-debug.log*
 .temp
 .tmp
 
+# Prevent non-pnpm lockfiles
+package-lock.json
+yarn.lock
+
 # Runtime data
 pids
 *.pid
