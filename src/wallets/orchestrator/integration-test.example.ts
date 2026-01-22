@@ -3,13 +3,15 @@
  * This demonstrates how to use the orchestrator in practice
  */
 
-import { WalletCreationOrchestrator } from './wallet-creation.orchestrator';
+import { WalletCreationOrchestrator, CreateWalletRequest } from './wallet-creation.orchestrator';
 import { PrismaService } from '../../prisma/prisma.service';
+import { EncryptionService } from '../../encryption/encryption.service';
 
 // Example: Creating a wallet for a new user
 async function exampleWalletCreation() {
   const prisma = new PrismaService();
-  const orchestrator = new WalletCreationOrchestrator(prisma);
+  const encryptionService = new EncryptionService();
+  const orchestrator = new WalletCreationOrchestrator(prisma, encryptionService);
 
   try {
     // First, create a user
@@ -60,7 +62,8 @@ async function exampleWalletCreation() {
 // Example: Error handling
 async function exampleErrorHandling() {
   const prisma = new PrismaService();
-  const orchestrator = new WalletCreationOrchestrator(prisma);
+  const encryptionService = new EncryptionService();
+  const orchestrator = new WalletCreationOrchestrator(prisma, encryptionService);
 
   try {
     // Try to create wallet for non-existent user
