@@ -14,3 +14,69 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+/// Mainnet/testnet separation for all wallets.
+enum WalletNetwork {
+  MAINNET
+  TESTNET
+}
+
+/// Internal lifecycle states (wallets are not user-facing).
+enum WalletStatus {
+  /// Record is created but not yet usable (e.g. secret not stored or verification pending).
+  PROVISIONING
+
+  /// Wallet is usable for signing / custody operations.
+  ACTIVE
+
+  /// A rotation is in progress; a successor wallet should be created and promoted to ACTIVE.
+  ROTATING
+
+  /// Wallet is intentionally paused from use (operational hold).
+  SUSPENDED
+
+  /// Wallet is permanently disabled (no further use).
+  DISABLED
+
+  /// Wallet is suspected compromised; permanently blocked from use.
+  COMPROMISED
+}
+
+/// Persistence-ready internal representation of an "invisible wallet".
+model Wallet {
+  id               String        @id @default(uuid())
+
+  /// Owner reference (intentionally not a relation yet to keep this model portable).
+  userId           String
+
+  /// Chain-agnostic public identifier (address/public key).
+  publicKey        String
+
+  /// Chain-agnostic encrypted secret material (envelope/serialized payload).
+  encryptedSecret  String
+
+  /// Supports future crypto upgrades (KMS provider, envelope format, etc.).
+  encryptionVersion Int          @default(1)
+
+  /// Supports rotation by incrementing secret material while preserving history.
+  secretVersion    Int           @default(1)
+
+  network          WalletNetwork
+  status           WalletStatus  @default(PROVISIONING)
+
+  /// Operational metadata for audits/debugging.
+  statusReason     String?
+  statusChangedAt  DateTime      @default(now())
+
+  /// Rotation history: link to the prior wallet record (if this wallet is a successor).
+  rotatedFromId    String?
+  rotatedFrom      Wallet?       @relation("WalletRotation", fields: [rotatedFromId], references: [id])
+  rotatedTo        Wallet[]      @relation("WalletRotation")
+
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+
+  @@index([userId, network])
+  @@index([status, network])
+  @@unique([network, publicKey])
+}
