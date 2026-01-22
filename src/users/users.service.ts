@@ -1,26 +1,95 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class UsersService {
-  create(createUserDto: CreateUserDto) {
-    return 'This action adds a new user';
+  private readonly logger = new Logger(UsersService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  async create(createUserDto: CreateUserDto) {
+    this.logger.log(`Creating user with email: ${createUserDto.email}`);
+    
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          email: createUserDto.email,
+        },
+      });
+
+      this.logger.log(`Successfully created user with ID: ${user.id}`);
+      return user;
+    } catch (error) {
+      this.logger.error(`Failed to create user with email: ${createUserDto.email}`, error);
+      throw error;
+    }
   }
 
-  findAll() {
-    return `This action returns all users`;
+  async findAll() {
+    return await this.prisma.user.findMany({
+      include: { wallet: true },
+    });
   }
 
-  findOne(id: number) {
-    return `This action returns a #${id} user`;
+  async findOne(id: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { id },
+      include: { wallet: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+
+    return user;
   }
 
-  update(id: number, updateUserDto: UpdateUserDto) {
-    return `This action updates a #${id} user`;
+  async findByEmail(email: string) {
+    const user = await this.prisma.user.findUnique({
+      where: { email },
+      include: { wallet: true },
+    });
+
+    if (!user) {
+      throw new NotFoundException(`User with email ${email} not found`);
+    }
+
+    return user;
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} user`;
+  async update(id: string, updateUserDto: UpdateUserDto) {
+    this.logger.log(`Updating user with ID: ${id}`);
+    
+    try {
+      const user = await this.prisma.user.update({
+        where: { id },
+        data: updateUserDto,
+        include: { wallet: true },
+      });
+
+      this.logger.log(`Successfully updated user with ID: ${user.id}`);
+      return user;
+    } catch (error) {
+      this.logger.error(`Failed to update user with ID: ${id}`, error);
+      throw error;
+    }
+  }
+
+  async remove(id: string) {
+    this.logger.log(`Removing user with ID: ${id}`);
+    
+    try {
+      await this.prisma.user.delete({
+        where: { id },
+      });
+
+      this.logger.log(`Successfully removed user with ID: ${id}`);
+      return { message: `User with ID ${id} has been removed` };
+    } catch (error) {
+      this.logger.error(`Failed to remove user with ID: ${id}`, error);
+      throw error;
+    }
   }
 }
