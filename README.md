@@ -2,6 +2,8 @@
 
 Backend infrastructure for **Mux Protocol** — powering invisible wallets, payment orchestration, and smart contract interaction on **Stellar (Soroban)**.
 
+**Version:** 1.0.0 | **Last Updated:** January 2026
+
 Mux Backend abstracts blockchain complexity behind a secure, Web2-friendly API, enabling users to interact with crypto without managing keys, gas, or wallets directly.
 
 ---
