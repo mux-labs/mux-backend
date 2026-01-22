@@ -12,6 +12,11 @@ export class WalletsController {
     return this.walletsService.create(createWalletDto);
   }
 
+  @Post('create-user-wallet')
+  async createUserWallet(@Body() createWalletDto: CreateWalletDto) {
+    return await this.walletsService.create(createWalletDto);
+  }
+
   @Get()
   findAll() {
     return this.walletsService.findAll();
@@ -20,6 +25,11 @@ export class WalletsController {
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.walletsService.findOne(+id);
+  }
+
+  @Get('user/:userId')
+  findByUserId(@Param('userId') userId: string) {
+    return this.walletsService.findByUserId(userId);
   }
 
   @Patch(':id')
