@@ -1,7 +1,7 @@
 import { Injectable, Logger, ConflictException, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../../prisma/prisma.service';
 import { Keypair } from '@stellar/stellar-sdk';
-import * as CryptoJS from 'crypto-js';
+import { EncryptionService } from '../../encryption/encryption.service';
 
 export interface CreateWalletRequest {
   userId: string;
@@ -18,7 +18,10 @@ export interface CreateWalletResponse {
 export class WalletCreationOrchestrator {
   private readonly logger = new Logger(WalletCreationOrchestrator.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly encryptionService: EncryptionService
+  ) {}
 
   async createWallet(request: CreateWalletRequest): Promise<CreateWalletResponse> {
     const { userId, encryptionKey } = request;
@@ -104,8 +107,8 @@ export class WalletCreationOrchestrator {
   ): Promise<any> {
     const { userId, publicKey, secretKey, encryptionKey } = walletData;
 
-    // Encrypt the secret key
-    const encryptedKey = this.encryptSecretKey(secretKey, encryptionKey);
+    // Encrypt the secret key using EncryptionService
+    const encryptedKey = this.encryptionService.encryptSimple(secretKey);
 
     // Create wallet record
     const wallet = await tx.wallet.create({
@@ -121,17 +124,6 @@ export class WalletCreationOrchestrator {
     return wallet;
   }
 
-  private encryptSecretKey(secretKey: string, encryptionKey: string): string {
-    try {
-      const encrypted = CryptoJS.AES.encrypt(secretKey, encryptionKey).toString();
-      this.logger.debug(`Successfully encrypted secret key`);
-      return encrypted;
-    } catch (error) {
-      this.logger.error('Failed to encrypt secret key', error);
-      throw new Error('Failed to encrypt wallet secret key');
-    }
-  }
-
   async getWalletByUserId(userId: string): Promise<any> {
     const wallet = await this.prisma.wallet.findUnique({
       where: { userId },
@@ -145,16 +137,16 @@ export class WalletCreationOrchestrator {
     return wallet;
   }
 
-  async decryptSecretKey(encryptedKey: string, encryptionKey: string): Promise<string> {
+  async decryptSecretKey(encryptedKey: string): Promise<string> {
     try {
-      const decrypted = CryptoJS.AES.decrypt(encryptedKey, encryptionKey);
-      const secretKey = decrypted.toString(CryptoJS.enc.Utf8);
+      const result = this.encryptionService.decryptSimple(encryptedKey);
       
-      if (!secretKey) {
-        throw new Error('Failed to decrypt secret key - invalid encryption key');
+      if (!result.success) {
+        throw new Error(`Failed to decrypt secret key: ${result.error}`);
       }
       
-      return secretKey;
+      this.logger.debug('Successfully decrypted secret key');
+      return result.decryptedData;
     } catch (error) {
       this.logger.error('Failed to decrypt secret key', error);
       throw new Error('Failed to decrypt wallet secret key');
