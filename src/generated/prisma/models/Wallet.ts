@@ -1,4 +1,3 @@
-
 /*
  * This file exports the `Wallet` model and its related types.
  *
