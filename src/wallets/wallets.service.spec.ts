@@ -3,7 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
-import { PrismaClient } from './prisma-client.mock';
+import { PrismaClient } from '../generated/prisma/client';
 
 // Mock Prisma Client
 const mockPrisma = {

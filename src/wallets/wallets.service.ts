@@ -1,6 +1,6 @@
 import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { PrismaClient } from './prisma-client.mock';
+import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
 import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
 import * as crypto from 'crypto';
@@ -29,7 +29,7 @@ export class WalletsService {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
   ) {
-    this.prisma = new PrismaClient();
+    this.prisma = new PrismaClient(undefined);
   }
 
   async onModuleInit() {
