@@ -15,6 +15,31 @@ datasource db {
   provider = "postgresql"
 }
 
+model User {
+  id        Int         @id @default(autoincrement())
+  email     String      @unique
+  name      String?
+  payments  Payment[]
+  limits    UserLimit?
+}
+
+model Payment {
+  id        Int      @id @default(autoincrement())
+  amount    Float
+  currency  String
+  userId    Int
+  user      User     @relation(fields: [userId], references: [id])
+  createdAt DateTime @default(now())
+}
+
+model UserLimit {
+  id                  Int     @id @default(autoincrement())
+  dailyLimit          Float
+  perTransactionLimit Float
+  userId              Int     @unique
+  user                User    @relation(fields: [userId], references: [id])
+}
+
 /// Mainnet/testnet separation for all wallets.
 enum WalletNetwork {
   MAINNET

@@ -8,7 +8,18 @@ describe('LimitsController', () => {
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [LimitsController],
-      providers: [LimitsService],
+      providers: [
+        {
+          provide: LimitsService,
+          useValue: {
+            create: jest.fn(),
+            findAll: jest.fn(),
+            findOne: jest.fn(),
+            update: jest.fn(),
+            remove: jest.fn(),
+          },
+        },
+      ],
     }).compile();
 
     controller = module.get<LimitsController>(LimitsController);
