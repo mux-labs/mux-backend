@@ -3,9 +3,10 @@ import { WalletCreationOrchestrator } from './wallet-creation-orchestrator.servi
 import { WalletCreationOrchestratorController } from './wallet-creation-orchestrator.controller';
 import { EncryptionModule } from '../encryption/encryption.module';
 import { WalletsModule } from './wallets.module';
+import { UsersModule } from '../users/users.module';
 
 @Module({
-  imports: [EncryptionModule, WalletsModule],
+  imports: [EncryptionModule, WalletsModule, UsersModule],
   controllers: [WalletCreationOrchestratorController],
   providers: [WalletCreationOrchestrator],
   exports: [WalletCreationOrchestrator],
