@@ -16,20 +16,39 @@ datasource db {
 }
 
 model User {
-  id        Int         @id @default(autoincrement())
-  email     String      @unique
-  name      String?
-  payments  Payment[]
-  limits    UserLimit?
+  id               Int         @id @default(autoincrement())
+  email            String      @unique
+  name             String?
+  sentPayments     Payment[]   @relation("SentPayments")
+  receivedPayments Payment[]   @relation("ReceivedPayments")
+  limits           UserLimit?
+  payments         Payment[]   @relation("UserPayments") // Keep legacy for compatibility or migration
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
 }
 
 model Payment {
-  id        Int      @id @default(autoincrement())
-  amount    Float
-  currency  String
-  userId    Int
-  user      User     @relation(fields: [userId], references: [id])
-  createdAt DateTime @default(now())
+  id          Int           @id @default(autoincrement())
+  amount      Float
+  currency    String
+  status      PaymentStatus @default(PENDING)
+  description String?
+  
+  fromId      Int
+  from        User          @relation("SentPayments", fields: [fromId], references: [id])
+  
+  toId        Int
+  to          User          @relation("ReceivedPayments", fields: [toId], references: [id])
+  
+  userId      Int // Legacy field
+  user        User          @relation("UserPayments", fields: [userId], references: [id])
+
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
 }
 
 model UserLimit {
