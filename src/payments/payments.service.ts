@@ -12,22 +12,19 @@ export class PaymentsService {
   ) { }
 
   async create(createPaymentDto: CreatePaymentDto) {
-    // Assuming createPaymentDto has userId, amount, currency
-    // If DTO doesn't have userId, we might need to get it from context, but for now assuming it's passed or we use a fixed one for demo
-    // The original DTO might be empty. I should check it.
-    // For now, I'll assume the DTO has these fields or I'll cast it.
-    // Wait, I should check the DTO definition.
-    // But to proceed, I'll implement the logic assuming properties exist.
+    const { fromId, toId, amount, currency, description } = createPaymentDto;
 
-    const { userId, amount, currency } = createPaymentDto as any;
-
-    await this.limitsService.checkLimits(userId, amount);
+    await this.limitsService.checkLimits(fromId, amount);
 
     return this.prisma.payment.create({
       data: {
-        userId,
+        fromId,
+        toId,
         amount,
         currency,
+        description,
+        userId: fromId, // Legacy support: default to sender
+        status: 'PENDING',
       },
     });
   }

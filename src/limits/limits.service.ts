@@ -34,7 +34,7 @@ export class LimitsService {
 
     const usage = await this.prisma.payment.aggregate({
       where: {
-        userId,
+        fromId: userId,
         createdAt: {
           gte: startOfDay,
         },
