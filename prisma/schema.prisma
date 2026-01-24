@@ -120,7 +120,34 @@ model Wallet {
   createdAt        DateTime      @default(now())
   updatedAt        DateTime      @updatedAt
 
+  /// Recovery requests for this wallet
+  recoveryRequests RecoveryRequest[]
+
   @@index([userId, network])
   @@index([status, network])
   @@unique([network, publicKey])
+}
+
+/// Recovery request lifecycle states
+enum RecoveryStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+/// Recovery request entity for account recovery
+model RecoveryRequest {
+  id        String         @id @default(uuid())
+  walletId  String
+  wallet    Wallet         @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  requester String         // Identifier of who requested recovery (e.g., userId or email)
+  status    RecoveryStatus @default(PENDING)
+  metadata  Json?          // Optional metadata for future recovery methods
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  @@index([walletId, status])
 }

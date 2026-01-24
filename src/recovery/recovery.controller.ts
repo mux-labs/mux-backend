@@ -19,16 +19,16 @@ export class RecoveryController {
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.recoveryService.findOne(+id);
+    return this.recoveryService.findOne(id);
   }
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateRecoveryDto: UpdateRecoveryDto) {
-    return this.recoveryService.update(+id, updateRecoveryDto);
+    return this.recoveryService.update(id, updateRecoveryDto);
   }
 
   @Delete(':id')
   remove(@Param('id') id: string) {
-    return this.recoveryService.remove(+id);
+    return this.recoveryService.remove(id);
   }
 }
