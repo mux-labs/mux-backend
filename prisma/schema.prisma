@@ -1,8 +1,4 @@
 // This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
   provider = "prisma-client"
@@ -65,6 +61,39 @@ enum WalletNetwork {
   TESTNET
 }
 
+/// User account for authentication and wallet ownership.
+model User {
+  id               String        @id @default(uuid())
+  
+  /// External authentication provider identifier (e.g., OAuth ID, wallet address)
+  authId           String        @unique
+  
+  /// User's email address (optional)
+  email            String?
+  
+  /// User's display name (optional)
+  displayName      String?
+  
+  /// Account status
+  status           String        @default("ACTIVE")
+  
+  /// Authentication provider type
+  authProvider     String        @default("UNKNOWN")
+  
+  /// Last login timestamp
+  lastLoginAt      DateTime?
+  
+  /// Operational metadata
+  createdAt        DateTime      @default(now())
+  updatedAt        DateTime      @updatedAt
+  
+  /// Relation to user's wallets
+  wallets          Wallet[]
+  
+  @@index([authId])
+  @@index([authProvider])
+}
+
 /// Internal lifecycle states (wallets are not user-facing).
 enum WalletStatus {
   /// Record is created but not yet usable (e.g. secret not stored or verification pending).
@@ -90,8 +119,9 @@ enum WalletStatus {
 model Wallet {
   id               String        @id @default(uuid())
 
-  /// Owner reference (intentionally not a relation yet to keep this model portable).
+  /// Owner reference to User model
   userId           String
+  user             User          @relation(fields: [userId], references: [id])
 
   /// Chain-agnostic public identifier (address/public key).
   publicKey        String

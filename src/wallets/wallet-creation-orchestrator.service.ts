@@ -1,14 +1,19 @@
 import { Injectable, Logger, ConflictException, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
-import { WalletNetwork, WalletStatus, Wallet } from '../wallets/domain/wallet.model';
+import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
+import { IdempotentUserService } from '../users/idempotent-user.service';
 import * as crypto from 'crypto';
 
 export interface User {
   id: string;
+  authId: string;
   email?: string;
+  displayName?: string;
   status: string;
+  authProvider: string;
+  lastLoginAt?: Date;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -49,6 +54,7 @@ export class WalletCreationOrchestrator {
   constructor(
     private encryptionService: EncryptionService,
     private configService: ConfigService,
+    private idempotentUserService: IdempotentUserService,
   ) {
     this.prisma = new PrismaClient({} as any);
   }
@@ -150,21 +156,17 @@ export class WalletCreationOrchestrator {
   }
 
   /**
-   * Resolves user from database - in real implementation this would query users table
+   * Resolves user from database using the idempotent user service
    */
   private async resolveUser(userId: string, tx: any): Promise<User | null> {
-    // For now, we'll assume user exists if we have a userId
-    // In real implementation, this would query the users table
-    // const user = await tx.user.findUnique({ where: { id: userId } });
+    // Use the idempotent user service to find user by ID
+    const user = await this.idempotentUserService.findUserById(userId);
     
-    // Mock user for development
-    return {
-      id: userId,
-      email: `${userId}@example.com`,
-      status: 'ACTIVE',
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
+    if (!user) {
+      throw new NotFoundException(`User with ID ${userId} not found`);
+    }
+    
+    return user;
   }
 
   /**
