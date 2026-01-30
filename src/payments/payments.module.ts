@@ -8,4 +8,4 @@ import { LimitsModule } from '../limits/limits.module';
   controllers: [PaymentsController],
   providers: [PaymentsService],
 })
-export class PaymentsModule { }
+export class PaymentsModule {}

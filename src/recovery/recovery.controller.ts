@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+} from '@nestjs/common';
 import { RecoveryService } from './recovery.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
@@ -23,7 +31,10 @@ export class RecoveryController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() updateRecoveryDto: UpdateRecoveryDto) {
+  update(
+    @Param('id') id: string,
+    @Body() updateRecoveryDto: UpdateRecoveryDto,
+  ) {
     return this.recoveryService.update(id, updateRecoveryDto);
   }
 

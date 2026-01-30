@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { IdempotentUserService, FindOrCreateUserRequest } from './idempotent-user.service';
+import {
+  IdempotentUserService,
+  FindOrCreateUserRequest,
+} from './idempotent-user.service';
 import { PrismaClient } from '../generated/prisma/client';
 
 // Mock Prisma Client
@@ -58,7 +61,10 @@ describe('IdempotentUserService', () => {
       };
 
       mockPrisma.user.findUnique.mockResolvedValue(existingUser);
-      mockPrisma.user.update.mockResolvedValue({ ...existingUser, lastLoginAt: new Date() });
+      mockPrisma.user.update.mockResolvedValue({
+        ...existingUser,
+        lastLoginAt: new Date(),
+      });
 
       // Act
       const result = await service.findOrCreateUser(createRequest);
@@ -150,9 +156,12 @@ describe('IdempotentUserService', () => {
       mockPrisma.user.findUnique
         .mockResolvedValueOnce(null) // First call - user not found
         .mockResolvedValue(existingUser); // Second call - user found (race condition)
-      
+
       mockPrisma.user.create.mockRejectedValue(raceConditionError);
-      mockPrisma.user.update.mockResolvedValue({ ...existingUser, lastLoginAt: new Date() });
+      mockPrisma.user.update.mockResolvedValue({
+        ...existingUser,
+        lastLoginAt: new Date(),
+      });
 
       // Act
       const result = await service.findOrCreateUser(createRequest);
@@ -206,11 +215,13 @@ describe('IdempotentUserService', () => {
 
     it('should handle database errors gracefully', async () => {
       // Arrange
-      mockPrisma.user.findUnique.mockRejectedValue(new Error('Database connection failed'));
+      mockPrisma.user.findUnique.mockRejectedValue(
+        new Error('Database connection failed'),
+      );
 
       // Act & Assert
       await expect(service.findOrCreateUser(createRequest)).rejects.toThrow(
-        'User creation failed for authId: auth-123'
+        'User creation failed for authId: auth-123',
       );
     });
   });
@@ -234,11 +245,13 @@ describe('IdempotentUserService', () => {
       const result = await service.findUserByAuthId('auth-123');
 
       // Assert
-      expect(result).toEqual(expect.objectContaining({
-        id: 'user-123',
-        authId: 'auth-123',
-        email: 'test@example.com',
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'user-123',
+          authId: 'auth-123',
+          email: 'test@example.com',
+        }),
+      );
     });
 
     it('should return null when user not found', async () => {
@@ -272,10 +285,12 @@ describe('IdempotentUserService', () => {
       const result = await service.findUserById('user-123');
 
       // Assert
-      expect(result).toEqual(expect.objectContaining({
-        id: 'user-123',
-        authId: 'auth-123',
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'user-123',
+          authId: 'auth-123',
+        }),
+      );
     });
 
     it('should return null when user not found', async () => {
@@ -315,11 +330,13 @@ describe('IdempotentUserService', () => {
       const result = await service.updateUser('user-123', updates);
 
       // Assert
-      expect(result).toEqual(expect.objectContaining({
-        id: 'user-123',
-        email: 'updated@example.com',
-        displayName: 'Updated Name',
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'user-123',
+          email: 'updated@example.com',
+          displayName: 'Updated Name',
+        }),
+      );
 
       expect(mockPrisma.user.update).toHaveBeenCalledWith({
         where: { id: 'user-123' },
@@ -337,7 +354,9 @@ describe('IdempotentUserService', () => {
       await service.onModuleInit();
 
       // Assert
-      expect(logSpy).toHaveBeenCalledWith('Idempotent User Service initialized');
+      expect(logSpy).toHaveBeenCalledWith(
+        'Idempotent User Service initialized',
+      );
     });
   });
 });

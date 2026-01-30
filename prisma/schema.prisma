@@ -3,22 +3,23 @@
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
-  
-  moduleFormat           = "cjs"
+
+  moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
 }
 
-model User {
-  id               Int         @id @default(autoincrement())
-  email            String      @unique
+/// Legacy User model for payments (Int-based IDs)
+model LegacyUser {
+  id               Int        @id @default(autoincrement())
+  email            String     @unique
   name             String?
-  sentPayments     Payment[]   @relation("SentPayments")
-  receivedPayments Payment[]   @relation("ReceivedPayments")
+  sentPayments     Payment[]  @relation("SentPayments")
+  receivedPayments Payment[]  @relation("ReceivedPayments")
   limits           UserLimit?
-  payments         Payment[]   @relation("UserPayments") // Keep legacy for compatibility or migration
+  payments         Payment[]  @relation("UserPayments") // Keep legacy for compatibility or migration
 }
 
 enum PaymentStatus {
@@ -33,26 +34,26 @@ model Payment {
   currency    String
   status      PaymentStatus @default(PENDING)
   description String?
-  
-  fromId      Int
-  from        User          @relation("SentPayments", fields: [fromId], references: [id])
-  
-  toId        Int
-  to          User          @relation("ReceivedPayments", fields: [toId], references: [id])
-  
-  userId      Int // Legacy field
-  user        User          @relation("UserPayments", fields: [userId], references: [id])
 
-  createdAt   DateTime      @default(now())
-  updatedAt   DateTime      @updatedAt
+  fromId Int
+  from   LegacyUser @relation("SentPayments", fields: [fromId], references: [id])
+
+  toId Int
+  to   LegacyUser @relation("ReceivedPayments", fields: [toId], references: [id])
+
+  userId Int // Legacy field
+  user   LegacyUser @relation("UserPayments", fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 }
 
 model UserLimit {
-  id                  Int     @id @default(autoincrement())
+  id                  Int        @id @default(autoincrement())
   dailyLimit          Float
   perTransactionLimit Float
-  userId              Int     @unique
-  user                User    @relation(fields: [userId], references: [id])
+  userId              Int        @unique
+  user                LegacyUser @relation(fields: [userId], references: [id])
 }
 
 /// Mainnet/testnet separation for all wallets.
@@ -63,33 +64,33 @@ enum WalletNetwork {
 
 /// User account for authentication and wallet ownership.
 model User {
-  id               String        @id @default(uuid())
-  
+  id String @id @default(uuid())
+
   /// External authentication provider identifier (e.g., OAuth ID, wallet address)
-  authId           String        @unique
-  
+  authId String @unique
+
   /// User's email address (optional)
-  email            String?
-  
+  email String?
+
   /// User's display name (optional)
-  displayName      String?
-  
+  displayName String?
+
   /// Account status
-  status           String        @default("ACTIVE")
-  
+  status String @default("ACTIVE")
+
   /// Authentication provider type
-  authProvider     String        @default("UNKNOWN")
-  
+  authProvider String @default("UNKNOWN")
+
   /// Last login timestamp
-  lastLoginAt      DateTime?
-  
+  lastLoginAt DateTime?
+
   /// Operational metadata
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
-  
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
   /// Relation to user's wallets
-  wallets          Wallet[]
-  
+  wallets Wallet[]
+
   @@index([authId])
   @@index([authProvider])
 }
@@ -117,45 +118,45 @@ enum WalletStatus {
 
 /// Persistence-ready internal representation of an "invisible wallet".
 model Wallet {
-  id               String        @id @default(uuid())
+  id String @id @default(uuid())
 
   /// Owner reference to User model
-  userId           String
-  user             User          @relation(fields: [userId], references: [id])
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 
   /// Chain-agnostic public identifier (address/public key).
-  publicKey        String
+  publicKey String
 
   /// Chain-agnostic encrypted secret material (envelope/serialized payload).
-  encryptedSecret  String
+  encryptedSecret String
 
   /// Supports future crypto upgrades (KMS provider, envelope format, etc.).
-  encryptionVersion Int          @default(1)
+  encryptionVersion Int @default(1)
 
   /// Supports rotation by incrementing secret material while preserving history.
-  secretVersion    Int           @default(1)
+  secretVersion Int @default(1)
 
-  network          WalletNetwork
-  status           WalletStatus  @default(PROVISIONING)
+  network WalletNetwork
+  status  WalletStatus  @default(PROVISIONING)
 
   /// Operational metadata for audits/debugging.
-  statusReason     String?
-  statusChangedAt  DateTime      @default(now())
+  statusReason    String?
+  statusChangedAt DateTime @default(now())
 
   /// Rotation history: link to the prior wallet record (if this wallet is a successor).
-  rotatedFromId    String?
-  rotatedFrom      Wallet?       @relation("WalletRotation", fields: [rotatedFromId], references: [id])
-  rotatedTo        Wallet[]      @relation("WalletRotation")
+  rotatedFromId String?
+  rotatedFrom   Wallet?  @relation("WalletRotation", fields: [rotatedFromId], references: [id])
+  rotatedTo     Wallet[] @relation("WalletRotation")
 
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   /// Recovery requests for this wallet
   recoveryRequests RecoveryRequest[]
 
+  @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
-  @@unique([network, publicKey])
 }
 
 /// Recovery request lifecycle states
@@ -173,11 +174,43 @@ model RecoveryRequest {
   id        String         @id @default(uuid())
   walletId  String
   wallet    Wallet         @relation(fields: [walletId], references: [id], onDelete: Cascade)
-  requester String         // Identifier of who requested recovery (e.g., userId or email)
+  requester String // Identifier of who requested recovery (e.g., userId or email)
   status    RecoveryStatus @default(PENDING)
-  metadata  Json?          // Optional metadata for future recovery methods
+  metadata  Json? // Optional metadata for future recovery methods
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
   @@index([walletId, status])
+}
+
+/// API key for authentication and rate limiting
+model ApiKey {
+  id               String            @id @default(uuid())
+  key              String            @unique // The actual API key (hashed in storage)
+  name             String? // Optional name/description for the key
+  environment      String            @default("production") // production, staging, development
+  isActive         Boolean           @default(true)
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
+  lastUsedAt       DateTime?
+  rateLimitRecords RateLimitRecord[]
+
+  @@index([key])
+  @@index([environment])
+}
+
+/// Rate limit tracking per API key
+model RateLimitRecord {
+  id           String   @id @default(uuid())
+  apiKeyId     String
+  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  endpoint     String // The endpoint path
+  windowStart  DateTime // Start of the rate limit window
+  requestCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([apiKeyId, endpoint, windowStart])
+  @@index([apiKeyId, endpoint])
+  @@index([windowStart])
 }

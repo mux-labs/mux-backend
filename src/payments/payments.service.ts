@@ -9,7 +9,7 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
-  ) { }
+  ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
     const { fromId, toId, amount, currency, description } = createPaymentDto;

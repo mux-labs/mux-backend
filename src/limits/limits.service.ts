@@ -5,7 +5,7 @@ import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class LimitsService {
-  constructor(private readonly prisma: PrismaService) { }
+  constructor(private readonly prisma: PrismaService) {}
 
   async setLimits(userId: number, daily: number, perTx: number) {
     return this.prisma.userLimit.upsert({
@@ -26,7 +26,9 @@ export class LimitsService {
     if (!limits) return; // No limits set
 
     if (amount > limits.perTransactionLimit) {
-      throw new Error(`Transaction limit exceeded. Limit: ${limits.perTransactionLimit}`);
+      throw new Error(
+        `Transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+      );
     }
 
     const startOfDay = new Date();
@@ -46,7 +48,9 @@ export class LimitsService {
 
     const currentDailyTotal = usage._sum.amount || 0;
     if (currentDailyTotal + amount > limits.dailyLimit) {
-      throw new Error(`Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`);
+      throw new Error(
+        `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+      );
     }
   }
 

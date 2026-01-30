@@ -69,8 +69,10 @@ describe('WalletsService', () => {
     });
 
     it('should throw error if encryption validation fails', async () => {
-      jest.spyOn(encryptionService, 'validateConfiguration').mockReturnValue(false);
-      
+      jest
+        .spyOn(encryptionService, 'validateConfiguration')
+        .mockReturnValue(false);
+
       await expect(service.onModuleInit()).rejects.toThrow(
         'Wallet encryption service configuration is invalid',
       );
@@ -102,7 +104,9 @@ describe('WalletsService', () => {
 
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
       mockPrisma.wallet.create.mockResolvedValue(mockWallet);
-      jest.spyOn(encryptionService, 'encryptAndSerialize').mockReturnValue('encrypted-secret');
+      jest
+        .spyOn(encryptionService, 'encryptAndSerialize')
+        .mockReturnValue('encrypted-secret');
 
       const result = await service.createWallet(createWalletRequest);
 
@@ -147,20 +151,24 @@ describe('WalletsService', () => {
       };
 
       mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
-      jest.spyOn(encryptionService, 'deserializeAndDecrypt').mockReturnValue('private-key-123');
+      jest
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('private-key-123');
 
       const result = await service.getDecryptedPrivateKey('wallet-123');
 
       expect(result).toBe('private-key-123');
-      expect(encryptionService.deserializeAndDecrypt).toHaveBeenCalledWith('encrypted-secret');
+      expect(encryptionService.deserializeAndDecrypt).toHaveBeenCalledWith(
+        'encrypted-secret',
+      );
     });
 
     it('should throw NotFoundException if wallet not found', async () => {
       mockPrisma.wallet.findUnique.mockResolvedValue(null);
 
-      await expect(service.getDecryptedPrivateKey('non-existent')).rejects.toThrow(
-        'Wallet with ID non-existent not found',
-      );
+      await expect(
+        service.getDecryptedPrivateKey('non-existent'),
+      ).rejects.toThrow('Wallet with ID non-existent not found');
     });
 
     it('should throw error if wallet is not active', async () => {
@@ -173,9 +181,9 @@ describe('WalletsService', () => {
 
       mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
 
-      await expect(service.getDecryptedPrivateKey('wallet-123')).rejects.toThrow(
-        'Cannot sign with wallet in status: SUSPENDED',
-      );
+      await expect(
+        service.getDecryptedPrivateKey('wallet-123'),
+      ).rejects.toThrow('Cannot sign with wallet in status: SUSPENDED');
     });
 
     it('should handle decryption errors gracefully', async () => {
@@ -187,13 +195,17 @@ describe('WalletsService', () => {
       };
 
       mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
-      jest.spyOn(encryptionService, 'deserializeAndDecrypt').mockImplementation(() => {
-        const error = new Error('Decryption failed') as any;
-        error.code = 'DECRYPTION_FAILED';
-        throw error;
-      });
+      jest
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockImplementation(() => {
+          const error = new Error('Decryption failed') as any;
+          error.code = 'DECRYPTION_FAILED';
+          throw error;
+        });
 
-      await expect(service.getDecryptedPrivateKey('wallet-123')).rejects.toThrow(
+      await expect(
+        service.getDecryptedPrivateKey('wallet-123'),
+      ).rejects.toThrow(
         'Wallet key decryption failed - possible data corruption',
       );
     });
@@ -209,9 +221,14 @@ describe('WalletsService', () => {
       };
 
       mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
-      jest.spyOn(encryptionService, 'deserializeAndDecrypt').mockReturnValue('private-key-123');
+      jest
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('private-key-123');
 
-      const result = await service.signTransaction('wallet-123', 'transaction-data');
+      const result = await service.signTransaction(
+        'wallet-123',
+        'transaction-data',
+      );
 
       expect(result.signature).toBeDefined();
       expect(encryptionService.deserializeAndDecrypt).toHaveBeenCalled();
@@ -220,9 +237,9 @@ describe('WalletsService', () => {
     it('should handle signing errors gracefully', async () => {
       mockPrisma.wallet.findUnique.mockResolvedValue(null);
 
-      await expect(service.signTransaction('wallet-123', 'transaction-data')).rejects.toThrow(
-        'Transaction signing failed',
-      );
+      await expect(
+        service.signTransaction('wallet-123', 'transaction-data'),
+      ).rejects.toThrow('Transaction signing failed');
     });
   });
 
@@ -254,7 +271,9 @@ describe('WalletsService', () => {
 
       mockPrisma.wallet.findUnique.mockResolvedValue(existingWallet);
       mockPrisma.wallet.update.mockResolvedValue(updatedWallet);
-      jest.spyOn(encryptionService, 'encryptAndSerialize').mockReturnValue('new-encrypted-secret');
+      jest
+        .spyOn(encryptionService, 'encryptAndSerialize')
+        .mockReturnValue('new-encrypted-secret');
 
       const result = await service.rotateWalletKey('wallet-123');
 

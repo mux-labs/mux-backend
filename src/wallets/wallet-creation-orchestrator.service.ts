@@ -1,4 +1,9 @@
-import { Injectable, Logger, ConflictException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  NotFoundException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
@@ -62,35 +67,50 @@ export class WalletCreationOrchestrator {
   async onModuleInit() {
     // Validate encryption configuration on startup
     if (!this.encryptionService.validateConfiguration()) {
-      throw new Error('Wallet creation orchestrator encryption configuration is invalid');
+      throw new Error(
+        'Wallet creation orchestrator encryption configuration is invalid',
+      );
     }
-    this.logger.log('Wallet creation orchestrator initialized with encryption validation passed');
+    this.logger.log(
+      'Wallet creation orchestrator initialized with encryption validation passed',
+    );
   }
 
   /**
    * Orchestrates the complete wallet creation flow with atomic operations and idempotency
    */
-  async createWallet(request: CreateWalletOrchestratorRequest): Promise<WalletOrchestrationResult> {
+  async createWallet(
+    request: CreateWalletOrchestratorRequest,
+  ): Promise<WalletOrchestrationResult> {
     const startTime = Date.now();
-    this.logger.log(`Starting wallet creation orchestration for user ${request.userId} on ${request.network}`);
+    this.logger.log(
+      `Starting wallet creation orchestration for user ${request.userId} on ${request.network}`,
+    );
 
     try {
       // Use database transaction for atomicity
       const result = await this.prisma.$transaction(async (tx) => {
         const context = await this.buildOrchestrationContext(request, tx);
-        
+
         // Check idempotency if key provided
         if (request.idempotencyKey) {
-          const existingResult = await this.checkIdempotency(request.idempotencyKey, tx);
+          const existingResult = await this.checkIdempotency(
+            request.idempotencyKey,
+            tx,
+          );
           if (existingResult) {
-            this.logger.log(`Returning cached result for idempotency key: ${request.idempotencyKey}`);
+            this.logger.log(
+              `Returning cached result for idempotency key: ${request.idempotencyKey}`,
+            );
             return existingResult;
           }
         }
 
         // Enforce one wallet per user per network
         if (context.existingWallet) {
-          this.logger.log(`User ${request.userId} already has wallet on ${request.network}`);
+          this.logger.log(
+            `User ${request.userId} already has wallet on ${request.network}`,
+          );
           return {
             wallet: context.existingWallet,
             privateKey: '', // Empty for existing wallets
@@ -101,7 +121,7 @@ export class WalletCreationOrchestrator {
 
         // Create new wallet atomically
         const newWallet = await this.createNewWallet(context, tx);
-        
+
         const result: WalletOrchestrationResult = {
           wallet: newWallet.wallet,
           privateKey: newWallet.privateKey,
@@ -118,16 +138,21 @@ export class WalletCreationOrchestrator {
       });
 
       const duration = Date.now() - startTime;
-      this.logger.log(`Wallet creation orchestration completed in ${duration}ms for user ${request.userId}`);
-      
+      this.logger.log(
+        `Wallet creation orchestration completed in ${duration}ms for user ${request.userId}`,
+      );
+
       return result;
     } catch (error) {
-      this.logger.error(`Wallet creation orchestration failed for user ${request.userId}:`, error);
-      
+      this.logger.error(
+        `Wallet creation orchestration failed for user ${request.userId}:`,
+        error,
+      );
+
       if (error instanceof ConflictException) {
         throw error;
       }
-      
+
       throw new Error('Wallet creation orchestration failed');
     }
   }
@@ -137,7 +162,7 @@ export class WalletCreationOrchestrator {
    */
   private async buildOrchestrationContext(
     request: CreateWalletOrchestratorRequest,
-    tx: any // Use any for transaction client to avoid type issues
+    tx: any, // Use any for transaction client to avoid type issues
   ): Promise<OrchestrationContext> {
     // Resolve internal user
     const user = await this.resolveUser(request.userId, tx);
@@ -146,7 +171,11 @@ export class WalletCreationOrchestrator {
     }
 
     // Check for existing wallet
-    const existingWallet = await this.findExistingWallet(request.userId, request.network, tx);
+    const existingWallet = await this.findExistingWallet(
+      request.userId,
+      request.network,
+      tx,
+    );
 
     return {
       user,
@@ -161,11 +190,11 @@ export class WalletCreationOrchestrator {
   private async resolveUser(userId: string, tx: any): Promise<User | null> {
     // Use the idempotent user service to find user by ID
     const user = await this.idempotentUserService.findUserById(userId);
-    
+
     if (!user) {
       throw new NotFoundException(`User with ID ${userId} not found`);
     }
-    
+
     return user;
   }
 
@@ -175,13 +204,15 @@ export class WalletCreationOrchestrator {
   private async findExistingWallet(
     userId: string,
     network: WalletNetwork,
-    tx: any
+    tx: any,
   ): Promise<Wallet | undefined> {
     const existingWallet = await tx.wallet.findFirst({
       where: { userId, network },
     });
 
-    return existingWallet ? this.mapPrismaWalletToDomain(existingWallet) : undefined;
+    return existingWallet
+      ? this.mapPrismaWalletToDomain(existingWallet)
+      : undefined;
   }
 
   /**
@@ -189,15 +220,17 @@ export class WalletCreationOrchestrator {
    */
   private async createNewWallet(
     context: OrchestrationContext,
-    tx: any
+    tx: any,
   ): Promise<{ wallet: Wallet; privateKey: string }> {
     const { request } = context;
 
     // Generate new keypair
     const keyPair = this.generateStellarKeyPair();
-    
+
     // Encrypt the private key before storage
-    const encryptedSecret = this.encryptionService.encryptAndSerialize(keyPair.privateKey);
+    const encryptedSecret = this.encryptionService.encryptAndSerialize(
+      keyPair.privateKey,
+    );
 
     try {
       const createdWallet = await tx.wallet.create({
@@ -212,7 +245,9 @@ export class WalletCreationOrchestrator {
         },
       });
 
-      this.logger.log(`Created new wallet for user ${request.userId} on ${request.network}`);
+      this.logger.log(
+        `Created new wallet for user ${request.userId} on ${request.network}`,
+      );
 
       return {
         wallet: this.mapPrismaWalletToDomain(createdWallet),
@@ -229,7 +264,7 @@ export class WalletCreationOrchestrator {
    */
   private async checkIdempotency(
     idempotencyKey: string,
-    tx: any // Use any for transaction client to avoid type issues
+    tx: any, // Use any for transaction client to avoid type issues
   ): Promise<WalletOrchestrationResult | null> {
     // In a real implementation, this would query an idempotency table
     // For now, we'll skip this as we don't have the table structure
@@ -242,11 +277,13 @@ export class WalletCreationOrchestrator {
   private async storeIdempotencyRecord(
     idempotencyKey: string,
     result: WalletOrchestrationResult,
-    tx: any // Use any for transaction client to avoid type issues
+    tx: any, // Use any for transaction client to avoid type issues
   ): Promise<void> {
     // In a real implementation, this would store in an idempotency table
     // For now, we'll skip this as we don't have the table structure
-    this.logger.log(`Idempotency record would be stored for key: ${idempotencyKey}`);
+    this.logger.log(
+      `Idempotency record would be stored for key: ${idempotencyKey}`,
+    );
   }
 
   /**
@@ -256,7 +293,7 @@ export class WalletCreationOrchestrator {
     // In real implementation, use stellar-sdk: Stellar.Keypair.random()
     const privateKey = crypto.randomBytes(32).toString('hex');
     const publicKey = `G${crypto.randomBytes(32).toString('hex').toUpperCase()}`;
-    
+
     return { publicKey, privateKey };
   }
 
@@ -284,7 +321,10 @@ export class WalletCreationOrchestrator {
   /**
    * Gets wallet by user ID and network (read-only operation)
    */
-  async getWalletByUser(userId: string, network: WalletNetwork): Promise<Wallet | null> {
+  async getWalletByUser(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<Wallet | null> {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, network },
     });
@@ -295,7 +335,10 @@ export class WalletCreationOrchestrator {
   /**
    * Validates user can create wallet on specified network
    */
-  async validateUserCanCreateWallet(userId: string, network: WalletNetwork): Promise<boolean> {
+  async validateUserCanCreateWallet(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<boolean> {
     const existingWallet = await this.getWalletByUser(userId, network);
     return existingWallet === null;
   }

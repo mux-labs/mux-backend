@@ -49,10 +49,16 @@ describe('PaymentsService', () => {
         status: 'PENDING',
         userId: 1,
         createdAt: paymentDate,
-        updatedAt: paymentDate
+        updatedAt: paymentDate,
       });
 
-      const dto = { fromId: 1, toId: 2, amount: 100, currency: 'USD', description: 'Test payment' };
+      const dto = {
+        fromId: 1,
+        toId: 2,
+        amount: 100,
+        currency: 'USD',
+        description: 'Test payment',
+      };
       const result = await service.create(dto as any);
 
       expect(limitsService.checkLimits).toHaveBeenCalledWith(1, 100);
@@ -64,7 +70,7 @@ describe('PaymentsService', () => {
           currency: 'USD',
           description: 'Test payment',
           userId: 1,
-          status: 'PENDING'
+          status: 'PENDING',
         },
       });
       expect(result).toEqual({
@@ -77,7 +83,7 @@ describe('PaymentsService', () => {
         status: 'PENDING',
         userId: 1,
         createdAt: paymentDate,
-        updatedAt: paymentDate
+        updatedAt: paymentDate,
       });
     });
 
@@ -85,7 +91,9 @@ describe('PaymentsService', () => {
       limitsService.checkLimits.mockRejectedValue(new Error('Limit exceeded'));
 
       const dto = { fromId: 1, toId: 2, amount: 100, currency: 'USD' };
-      await expect(service.create(dto as any)).rejects.toThrow('Limit exceeded');
+      await expect(service.create(dto as any)).rejects.toThrow(
+        'Limit exceeded',
+      );
       expect(prisma.payment.create).not.toHaveBeenCalled();
     });
   });
