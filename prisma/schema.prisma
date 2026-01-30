@@ -277,3 +277,93 @@ model BalanceSyncJob {
   @@index([jobType])
   @@index([createdAt])
 }
+/// Webhook endpoint registered by developers
+model WebhookEndpoint {
+  id          String   @id @default(uuid())
+  
+  /// Project reference (links webhook to API key owner)
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Endpoint configuration
+  url         String
+  description String?
+  
+  /// Secret for HMAC signature verification
+  secret      String
+  
+  /// Event types to listen for
+  events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
+  
+  /// Endpoint status
+  status      String   @default("ACTIVE") // ACTIVE, DISABLED, FAILED
+  
+  /// Failure tracking
+  consecutiveFailures Int @default(0)
+  lastFailureAt DateTime?
+  lastFailureReason String?
+  
+  /// Success tracking
+  lastSuccessAt DateTime?
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  /// Relations
+  deliveries  WebhookDelivery[]
+  
+  @@index([projectId])
+  @@index([status])
+}
+
+/// Webhook delivery attempt tracking
+model WebhookDelivery {
+  id          String   @id @default(uuid())
+  
+  /// Endpoint reference
+  endpointId  String
+  endpoint    WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  
+  /// Event details
+  eventId     String   @unique
+  eventType   String   // e.g., "wallet.created"
+  payload     Json     // Event payload
+  
+  /// Delivery status
+  status      String   // PENDING, DELIVERED, FAILED, RETRYING
+  
+  /// Attempt tracking
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  
+  /// Next retry time (for exponential backoff)
+  nextRetryAt DateTime?
+  
+  /// Response details
+  responseStatus Int?
+  responseBody String?
+  responseTime Int?   // milliseconds
+  
+  /// Delivery timestamps
+  firstAttemptAt DateTime?
+  lastAttemptAt DateTime?
+  deliveredAt DateTime?
+  
+  /// Error tracking
+  errorMessage String?
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([endpointId])
+  @@index([status])
+  @@index([nextRetryAt])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+/// Update the Project model to add webhook endpoints relation:
+/// Add this line to the Project model:
+webhookEndpoints WebhookEndpoint[]
