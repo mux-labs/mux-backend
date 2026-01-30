@@ -8,6 +8,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
+import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { WebhookModule } from './webhooks/webhook.module';
 
 
@@ -23,6 +24,7 @@ import { WebhookModule } from './webhooks/webhook.module';
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
+    BalanceIndexerModule,
     WebhookModule,
   ],
   controllers: [AppController],

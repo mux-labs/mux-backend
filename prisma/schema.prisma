@@ -152,6 +152,7 @@ model Wallet {
 
   /// Recovery requests for this wallet
   recoveryRequests RecoveryRequest[]
+  balances         WalletBalance[]
 
   @@index([userId, network])
   @@index([status, network])
@@ -182,6 +183,100 @@ model RecoveryRequest {
   @@index([walletId, status])
 }
 
+/// Asset types supported on Stellar
+enum AssetType {
+  NATIVE      // XLM
+  CREDIT_ALPHANUM4   // e.g., USDC
+  CREDIT_ALPHANUM12  // e.g., EURT
+  LIQUIDITY_POOL_SHARES
+}
+
+/// Balance sync status for tracking indexer health
+enum BalanceSyncStatus {
+  SYNCED       // Balance is up-to-date with chain
+  SYNCING      // Sync in progress
+  STALE        // Balance hasn't been updated recently
+  MISMATCH     // Detected discrepancy with on-chain state
+  FAILED       // Last sync attempt failed
+}
+
+/// Indexed wallet balance for fast queries
+model WalletBalance {
+  id        String   @id @default(uuid())
+  
+  /// Wallet reference
+  walletId  String
+  wallet    Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  
+  /// Asset information
+  assetType String   // AssetType enum as string
+  assetCode String?  // e.g., "USDC" (null for native XLM)
+  assetIssuer String? // Issuer public key (null for native XLM)
+  
+  /// Balance amount (stored as string to preserve precision)
+  balance   String   @default("0")
+  
+  /// Sync metadata
+  syncStatus BalanceSyncStatus @default(SYNCING)
+  lastSyncedAt DateTime?
+  lastSyncedLedger Int?  // Stellar ledger sequence number
+  
+  /// Reconciliation tracking
+  lastReconciledAt DateTime?
+  reconciliationAttempts Int @default(0)
+  
+  /// Chain state (for mismatch detection)
+  onChainBalance String?  // Last known on-chain balance
+  mismatchDetectedAt DateTime?
+  
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([walletId, assetType, assetCode, assetIssuer])
+  @@index([walletId])
+  @@index([syncStatus])
+  @@index([lastSyncedAt])
+}
+
+/// Balance sync job tracking for reliability
+model BalanceSyncJob {
+  id        String   @id @default(uuid())
+  
+  /// Job metadata
+  jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"
+  status    String   // "PENDING", "RUNNING", "COMPLETED", "FAILED"
+  
+  /// Scope
+  walletId  String?  // Null for full system sync
+  network   WalletNetwork?
+  
+  /// Progress tracking
+  walletsProcessed Int @default(0)
+  walletsTotal Int?
+  
+  /// Results
+  balancesUpdated Int @default(0)
+  mismatchesFound Int @default(0)
+  errorsEncountered Int @default(0)
+  
+  /// Timing
+  startedAt DateTime?
+  completedAt DateTime?
+  duration Int?  // milliseconds
+  
+  /// Error tracking
+  errorMessage String?
+  errorDetails Json?
+  
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([status])
+  @@index([jobType])
+  @@index([createdAt])
+}
 /// Webhook endpoint registered by developers
 model WebhookEndpoint {
   id          String   @id @default(uuid())
