@@ -13,6 +13,11 @@ import { AuthModule } from './auth/auth.module';
 import { RateLimitModule } from './rate-limit/rate-limit.module';
 import { ApiKeyGuard } from './auth/api-key.guard';
 import { RateLimitGuard } from './rate-limit/rate-limit.guard';
+import { ApiKeyModule } from './api-keys/api-key.module';
+import { KeyManagementModule } from './key-management/key-management.module';
+import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
+import { WebhookModule } from './webhooks/webhook.module';
+
 
 @Module({
   imports: [
@@ -28,6 +33,11 @@ import { RateLimitGuard } from './rate-limit/rate-limit.guard';
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
+    AuthModule,
+    ApiKeyModule,
+    KeyManagementModule,
+    BalanceIndexerModule,
+    WebhookModule,
   ],
   controllers: [AppController],
   providers: [
