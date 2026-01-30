@@ -1,8 +1,16 @@
-import { Injectable, Logger, NotFoundException, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ConflictException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
-import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
 import * as crypto from 'crypto';
 
 export interface CreateWalletRequest {
@@ -37,13 +45,17 @@ export class WalletsService {
     if (!this.encryptionService.validateConfiguration()) {
       throw new Error('Wallet encryption service configuration is invalid');
     }
-    this.logger.log('Wallet service initialized with encryption validation passed');
+    this.logger.log(
+      'Wallet service initialized with encryption validation passed',
+    );
   }
 
   /**
    * Creates a new wallet with encrypted private key storage
    */
-  async createWallet(request: CreateWalletRequest): Promise<WalletCreationResult> {
+  async createWallet(
+    request: CreateWalletRequest,
+  ): Promise<WalletCreationResult> {
     const { userId, network } = request;
 
     // Check if user already has a wallet on this network
@@ -57,9 +69,11 @@ export class WalletsService {
 
     // Generate new keypair
     const keyPair = this.generateStellarKeyPair();
-    
+
     // Encrypt the private key before storage
-    const encryptedSecret = this.encryptionService.encryptAndSerialize(keyPair.privateKey);
+    const encryptedSecret = this.encryptionService.encryptAndSerialize(
+      keyPair.privateKey,
+    );
 
     try {
       const createdWallet = await this.prisma.wallet.create({
@@ -104,13 +118,18 @@ export class WalletsService {
   /**
    * Retrieves a wallet by user and network (without decrypting the private key)
    */
-  async findWalletByUser(userId: string, network: WalletNetwork): Promise<Wallet> {
+  async findWalletByUser(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<Wallet> {
     const wallet = await this.prisma.wallet.findFirst({
       where: { userId, network },
     });
 
     if (!wallet) {
-      throw new NotFoundException(`Wallet for user ${userId} on ${network} not found`);
+      throw new NotFoundException(
+        `Wallet for user ${userId} on ${network} not found`,
+      );
     }
 
     return this.mapPrismaWalletToDomain(wallet);
@@ -133,15 +152,30 @@ export class WalletsService {
     }
 
     try {
-      const privateKey = this.encryptionService.deserializeAndDecrypt(wallet.encryptedSecret);
-      this.logger.log(`Successfully decrypted private key for wallet ${walletId}`);
+      const privateKey = this.encryptionService.deserializeAndDecrypt(
+        wallet.encryptedSecret,
+      );
+      this.logger.log(
+        `Successfully decrypted private key for wallet ${walletId}`,
+      );
       return privateKey;
     } catch (error) {
-      if (error && (error as any).code && ['DECRYPTION_FAILED', 'INVALID_KEY', 'INVALID_DATA'].includes((error as any).code)) {
+      if (
+        error &&
+        error.code &&
+        ['DECRYPTION_FAILED', 'INVALID_KEY', 'INVALID_DATA'].includes(
+          error.code,
+        )
+      ) {
         this.logger.error(`Decryption failed for wallet ${walletId}:`, error);
-        throw new Error('Wallet key decryption failed - possible data corruption');
+        throw new Error(
+          'Wallet key decryption failed - possible data corruption',
+        );
       }
-      this.logger.error(`Unexpected error decrypting wallet ${walletId}:`, error);
+      this.logger.error(
+        `Unexpected error decrypting wallet ${walletId}:`,
+        error,
+      );
       throw new Error('Failed to access wallet private key');
     }
   }
@@ -149,22 +183,30 @@ export class WalletsService {
   /**
    * Signs a transaction using the wallet's private key
    */
-  async signTransaction(walletId: string, transactionData: string): Promise<SigningResult> {
+  async signTransaction(
+    walletId: string,
+    transactionData: string,
+  ): Promise<SigningResult> {
     try {
       const privateKey = await this.getDecryptedPrivateKey(walletId);
-      
+
       // For Stellar, we would use the SDK to sign
       // This is a simplified example - in production you'd use stellar-sdk
       const signature = this.signWithPrivateKey(privateKey, transactionData);
-      
-      this.logger.log(`Successfully signed transaction with wallet ${walletId}`);
-      
+
+      this.logger.log(
+        `Successfully signed transaction with wallet ${walletId}`,
+      );
+
       return {
         signature,
         // transactionHash would be calculated based on the signed transaction
       };
     } catch (error) {
-      this.logger.error(`Failed to sign transaction with wallet ${walletId}:`, error);
+      this.logger.error(
+        `Failed to sign transaction with wallet ${walletId}:`,
+        error,
+      );
       throw new Error('Transaction signing failed');
     }
   }
@@ -183,9 +225,11 @@ export class WalletsService {
 
     // Generate new keypair
     const newKeyPair = this.generateStellarKeyPair();
-    
+
     // Encrypt the new private key
-    const newEncryptedSecret = this.encryptionService.encryptAndSerialize(newKeyPair.privateKey);
+    const newEncryptedSecret = this.encryptionService.encryptAndSerialize(
+      newKeyPair.privateKey,
+    );
 
     try {
       // Update existing wallet with new key
@@ -214,7 +258,11 @@ export class WalletsService {
   /**
    * Updates wallet status (for suspension, disabling, etc.)
    */
-  async updateWalletStatus(walletId: string, status: WalletStatus, reason?: string): Promise<Wallet> {
+  async updateWalletStatus(
+    walletId: string,
+    status: WalletStatus,
+    reason?: string,
+  ): Promise<Wallet> {
     const wallet = await this.prisma.wallet.findUnique({
       where: { id: walletId },
     });
@@ -250,8 +298,12 @@ export class WalletsService {
     // This is a simplified example - use stellar-sdk in production
     const keyPair = crypto.generateKeyPairSync('ed25519');
     return {
-      publicKey: keyPair.publicKey.export({ type: 'spki', format: 'der' }).toString('hex'),
-      privateKey: keyPair.privateKey.export({ type: 'pkcs8', format: 'der' }).toString('hex'),
+      publicKey: keyPair.publicKey
+        .export({ type: 'spki', format: 'der' })
+        .toString('hex'),
+      privateKey: keyPair.privateKey
+        .export({ type: 'pkcs8', format: 'der' })
+        .toString('hex'),
     };
   }
 
@@ -266,7 +318,7 @@ export class WalletsService {
       format: 'der',
       type: 'pkcs8',
     });
-    
+
     const signature = crypto.sign('sha256', Buffer.from(data), key);
     return signature.toString('hex');
   }

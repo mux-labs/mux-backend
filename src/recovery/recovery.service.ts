@@ -1,9 +1,16 @@
-import { Injectable, BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  BadRequestException,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateRecoveryDto } from './dto/create-recovery.dto';
 import { UpdateRecoveryDto } from './dto/update-recovery.dto';
 import { RecoveryRequest } from './entities/recovery.entity';
-import { RecoveryStatus, transitionRecoveryStatus } from './domain/recovery.model';
+import {
+  RecoveryStatus,
+  transitionRecoveryStatus,
+} from './domain/recovery.model';
 
 @Injectable()
 export class RecoveryService {
@@ -15,13 +22,19 @@ export class RecoveryService {
       where: {
         walletId: createRecoveryDto.walletId,
         status: {
-          notIn: [RecoveryStatus.REJECTED, RecoveryStatus.COMPLETED, RecoveryStatus.CANCELLED],
+          notIn: [
+            RecoveryStatus.REJECTED,
+            RecoveryStatus.COMPLETED,
+            RecoveryStatus.CANCELLED,
+          ],
         },
       },
     });
 
     if (existingActive) {
-      throw new BadRequestException('An active recovery request already exists for this wallet');
+      throw new BadRequestException(
+        'An active recovery request already exists for this wallet',
+      );
     }
 
     // Verify wallet exists
@@ -54,7 +67,7 @@ export class RecoveryService {
 
   async findAll(): Promise<RecoveryRequest[]> {
     const recoveries = await this.prisma.recoveryRequest.findMany();
-    return recoveries.map(r => ({
+    return recoveries.map((r) => ({
       id: r.id,
       walletId: r.walletId,
       requester: r.requester,
@@ -85,12 +98,18 @@ export class RecoveryService {
     };
   }
 
-  async update(id: string, updateRecoveryDto: UpdateRecoveryDto): Promise<RecoveryRequest> {
+  async update(
+    id: string,
+    updateRecoveryDto: UpdateRecoveryDto,
+  ): Promise<RecoveryRequest> {
     const recovery = await this.findOne(id);
 
     if (updateRecoveryDto.status) {
       // Enforce state transition
-      const updatedRecovery = transitionRecoveryStatus(recovery, updateRecoveryDto.status);
+      const updatedRecovery = transitionRecoveryStatus(
+        recovery,
+        updateRecoveryDto.status,
+      );
 
       const result = await this.prisma.recoveryRequest.update({
         where: { id },

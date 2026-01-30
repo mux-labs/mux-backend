@@ -23,38 +23,42 @@ export class EncryptionService {
 
   constructor(private configService: ConfigService) {
     const key = this.configService.get<string>('WALLET_ENCRYPTION_KEY');
-    
+
     if (!key) {
       throw new Error('WALLET_ENCRYPTION_KEY environment variable is required');
     }
 
     // Ensure key is exactly 32 bytes (256 bits)
     this.encryptionKey = crypto.createHash('sha256').update(key).digest();
-    
+
     this.logger.log('Encryption service initialized with secure key');
   }
 
   /**
    * Encrypts sensitive data (private keys) using AES-256-GCM
-   * 
+   *
    * @param plaintext - The sensitive data to encrypt
    * @returns Encrypted result with IV and authentication tag
    */
   encrypt(plaintext: string): EncryptionResult {
     try {
       const iv = crypto.randomBytes(this.ivLength);
-      const cipher = crypto.createCipheriv(this.algorithm, this.encryptionKey, iv);
+      const cipher = crypto.createCipheriv(
+        this.algorithm,
+        this.encryptionKey,
+        iv,
+      );
       cipher.setAAD(Buffer.from('wallet-secret', 'utf8'));
-      
+
       let encrypted = cipher.update(plaintext, 'utf8', 'hex');
       encrypted += cipher.final('hex');
-      
+
       const tag = cipher.getAuthTag();
-      
+
       return {
         encryptedData: encrypted,
         iv: iv.toString('hex'),
-        tag: tag.toString('hex')
+        tag: tag.toString('hex'),
       };
     } catch (error) {
       this.logger.error('Encryption failed:', error);
@@ -64,7 +68,7 @@ export class EncryptionService {
 
   /**
    * Decrypts encrypted data using AES-256-GCM
-   * 
+   *
    * @param encryptionResult - The encrypted data with IV and tag
    * @returns Decrypted plaintext
    * @throws DecryptionError if decryption fails
@@ -72,18 +76,24 @@ export class EncryptionService {
   decrypt(encryptionResult: EncryptionResult): string {
     try {
       const { encryptedData, iv, tag } = encryptionResult;
-      
-      const decipher = crypto.createDecipheriv(this.algorithm, this.encryptionKey, Buffer.from(iv, 'hex'));
+
+      const decipher = crypto.createDecipheriv(
+        this.algorithm,
+        this.encryptionKey,
+        Buffer.from(iv, 'hex'),
+      );
       decipher.setAAD(Buffer.from('wallet-secret', 'utf8'));
       decipher.setAuthTag(Buffer.from(tag, 'hex'));
-      
+
       let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
       decrypted += decipher.final('utf8');
-      
+
       return decrypted;
     } catch (error) {
-      const decryptionError: DecryptionError = new Error('Decryption failed') as DecryptionError;
-      
+      const decryptionError: DecryptionError = new Error(
+        'Decryption failed',
+      ) as DecryptionError;
+
       if (error.message.includes('bad decrypt')) {
         decryptionError.code = 'DECRYPTION_FAILED';
       } else if (error.message.includes('wrong key')) {
@@ -91,8 +101,11 @@ export class EncryptionService {
       } else {
         decryptionError.code = 'INVALID_DATA';
       }
-      
-      this.logger.error('Decryption failed:', { error: error.message, code: decryptionError.code });
+
+      this.logger.error('Decryption failed:', {
+        error: error.message,
+        code: decryptionError.code,
+      });
       throw decryptionError;
     }
   }
@@ -141,7 +154,7 @@ export class EncryptionService {
       const testData = 'test-validation-data';
       const encrypted = this.encryptAndSerialize(testData);
       const decrypted = this.deserializeAndDecrypt(encrypted);
-      
+
       return testData === decrypted;
     } catch (error) {
       this.logger.error('Encryption configuration validation failed:', error);

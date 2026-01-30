@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
@@ -9,6 +10,9 @@ import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
 import { AuthModule } from './auth/auth.module';
+import { RateLimitModule } from './rate-limit/rate-limit.module';
+import { ApiKeyGuard } from './auth/api-key.guard';
+import { RateLimitGuard } from './rate-limit/rate-limit.guard';
 import { ApiKeyModule } from './api-keys/api-key.module';
 import { KeyManagementModule } from './key-management/key-management.module';
 import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
@@ -22,6 +26,8 @@ import { WebhookModule } from './webhooks/webhook.module';
       envFilePath: '.env',
     }),
     PrismaModule,
+    AuthModule,
+    RateLimitModule,
     UsersModule,
     WalletsModule,
     PaymentsModule,
@@ -34,6 +40,17 @@ import { WebhookModule } from './webhooks/webhook.module';
     WebhookModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Apply API key and rate limiting globally
+    {
+      provide: APP_GUARD,
+      useClass: ApiKeyGuard,
+    },
+    {
+      provide: APP_GUARD,
+      useClass: RateLimitGuard,
+    },
+  ],
 })
 export class AppModule {}

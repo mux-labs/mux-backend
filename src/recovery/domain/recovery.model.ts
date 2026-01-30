@@ -26,16 +26,31 @@ export interface RecoveryRequest {
 /**
  * Explicit, audit-friendly status transition rules for recovery requests.
  */
-const ALLOWED_TRANSITIONS: Readonly<Record<RecoveryStatus, ReadonlySet<RecoveryStatus>>> = {
-  [RecoveryStatus.PENDING]: new Set([RecoveryStatus.IN_REVIEW, RecoveryStatus.CANCELLED]),
-  [RecoveryStatus.IN_REVIEW]: new Set([RecoveryStatus.APPROVED, RecoveryStatus.REJECTED, RecoveryStatus.CANCELLED]),
-  [RecoveryStatus.APPROVED]: new Set([RecoveryStatus.COMPLETED, RecoveryStatus.CANCELLED]),
+const ALLOWED_TRANSITIONS: Readonly<
+  Record<RecoveryStatus, ReadonlySet<RecoveryStatus>>
+> = {
+  [RecoveryStatus.PENDING]: new Set([
+    RecoveryStatus.IN_REVIEW,
+    RecoveryStatus.CANCELLED,
+  ]),
+  [RecoveryStatus.IN_REVIEW]: new Set([
+    RecoveryStatus.APPROVED,
+    RecoveryStatus.REJECTED,
+    RecoveryStatus.CANCELLED,
+  ]),
+  [RecoveryStatus.APPROVED]: new Set([
+    RecoveryStatus.COMPLETED,
+    RecoveryStatus.CANCELLED,
+  ]),
   [RecoveryStatus.REJECTED]: new Set([]),
   [RecoveryStatus.COMPLETED]: new Set([]),
   [RecoveryStatus.CANCELLED]: new Set([]),
 };
 
-export function canTransitionRecoveryStatus(from: RecoveryStatus, to: RecoveryStatus): boolean {
+export function canTransitionRecoveryStatus(
+  from: RecoveryStatus,
+  to: RecoveryStatus,
+): boolean {
   return ALLOWED_TRANSITIONS[from].has(to);
 }
 
@@ -46,7 +61,9 @@ export function transitionRecoveryStatus(
 ): RecoveryRequest {
   if (recovery.status === to) return recovery;
   if (!canTransitionRecoveryStatus(recovery.status, to)) {
-    throw new Error(`Invalid recovery status transition: ${recovery.status} -> ${to}`);
+    throw new Error(
+      `Invalid recovery status transition: ${recovery.status} -> ${to}`,
+    );
   }
   return {
     ...recovery,

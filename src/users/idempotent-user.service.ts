@@ -43,7 +43,9 @@ export class IdempotentUserService {
    * This operation is idempotent - calling it multiple times with the same authId
    * will always return the same user without creating duplicates.
    */
-  async findOrCreateUser(request: FindOrCreateUserRequest): Promise<FindOrCreateUserResult> {
+  async findOrCreateUser(
+    request: FindOrCreateUserRequest,
+  ): Promise<FindOrCreateUserResult> {
     const { authId, email, displayName, authProvider = 'UNKNOWN' } = request;
 
     this.logger.log(`Looking up user with authId: ${authId}`);
@@ -61,8 +63,10 @@ export class IdempotentUserService {
           data: { lastLoginAt: new Date() },
         });
 
-        this.logger.log(`Found existing user: ${existingUser.id}, updated last login`);
-        
+        this.logger.log(
+          `Found existing user: ${existingUser.id}, updated last login`,
+        );
+
         return {
           user: this.mapPrismaUserToDomain(updatedUser),
           isNewUser: false,
@@ -88,13 +92,18 @@ export class IdempotentUserService {
         isNewUser: true,
       };
     } catch (error) {
-      this.logger.error(`Failed to find or create user with authId ${authId}:`, error);
+      this.logger.error(
+        `Failed to find or create user with authId ${authId}:`,
+        error,
+      );
 
       // Handle potential race conditions where multiple requests try to create the same user
       if (error.code === 'P2002') {
         // Unique constraint violation - user was created by another request
-        this.logger.log(`Race condition detected, retrying find for authId: ${authId}`);
-        
+        this.logger.log(
+          `Race condition detected, retrying find for authId: ${authId}`,
+        );
+
         const retryUser = await this.prisma.user.findUnique({
           where: { authId },
         });
@@ -151,7 +160,10 @@ export class IdempotentUserService {
   /**
    * Updates user information
    */
-  async updateUser(id: string, updates: Partial<Omit<FindOrCreateUserRequest, 'authId'>>): Promise<User> {
+  async updateUser(
+    id: string,
+    updates: Partial<Omit<FindOrCreateUserRequest, 'authId'>>,
+  ): Promise<User> {
     try {
       const updatedUser = await this.prisma.user.update({
         where: { id },
@@ -190,7 +202,7 @@ export class IdempotentUserService {
     if (!authId || authId.trim().length === 0) {
       return false;
     }
-    
+
     // Basic validation - authId should be at least 3 characters
     return authId.trim().length >= 3;
   }

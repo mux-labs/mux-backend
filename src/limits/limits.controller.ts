@@ -1,4 +1,12 @@
-import { Controller, Get, Post, Body, Patch, Param, Delete } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Patch,
+  Param,
+  Delete,
+} from '@nestjs/common';
 import { LimitsService } from './limits.service';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';

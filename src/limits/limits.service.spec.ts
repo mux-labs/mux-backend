@@ -18,10 +18,7 @@ describe('LimitsService', () => {
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        LimitsService,
-        { provide: PrismaService, useValue: prisma },
-      ],
+      providers: [LimitsService, { provide: PrismaService, useValue: prisma }],
     }).compile();
 
     service = module.get<LimitsService>(LimitsService);
@@ -49,18 +46,31 @@ describe('LimitsService', () => {
     });
 
     it('should throw if per transaction limit exceeded', async () => {
-      prisma.userLimit.findUnique.mockResolvedValue({ perTransactionLimit: 50, dailyLimit: 1000 });
-      await expect(service.checkLimits(1, 100)).rejects.toThrow('Transaction limit exceeded');
+      prisma.userLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 50,
+        dailyLimit: 1000,
+      });
+      await expect(service.checkLimits(1, 100)).rejects.toThrow(
+        'Transaction limit exceeded',
+      );
     });
 
     it('should throw if daily limit exceeded', async () => {
-      prisma.userLimit.findUnique.mockResolvedValue({ perTransactionLimit: 200, dailyLimit: 100 });
+      prisma.userLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 200,
+        dailyLimit: 100,
+      });
       prisma.payment.aggregate.mockResolvedValue({ _sum: { amount: 50 } });
-      await expect(service.checkLimits(1, 60)).rejects.toThrow('Daily limit exceeded');
+      await expect(service.checkLimits(1, 60)).rejects.toThrow(
+        'Daily limit exceeded',
+      );
     });
 
     it('should pass if within limits', async () => {
-      prisma.userLimit.findUnique.mockResolvedValue({ perTransactionLimit: 200, dailyLimit: 100 });
+      prisma.userLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 200,
+        dailyLimit: 100,
+      });
       prisma.payment.aggregate.mockResolvedValue({ _sum: { amount: 40 } });
       await expect(service.checkLimits(1, 50)).resolves.not.toThrow();
     });

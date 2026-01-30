@@ -1,6 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { WalletCreationOrchestrator, CreateWalletOrchestratorRequest } from './wallet-creation-orchestrator.service';
+import {
+  WalletCreationOrchestrator,
+  CreateWalletOrchestratorRequest,
+} from './wallet-creation-orchestrator.service';
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { PrismaClient } from '../generated/prisma/client';
@@ -55,17 +58,21 @@ describe('WalletCreationOrchestrator', () => {
       ],
     }).compile();
 
-    orchestrator = module.get<WalletCreationOrchestrator>(WalletCreationOrchestrator);
+    orchestrator = module.get<WalletCreationOrchestrator>(
+      WalletCreationOrchestrator,
+    );
     prismaClient = module.get(PrismaClient);
     encryptionService = module.get(EncryptionService);
     configService = module.get(ConfigService);
 
     // Reset all mocks
     jest.clearAllMocks();
-    
+
     // Setup default mock returns
     mockEncryptionService.validateConfiguration.mockReturnValue(true);
-    mockEncryptionService.encryptAndSerialize.mockReturnValue('encrypted-private-key');
+    mockEncryptionService.encryptAndSerialize.mockReturnValue(
+      'encrypted-private-key',
+    );
   });
 
   describe('createWallet', () => {
@@ -133,7 +140,9 @@ describe('WalletCreationOrchestrator', () => {
         },
       });
 
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(expect.any(String));
+      expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(
+        expect.any(String),
+      );
     });
 
     it('should return existing wallet if user already has one', async () => {
@@ -212,10 +221,14 @@ describe('WalletCreationOrchestrator', () => {
 
     it('should handle database transaction failures gracefully', async () => {
       // Arrange
-      mockPrisma.$transaction.mockRejectedValue(new Error('Database connection failed'));
+      mockPrisma.$transaction.mockRejectedValue(
+        new Error('Database connection failed'),
+      );
 
       // Act & Assert
-      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow('Wallet creation orchestration failed');
+      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(
+        'Wallet creation orchestration failed',
+      );
     });
 
     it('should work without idempotency key', async () => {
@@ -270,7 +283,10 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
       // Act
-      const result = await orchestrator.validateUserCanCreateWallet('user-123', WalletNetwork.TESTNET);
+      const result = await orchestrator.validateUserCanCreateWallet(
+        'user-123',
+        WalletNetwork.TESTNET,
+      );
 
       // Assert
       expect(result).toBe(true);
@@ -300,7 +316,10 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(existingWallet);
 
       // Act
-      const result = await orchestrator.validateUserCanCreateWallet('user-123', WalletNetwork.TESTNET);
+      const result = await orchestrator.validateUserCanCreateWallet(
+        'user-123',
+        WalletNetwork.TESTNET,
+      );
 
       // Assert
       expect(result).toBe(false);
@@ -329,16 +348,21 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(mockWallet);
 
       // Act
-      const result = await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET);
+      const result = await orchestrator.getWalletByUser(
+        'user-123',
+        WalletNetwork.TESTNET,
+      );
 
       // Assert
-      expect(result).toEqual(expect.objectContaining({
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'GABC123DEF456',
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-      }));
+      expect(result).toEqual(
+        expect.objectContaining({
+          id: 'wallet-123',
+          userId: 'user-123',
+          publicKey: 'GABC123DEF456',
+          network: WalletNetwork.TESTNET,
+          status: 'ACTIVE',
+        }),
+      );
     });
 
     it('should return null if wallet not found', async () => {
@@ -346,7 +370,10 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
       // Act
-      const result = await orchestrator.getWalletByUser('user-123', WalletNetwork.TESTNET);
+      const result = await orchestrator.getWalletByUser(
+        'user-123',
+        WalletNetwork.TESTNET,
+      );
 
       // Assert
       expect(result).toBeNull();
@@ -360,7 +387,7 @@ describe('WalletCreationOrchestrator', () => {
 
       // Act & Assert
       await expect(orchestrator.onModuleInit()).rejects.toThrow(
-        'Wallet creation orchestrator encryption configuration is invalid'
+        'Wallet creation orchestrator encryption configuration is invalid',
       );
     });
 
@@ -373,7 +400,9 @@ describe('WalletCreationOrchestrator', () => {
       await orchestrator.onModuleInit();
 
       // Assert
-      expect(logSpy).toHaveBeenCalledWith('Wallet creation orchestrator initialized with encryption validation passed');
+      expect(logSpy).toHaveBeenCalledWith(
+        'Wallet creation orchestrator initialized with encryption validation passed',
+      );
     });
   });
 });
