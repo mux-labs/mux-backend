@@ -8,6 +8,8 @@ import { WalletsModule } from './wallets/wallets.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
+import { WebhookModule } from './webhooks/webhook.module';
+
 
 @Module({
   imports: [
@@ -21,6 +23,7 @@ import { RecoveryModule } from './recovery/recovery.module';
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
+    WebhookModule,
   ],
   controllers: [AppController],
   providers: [AppService],
