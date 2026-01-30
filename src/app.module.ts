@@ -9,6 +9,9 @@ import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
 import { KeyManagementModule } from './key-management/key-management.module';
+import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
+import { WebhookModule } from './webhooks/webhook.module';
+
 
 @Module({
   imports: [
@@ -23,6 +26,8 @@ import { KeyManagementModule } from './key-management/key-management.module';
     LimitsModule,
     RecoveryModule,
     KeyManagementModule,
+    BalanceIndexerModule,
+    WebhookModule,
   ],
   controllers: [AppController],
   providers: [AppService],
