@@ -9,6 +9,11 @@ import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
 import { AuthModule } from './auth/auth.module';
+import { ApiKeyModule } from './api-keys/api-key.module';
+import { KeyManagementModule } from './key-management/key-management.module';
+import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
+import { WebhookModule } from './webhooks/webhook.module';
+
 
 @Module({
   imports: [
@@ -23,6 +28,10 @@ import { AuthModule } from './auth/auth.module';
     LimitsModule,
     RecoveryModule,
     AuthModule,
+    ApiKeyModule,
+    KeyManagementModule,
+    BalanceIndexerModule,
+    WebhookModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -152,6 +152,7 @@ model Wallet {
 
   /// Recovery requests for this wallet
   recoveryRequests RecoveryRequest[]
+  balances         WalletBalance[]
 
   @@index([userId, network])
   @@index([status, network])
@@ -181,3 +182,325 @@ model RecoveryRequest {
 
   @@index([walletId, status])
 }
+
+/// API Key status lifecycle
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  SUSPENDED
+}
+
+/// Developer/Project entity for SDK usage
+model Developer {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  name        String?
+  company     String?
+  
+  /// Developer status
+  status      String   @default("ACTIVE")
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  /// Relations
+  projects    Project[]
+  
+  @@index([email])
+  @@index([status])
+}
+
+/// Project entity for organizing API keys and usage
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  
+  /// Owner reference
+  developerId String
+  developer   Developer @relation(fields: [developerId], references: [id], onDelete: Cascade)
+  
+  /// Project status
+  status      String   @default("ACTIVE")
+  
+  /// Environment (development, staging, production)
+  environment String   @default("development")
+  
+  /// Rate limiting configuration (requests per minute)
+  rateLimitRpm Int     @default(60)
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  /// Relations
+  apiKeys     ApiKey[]
+  apiKeyUsage ApiKeyUsage[]
+  
+  @@index([developerId])
+  @@index([status])
+}
+
+/// API Key for developer authentication
+model ApiKey {
+  id              String       @id @default(uuid())
+  
+  /// Human-readable key name/description
+  name            String
+  
+  /// Hashed API key (never store plaintext)
+  keyHash         String       @unique
+  
+  /// Key prefix for identification (e.g., "mux_live_" or "mux_test_")
+  keyPrefix       String
+  
+  /// Last 4 characters of the key for identification
+  lastFour        String
+  
+  /// Project reference
+  projectId       String
+  project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Key status
+  status          ApiKeyStatus @default(ACTIVE)
+  
+  /// Key expiration (optional)
+  expiresAt       DateTime?
+  
+  /// Last used timestamp
+  lastUsedAt      DateTime?
+  
+  /// Revocation info
+  revokedAt       DateTime?
+  revokedReason   String?
+  
+  /// Metadata
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  /// Relations
+  usageRecords    ApiKeyUsage[]
+  
+  @@index([keyHash])
+  @@index([projectId])
+  @@index([status])
+  @@index([keyPrefix])
+}
+
+/// API Key usage tracking for analytics and rate limiting
+model ApiKeyUsage {
+  id          String   @id @default(uuid())
+  
+  /// API Key reference
+  apiKeyId    String
+  apiKey      ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  
+  /// Project reference (denormalized for faster queries)
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Request details
+  endpoint    String
+  method      String
+  statusCode  Int?
+  
+  /// Request metadata
+  ipAddress   String?
+  userAgent   String?
+  
+  /// Performance metrics
+  responseTime Int?   // milliseconds
+  
+  /// Timestamp (partitioned by date for analytics)
+  timestamp   DateTime @default(now())
+  
+  @@index([apiKeyId, timestamp])
+  @@index([projectId, timestamp])
+  @@index([timestamp])
+}
+/// Asset types supported on Stellar
+enum AssetType {
+  NATIVE      // XLM
+  CREDIT_ALPHANUM4   // e.g., USDC
+  CREDIT_ALPHANUM12  // e.g., EURT
+  LIQUIDITY_POOL_SHARES
+}
+
+/// Balance sync status for tracking indexer health
+enum BalanceSyncStatus {
+  SYNCED       // Balance is up-to-date with chain
+  SYNCING      // Sync in progress
+  STALE        // Balance hasn't been updated recently
+  MISMATCH     // Detected discrepancy with on-chain state
+  FAILED       // Last sync attempt failed
+}
+
+/// Indexed wallet balance for fast queries
+model WalletBalance {
+  id        String   @id @default(uuid())
+  
+  /// Wallet reference
+  walletId  String
+  wallet    Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  
+  /// Asset information
+  assetType String   // AssetType enum as string
+  assetCode String?  // e.g., "USDC" (null for native XLM)
+  assetIssuer String? // Issuer public key (null for native XLM)
+  
+  /// Balance amount (stored as string to preserve precision)
+  balance   String   @default("0")
+  
+  /// Sync metadata
+  syncStatus BalanceSyncStatus @default(SYNCING)
+  lastSyncedAt DateTime?
+  lastSyncedLedger Int?  // Stellar ledger sequence number
+  
+  /// Reconciliation tracking
+  lastReconciledAt DateTime?
+  reconciliationAttempts Int @default(0)
+  
+  /// Chain state (for mismatch detection)
+  onChainBalance String?  // Last known on-chain balance
+  mismatchDetectedAt DateTime?
+  
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([walletId, assetType, assetCode, assetIssuer])
+  @@index([walletId])
+  @@index([syncStatus])
+  @@index([lastSyncedAt])
+}
+
+/// Balance sync job tracking for reliability
+model BalanceSyncJob {
+  id        String   @id @default(uuid())
+  
+  /// Job metadata
+  jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"
+  status    String   // "PENDING", "RUNNING", "COMPLETED", "FAILED"
+  
+  /// Scope
+  walletId  String?  // Null for full system sync
+  network   WalletNetwork?
+  
+  /// Progress tracking
+  walletsProcessed Int @default(0)
+  walletsTotal Int?
+  
+  /// Results
+  balancesUpdated Int @default(0)
+  mismatchesFound Int @default(0)
+  errorsEncountered Int @default(0)
+  
+  /// Timing
+  startedAt DateTime?
+  completedAt DateTime?
+  duration Int?  // milliseconds
+  
+  /// Error tracking
+  errorMessage String?
+  errorDetails Json?
+  
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([status])
+  @@index([jobType])
+  @@index([createdAt])
+}
+/// Webhook endpoint registered by developers
+model WebhookEndpoint {
+  id          String   @id @default(uuid())
+  
+  /// Project reference (links webhook to API key owner)
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Endpoint configuration
+  url         String
+  description String?
+  
+  /// Secret for HMAC signature verification
+  secret      String
+  
+  /// Event types to listen for
+  events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
+  
+  /// Endpoint status
+  status      String   @default("ACTIVE") // ACTIVE, DISABLED, FAILED
+  
+  /// Failure tracking
+  consecutiveFailures Int @default(0)
+  lastFailureAt DateTime?
+  lastFailureReason String?
+  
+  /// Success tracking
+  lastSuccessAt DateTime?
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  /// Relations
+  deliveries  WebhookDelivery[]
+  
+  @@index([projectId])
+  @@index([status])
+}
+
+/// Webhook delivery attempt tracking
+model WebhookDelivery {
+  id          String   @id @default(uuid())
+  
+  /// Endpoint reference
+  endpointId  String
+  endpoint    WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  
+  /// Event details
+  eventId     String   @unique
+  eventType   String   // e.g., "wallet.created"
+  payload     Json     // Event payload
+  
+  /// Delivery status
+  status      String   // PENDING, DELIVERED, FAILED, RETRYING
+  
+  /// Attempt tracking
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  
+  /// Next retry time (for exponential backoff)
+  nextRetryAt DateTime?
+  
+  /// Response details
+  responseStatus Int?
+  responseBody String?
+  responseTime Int?   // milliseconds
+  
+  /// Delivery timestamps
+  firstAttemptAt DateTime?
+  lastAttemptAt DateTime?
+  deliveredAt DateTime?
+  
+  /// Error tracking
+  errorMessage String?
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([endpointId])
+  @@index([status])
+  @@index([nextRetryAt])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+/// Update the Project model to add webhook endpoints relation:
+/// Add this line to the Project model:
+webhookEndpoints WebhookEndpoint[]
