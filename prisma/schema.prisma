@@ -181,3 +181,141 @@ model RecoveryRequest {
 
   @@index([walletId, status])
 }
+
+/// API Key status lifecycle
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  SUSPENDED
+}
+
+/// Developer/Project entity for SDK usage
+model Developer {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  name        String?
+  company     String?
+  
+  /// Developer status
+  status      String   @default("ACTIVE")
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  /// Relations
+  projects    Project[]
+  
+  @@index([email])
+  @@index([status])
+}
+
+/// Project entity for organizing API keys and usage
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  
+  /// Owner reference
+  developerId String
+  developer   Developer @relation(fields: [developerId], references: [id], onDelete: Cascade)
+  
+  /// Project status
+  status      String   @default("ACTIVE")
+  
+  /// Environment (development, staging, production)
+  environment String   @default("development")
+  
+  /// Rate limiting configuration (requests per minute)
+  rateLimitRpm Int     @default(60)
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  /// Relations
+  apiKeys     ApiKey[]
+  apiKeyUsage ApiKeyUsage[]
+  
+  @@index([developerId])
+  @@index([status])
+}
+
+/// API Key for developer authentication
+model ApiKey {
+  id              String       @id @default(uuid())
+  
+  /// Human-readable key name/description
+  name            String
+  
+  /// Hashed API key (never store plaintext)
+  keyHash         String       @unique
+  
+  /// Key prefix for identification (e.g., "mux_live_" or "mux_test_")
+  keyPrefix       String
+  
+  /// Last 4 characters of the key for identification
+  lastFour        String
+  
+  /// Project reference
+  projectId       String
+  project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Key status
+  status          ApiKeyStatus @default(ACTIVE)
+  
+  /// Key expiration (optional)
+  expiresAt       DateTime?
+  
+  /// Last used timestamp
+  lastUsedAt      DateTime?
+  
+  /// Revocation info
+  revokedAt       DateTime?
+  revokedReason   String?
+  
+  /// Metadata
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  
+  /// Relations
+  usageRecords    ApiKeyUsage[]
+  
+  @@index([keyHash])
+  @@index([projectId])
+  @@index([status])
+  @@index([keyPrefix])
+}
+
+/// API Key usage tracking for analytics and rate limiting
+model ApiKeyUsage {
+  id          String   @id @default(uuid())
+  
+  /// API Key reference
+  apiKeyId    String
+  apiKey      ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  
+  /// Project reference (denormalized for faster queries)
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Request details
+  endpoint    String
+  method      String
+  statusCode  Int?
+  
+  /// Request metadata
+  ipAddress   String?
+  userAgent   String?
+  
+  /// Performance metrics
+  responseTime Int?   // milliseconds
+  
+  /// Timestamp (partitioned by date for analytics)
+  timestamp   DateTime @default(now())
+  
+  @@index([apiKeyId, timestamp])
+  @@index([projectId, timestamp])
+  @@index([timestamp])
+}

@@ -8,6 +8,7 @@ import { WalletsModule } from './wallets/wallets.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
+import { ApiKeyModule } from './api-keys/api-key.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { RecoveryModule } from './recovery/recovery.module';
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
+    ApiKeyModule,
   ],
   controllers: [AppController],
   providers: [AppService],
