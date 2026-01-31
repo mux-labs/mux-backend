@@ -17,6 +17,7 @@ import { ApiKeyModule } from './api-keys/api-key.module';
 import { KeyManagementModule } from './key-management/key-management.module';
 import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { WebhookModule } from './webhooks/webhook.module';
+import { TransactionsModule } from './transactions/transactions.module';
 
 
 @Module({
@@ -38,6 +39,7 @@ import { WebhookModule } from './webhooks/webhook.module';
     KeyManagementModule,
     BalanceIndexerModule,
     WebhookModule,
+    TransactionsModule,
   ],
   controllers: [AppController],
   providers: [

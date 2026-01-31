@@ -154,6 +154,12 @@ model Wallet {
   /// Recovery requests for this wallet
   recoveryRequests RecoveryRequest[]
   balances         WalletBalance[]
+  
+  /// Transactions sent from this wallet
+  sentTransactions     Transaction[] @relation("SentTransactions")
+  
+  /// Transactions received by this wallet
+  receivedTransactions Transaction[] @relation("ReceivedTransactions")
 
   @@unique([network, publicKey])
   @@index([userId, network])
@@ -184,37 +190,6 @@ model RecoveryRequest {
   @@index([walletId, status])
 }
 
-/// API key for authentication and rate limiting
-model ApiKey {
-  id               String            @id @default(uuid())
-  key              String            @unique // The actual API key (hashed in storage)
-  name             String? // Optional name/description for the key
-  environment      String            @default("production") // production, staging, development
-  isActive         Boolean           @default(true)
-  createdAt        DateTime          @default(now())
-  updatedAt        DateTime          @updatedAt
-  lastUsedAt       DateTime?
-  rateLimitRecords RateLimitRecord[]
-
-  @@index([key])
-  @@index([environment])
-}
-
-/// Rate limit tracking per API key
-model RateLimitRecord {
-  id           String   @id @default(uuid())
-  apiKeyId     String
-  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
-  endpoint     String // The endpoint path
-  windowStart  DateTime // Start of the rate limit window
-  requestCount Int      @default(0)
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-
-  @@unique([apiKeyId, endpoint, windowStart])
-  @@index([apiKeyId, endpoint])
-  @@index([windowStart])
-}
 /// API Key status lifecycle
 enum ApiKeyStatus {
   ACTIVE
@@ -268,8 +243,9 @@ model Project {
   updatedAt   DateTime @updatedAt
   
   /// Relations
-  apiKeys     ApiKey[]
-  apiKeyUsage ApiKeyUsage[]
+  apiKeys         ApiKey[]
+  apiKeyUsage     ApiKeyUsage[]
+  webhookEndpoints WebhookEndpoint[]
   
   @@index([developerId])
   @@index([status])
@@ -533,6 +509,62 @@ model WebhookDelivery {
   @@index([createdAt])
 }
 
-/// Update the Project model to add webhook endpoints relation:
-/// Add this line to the Project model:
-webhookEndpoints WebhookEndpoint[]
+/// Transaction lifecycle states
+enum TransactionStatus {
+  PENDING    // Transaction created but not yet submitted to network
+  SUBMITTED  // Transaction submitted to Stellar network
+  CONFIRMED  // Transaction confirmed on-chain
+  FAILED     // Transaction failed (rejected, expired, or error)
+}
+
+/// Internal transaction domain model for observability, retries, and analytics
+/// Independent of Stellar network primitives but tracks network references
+model Transaction {
+  id String @id @default(uuid())
+  
+  /// Transaction amount (stored as string for precision)
+  amount String
+  
+  /// Asset information
+  assetType   String  // AssetType enum as string (NATIVE, CREDIT_ALPHANUM4, etc.)
+  assetCode   String? // e.g., "USDC" (null for native XLM)
+  assetIssuer String? // Issuer public key (null for native XLM)
+  
+  /// Wallet references
+  senderWalletId   String
+  senderWallet      Wallet  @relation("SentTransactions", fields: [senderWalletId], references: [id])
+  
+  receiverWalletId  String?
+  receiverWallet    Wallet? @relation("ReceivedTransactions", fields: [receiverWalletId], references: [id])
+  
+  /// Lifecycle state
+  status TransactionStatus @default(PENDING)
+  
+  /// Stellar network references
+  stellarHash   String? @unique // Stellar transaction hash (unique once submitted)
+  stellarLedger Int?    // Ledger sequence number where transaction was included
+  stellarFee    String? // Transaction fee paid (in stroops, stored as string)
+  
+  /// State transition tracking
+  statusChangedAt DateTime @default(now())
+  statusReason   String?   // Optional reason for status change (e.g., error message)
+  
+  /// Submission tracking
+  submittedAt DateTime? // When transaction was submitted to network
+  confirmedAt DateTime? // When transaction was confirmed on-chain
+  failedAt    DateTime? // When transaction failed
+  
+  /// Metadata for future webhooks and analytics
+  metadata Json? // Flexible JSON for additional transaction context
+  
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([senderWalletId, status])
+  @@index([receiverWalletId, status])
+  @@index([status, createdAt])
+  @@index([stellarHash])
+  @@index([stellarLedger])
+  @@index([createdAt])
+}
