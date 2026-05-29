@@ -105,3 +105,15 @@ MIT
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting large changes.
+
+---
+
+## Request Logging Middleware
+
+A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
+
+- Sets an `x-request-id` header (honors incoming `x-request-id` if present).
+- Logs method, URL, client IP and request id when requests start and when they finish.
+- Is robust to stale/invalid request objects and will not crash the application.
+
+The middleware is registered in `src/main.ts` and runs for all incoming requests.
