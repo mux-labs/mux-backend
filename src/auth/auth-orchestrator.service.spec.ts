@@ -96,6 +96,8 @@ describe('AuthOrchestrator', () => {
       expect(result.isNewWallet).toBe(true);
       expect(result.user.id).toBe('user-123');
       expect(result.wallet.id).toBe('wallet-123');
+      expect(result.user.lastLoginAt).toBeInstanceOf(Date);
+      expect(result.wallet.createdAt).toBeInstanceOf(Date);
       expect(idempotentUserService.findOrCreateUser).toHaveBeenCalledWith({
         authId: 'auth-123',
         email: 'test@example.com',
@@ -150,6 +152,8 @@ describe('AuthOrchestrator', () => {
       expect(result.isNewWallet).toBe(false);
       expect(result.user.id).toBe('user-123');
       expect(result.wallet.id).toBe('wallet-123');
+      expect(result.user.lastLoginAt).toBeInstanceOf(Date);
+      expect(result.wallet.createdAt).toBeInstanceOf(Date);
       expect(walletCreationOrchestrator.createWallet).not.toHaveBeenCalled();
     });
 
