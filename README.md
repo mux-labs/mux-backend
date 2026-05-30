@@ -27,6 +27,52 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
+* Health monitoring and liveness checks
+
+---
+
+## API Endpoints
+
+### Health & Monitoring
+
+#### `GET /health`
+
+Liveness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application process is alive and responsive. This is a lightweight check that does NOT verify external dependencies like databases.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ok",
+  "timestamp": "2026-05-30T12:00:00.000Z",
+  "uptime": 3600,
+  "version": "0.0.1"
+}
+```
+
+**Response Fields**:
+| Field | Type | Description |
+|-------|------|-------------|
+| `status` | string | Always "ok" if the process is alive |
+| `timestamp` | string | ISO 8601 timestamp of the health check |
+| `uptime` | number | Application uptime in seconds |
+| `version` | string | Application version (optional) |
+
+**Use Cases**:
+- Kubernetes liveness probes (restart unhealthy pods)
+- Container health checks
+- Load balancer health monitoring
+- Uptime monitoring and alerting
+- Process monitoring
+
+**Difference from /ready**:
+- `/health` - Checks if the process is alive (liveness)
+- `/ready` - Checks if the app can serve traffic (readiness, includes DB check)
+
+**Authentication**: Public endpoint (no API key required)
+
+**Performance**: Responds in <10ms (no external dependencies checked)
 
 ---
 
