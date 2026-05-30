@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import {
   IdempotentUserService,
   FindOrCreateUserRequest,
@@ -16,6 +16,95 @@ export interface AuthenticationRequest {
   displayName?: string;
   authProvider?: string;
   network?: WalletNetwork;
+}
+
+export class AuthPayloadValidator {
+  static validate(payload: any): void {
+    if (!payload) {
+      throw new BadRequestException('Authentication payload is required');
+    }
+
+    if (typeof payload !== 'object') {
+      throw new BadRequestException('Authentication payload must be an object');
+    }
+
+    // Validate authId (required, maps to JWT 'sub' claim)
+    if (!payload.authId || typeof payload.authId !== 'string') {
+      throw new BadRequestException(
+        'Invalid authentication payload: authId is required and must be a string',
+      );
+    }
+
+    if (payload.authId.trim().length === 0) {
+      throw new BadRequestException(
+        'Invalid authentication payload: authId cannot be empty',
+      );
+    }
+
+    // Validate email format if provided
+    if (payload.email !== undefined && payload.email !== null) {
+      if (typeof payload.email !== 'string') {
+        throw new BadRequestException(
+          'Invalid authentication payload: email must be a string',
+        );
+      }
+
+      if (payload.email.trim().length > 0) {
+        if (!this.isValidEmail(payload.email)) {
+          throw new BadRequestException(
+            'Invalid authentication payload: email format is invalid',
+          );
+        }
+      }
+    }
+
+    // Validate displayName if provided
+    if (payload.displayName !== undefined && payload.displayName !== null) {
+      if (typeof payload.displayName !== 'string') {
+        throw new BadRequestException(
+          'Invalid authentication payload: displayName must be a string',
+        );
+      }
+
+      if (payload.displayName.trim().length === 0) {
+        throw new BadRequestException(
+          'Invalid authentication payload: displayName cannot be empty',
+        );
+      }
+    }
+
+    // Validate authProvider if provided
+    if (payload.authProvider !== undefined && payload.authProvider !== null) {
+      if (typeof payload.authProvider !== 'string') {
+        throw new BadRequestException(
+          'Invalid authentication payload: authProvider must be a string',
+        );
+      }
+
+      if (payload.authProvider.trim().length === 0) {
+        throw new BadRequestException(
+          'Invalid authentication payload: authProvider cannot be empty',
+        );
+      }
+    }
+
+    // Validate network if provided
+    if (payload.network !== undefined && payload.network !== null) {
+      if (
+        typeof payload.network !== 'string' ||
+        !Object.values(WalletNetwork).includes(payload.network)
+      ) {
+        throw new BadRequestException(
+          'Invalid authentication payload: network must be a valid WalletNetwork',
+        );
+      }
+    }
+  }
+
+  private static isValidEmail(email: string): boolean {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  }
 }
 
 export interface AuthenticationResult {
@@ -62,6 +151,10 @@ export class AuthOrchestrator {
     request: AuthenticationRequest,
   ): Promise<AuthenticationResult> {
     const startTime = Date.now();
+
+    // Validate auth provider payload shape before processing
+    AuthPayloadValidator.validate(request);
+
     const network = request.network || WalletNetwork.TESTNET;
 
     this.logger.log(
