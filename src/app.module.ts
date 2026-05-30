@@ -19,7 +19,6 @@ import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { WebhookModule } from './webhooks/webhook.module';
 import { TransactionsModule } from './transactions/transactions.module';
 
-
 @Module({
   imports: [
     ConfigModule.forRoot({
