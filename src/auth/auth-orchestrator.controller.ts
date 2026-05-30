@@ -12,6 +12,7 @@ import {
   AuthenticationRequest,
   AuthenticationResult,
 } from './auth-orchestrator.service';
+import { Public } from './public.decorator';
 
 @Controller('auth')
 export class AuthOrchestratorController {
@@ -26,8 +27,12 @@ export class AuthOrchestratorController {
    * 3. Returns existing user + wallet if already exists
    *
    * All operations are idempotent.
+   *
+   * @Public - This endpoint must be public as it's used for initial authentication
+   * before an API key is available.
    */
   @Post('authenticate')
+  @Public()
   @HttpCode(HttpStatus.OK)
   async authenticate(
     @Body() request: AuthenticationRequest,
@@ -40,7 +45,6 @@ export class AuthOrchestratorController {
    */
   @Get('validate/:authId')
   async validateAuthentication(@Param('authId') authId: string) {
-    const isValid = await this.authOrchestrator.validateAuthentication(authId);
     return { valid: isValid };
   }
 }
