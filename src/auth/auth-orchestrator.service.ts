@@ -9,6 +9,7 @@ import {
   CreateWalletOrchestratorRequest,
 } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -134,6 +135,14 @@ export interface AuthenticationResult {
  * 2. Every authenticated user has exactly one wallet per network
  * 3. All operations are idempotent and atomic
  */
+export interface AuthenticationRequestWithIdempotency extends AuthenticationRequest {
+  idempotencyKey?: string;
+}
+
+export interface AuthenticationResultWithMetadata extends AuthenticationResult {
+  _idempotencyReplayed?: boolean;
+}
+
 @Injectable()
 export class AuthOrchestrator {
   private readonly logger = new Logger(AuthOrchestrator.name);
@@ -141,14 +150,16 @@ export class AuthOrchestrator {
   constructor(
     private readonly idempotentUserService: IdempotentUserService,
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Handles first-time or returning user authentication.
    * Creates user and wallet atomically on first authentication.
+   * Supports idempotency via optional Idempotency-Key header.
    */
   async handleAuthentication(
-    request: AuthenticationRequest,
+    request: AuthenticationRequestWithIdempotency,
   ): Promise<AuthenticationResult> {
     const startTime = Date.now();
 
@@ -162,6 +173,22 @@ export class AuthOrchestrator {
     );
 
     try {
+      // Check idempotency cache if key provided
+      if (request.idempotencyKey) {
+        const cachedResponse = await this.idempotencyService.getCachedResponse(
+          request.idempotencyKey,
+        );
+        if (cachedResponse) {
+          this.logger.log(
+            `Returning cached authentication result for idempotency key: ${request.idempotencyKey}`,
+          );
+          return {
+            ...cachedResponse,
+            _idempotencyReplayed: true,
+          };
+        }
+      }
+
       // Step 1: Find or create user (idempotent)
       const userResult = await this.findOrCreateUser(request);
 
@@ -178,7 +205,7 @@ export class AuthOrchestrator {
           `(newUser: ${userResult.isNewUser}, newWallet: ${walletResult.isNewWallet})`,
       );
 
-      return {
+      const result: AuthenticationResultWithMetadata = {
         user: {
           id: userResult.user.id,
           authId: userResult.user.authId,
@@ -195,7 +222,24 @@ export class AuthOrchestrator {
         },
         isNewUser: userResult.isNewUser,
         isNewWallet: walletResult.isNewWallet,
+        _idempotencyReplayed: false,
       };
+
+      // Cache response if idempotency key provided
+      if (request.idempotencyKey) {
+        const cachePayload = { ...result };
+        delete cachePayload._idempotencyReplayed;
+        await this.idempotencyService.cacheResponse(
+          request.idempotencyKey,
+          cachePayload,
+          'POST',
+          '/auth/authenticate',
+          200,
+          { ttlMs: 60000 }, // 60 seconds TTL
+        );
+      }
+
+      return result;
     } catch (error) {
       this.logger.error(
         `Authentication orchestration failed for authId ${request.authId}:`,

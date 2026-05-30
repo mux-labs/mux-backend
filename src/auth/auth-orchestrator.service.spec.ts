@@ -3,6 +3,7 @@ import { BadRequestException } from '@nestjs/common';
 import { AuthOrchestrator, AuthPayloadValidator } from './auth-orchestrator.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 
 describe('AuthPayloadValidator', () => {
@@ -169,6 +170,11 @@ describe('AuthOrchestrator', () => {
     createWallet: jest.fn(),
   };
 
+  const mockIdempotencyService = {
+    getCachedResponse: jest.fn(),
+    cacheResponse: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -180,6 +186,10 @@ describe('AuthOrchestrator', () => {
         {
           provide: WalletCreationOrchestrator,
           useValue: mockWalletCreationOrchestrator,
+        },
+        {
+          provide: IdempotencyService,
+          useValue: mockIdempotencyService,
         },
       ],
     }).compile();
@@ -218,6 +228,156 @@ describe('AuthOrchestrator', () => {
       await expect(service.handleAuthentication(invalidRequest)).rejects.toThrow(
         BadRequestException,
       );
+    });
+
+    it('should return cached response when idempotency key is provided and cache hit occurs', async () => {
+      // Arrange
+      const idempotencyKey = 'idempotent-key-123';
+      const requestWithIdempotency = {
+        ...authRequest,
+        idempotencyKey,
+      };
+
+      const cachedResponse = {
+        user: {
+          id: 'user-123',
+          authId: 'auth-123',
+          email: 'test@example.com',
+          displayName: 'Test User',
+          status: 'ACTIVE',
+          authProvider: 'GOOGLE',
+        },
+        wallet: {
+          id: 'wallet-123',
+          publicKey: 'GABC123',
+          network: WalletNetwork.TESTNET,
+          status: 'ACTIVE',
+        },
+        isNewUser: false,
+        isNewWallet: false,
+      };
+
+      mockIdempotencyService.getCachedResponse.mockResolvedValue(cachedResponse);
+
+      // Act
+      const result = await service.handleAuthentication(requestWithIdempotency);
+
+      // Assert
+      expect(result._idempotencyReplayed).toBe(true);
+      expect(mockIdempotencyService.getCachedResponse).toHaveBeenCalledWith(
+        idempotencyKey,
+      );
+      expect(mockIdempotentUserService.findOrCreateUser).not.toHaveBeenCalled();
+    });
+
+    it('should cache response when idempotency key is provided', async () => {
+      // Arrange
+      const idempotencyKey = 'idempotent-key-123';
+      const requestWithIdempotency = {
+        ...authRequest,
+        idempotencyKey,
+      };
+
+      const mockUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'ACTIVE',
+        authProvider: 'GOOGLE',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const mockWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'encrypted',
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        statusChangedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockIdempotencyService.getCachedResponse.mockResolvedValue(null);
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue({
+        user: mockUser,
+        isNewUser: true,
+      });
+      mockWalletCreationOrchestrator.getWalletByUser.mockResolvedValue(null);
+      mockWalletCreationOrchestrator.createWallet.mockResolvedValue({
+        wallet: mockWallet,
+        privateKey: 'secret',
+        isNewWallet: true,
+      });
+
+      // Act
+      const result = await service.handleAuthentication(requestWithIdempotency);
+
+      // Assert
+      expect(result._idempotencyReplayed).toBe(false);
+      expect(mockIdempotencyService.cacheResponse).toHaveBeenCalledWith(
+        idempotencyKey,
+        expect.objectContaining({
+          isNewUser: true,
+          isNewWallet: true,
+        }),
+        'POST',
+        '/auth/authenticate',
+        200,
+        { ttlMs: 60000 },
+      );
+    });
+
+    it('should process request normally without idempotency key', async () => {
+      // Arrange
+      const mockUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'ACTIVE',
+        authProvider: 'GOOGLE',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const mockWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'encrypted',
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        statusChangedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue({
+        user: mockUser,
+        isNewUser: true,
+      });
+      mockWalletCreationOrchestrator.getWalletByUser.mockResolvedValue(null);
+      mockWalletCreationOrchestrator.createWallet.mockResolvedValue({
+        wallet: mockWallet,
+        privateKey: 'secret',
+        isNewWallet: true,
+      });
+
+      // Act
+      const result = await service.handleAuthentication(authRequest);
+
+      // Assert
+      expect(result._idempotencyReplayed).toBe(false);
+      expect(mockIdempotencyService.getCachedResponse).not.toHaveBeenCalled();
+      expect(mockIdempotencyService.cacheResponse).not.toHaveBeenCalled();
     });
 
     it('should create both user and wallet for first-time authentication', async () => {
