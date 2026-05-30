@@ -11,7 +11,7 @@ import {
 import { TransactionsService } from './transactions.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
-import { ApiKeyGuard } from '../auth/api-key.guard';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
   RateLimitGuard,
   SensitiveEndpoint,
