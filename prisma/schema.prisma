@@ -85,14 +85,18 @@ model User {
   lastLoginAt DateTime?
 
   /// Operational metadata
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
 
   /// Relation to user's wallets
   wallets Wallet[]
 
   @@index([authId])
   @@index([authProvider])
+  @@index([deletedAt])
 }
 
 /// Internal lifecycle states (wallets are not user-facing).
@@ -187,7 +191,11 @@ model RecoveryRequest {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
   @@index([walletId, status])
+  @@index([deletedAt])
 }
 
 /// API Key status lifecycle
@@ -209,14 +217,18 @@ model Developer {
   status      String   @default("ACTIVE")
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
   projects    Project[]
-  
+
   @@index([email])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// Project entity for organizing API keys and usage
@@ -239,16 +251,20 @@ model Project {
   rateLimitRpm Int     @default(60)
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
-  apiKeys         ApiKey[]
-  apiKeyUsage     ApiKeyUsage[]
+  apiKeys          ApiKey[]
+  apiKeyUsage      ApiKeyUsage[]
   webhookEndpoints WebhookEndpoint[]
-  
+
   @@index([developerId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// API Key for developer authentication
@@ -452,14 +468,18 @@ model WebhookEndpoint {
   lastSuccessAt DateTime?
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
   deliveries  WebhookDelivery[]
-  
+
   @@index([projectId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// Webhook delivery attempt tracking
