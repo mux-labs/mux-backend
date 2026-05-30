@@ -8,6 +8,7 @@ import {
   Param,
   Headers,
   Res,
+  UseGuards,
 } from '@nestjs/common';
 import { Response } from 'express';
 import {
@@ -16,6 +17,7 @@ import {
   AuthenticationResult,
   AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 
 @Controller('auth')
 export class AuthOrchestratorController {
@@ -31,8 +33,10 @@ export class AuthOrchestratorController {
    *
    * All operations are idempotent.
    * Supports optional Idempotency-Key header for request deduplication.
+   * Protected by per-IP rate limiting to prevent brute force attacks.
    */
   @Post('authenticate')
+  @UseGuards(AuthRateLimitGuard)
   @HttpCode(HttpStatus.OK)
   async authenticate(
     @Body() request: AuthenticationRequest,
