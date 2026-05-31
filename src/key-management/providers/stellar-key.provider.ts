@@ -7,12 +7,13 @@ import {
 } from '../domain/key-types';
 import { EncryptionService } from '../../encryption/encryption.service';
 import * as crypto from 'crypto';
+import { Keypair } from 'stellar-sdk';
+
 
 /**
  * Stellar Ed25519 key provider implementation
  *
- * In production, replace with stellar-sdk:
- * import { Keypair } from 'stellar-sdk';
+ * In production, using stellar-sdk:
  */
 @Injectable()
 export class StellarKeyProvider implements IKeyProvider {
@@ -26,16 +27,13 @@ export class StellarKeyProvider implements IKeyProvider {
     }
 
     try {
-      // In production, use: const keypair = Keypair.random();
-      const keyPair = crypto.generateKeyPairSync('ed25519', {
-        publicKeyEncoding: { type: 'spki', format: 'der' },
-        privateKeyEncoding: { type: 'pkcs8', format: 'der' },
-      });
+      // In production, use stellar-sdk to generate a random Ed25519 keypair
+      const keypair = Keypair.random();
 
-      const publicKey = this.formatStellarPublicKey(keyPair.publicKey);
-      const privateKey = this.formatStellarPrivateKey(keyPair.privateKey);
+      const publicKey = keypair.publicKey();
+      const privateKey = keypair.secret();
 
-      this.logger.log('Generated new Stellar Ed25519 keypair');
+      this.logger.log('Generated new Stellar Ed25519 keypair using stellar-sdk');
 
       return {
         publicKey,
@@ -65,26 +63,10 @@ export class StellarKeyProvider implements IKeyProvider {
       const privateKey = this.parseStellarPrivateKey(privateKeyMaterial);
 
       // Sign the data
-      // In production, use: const signature = keypair.sign(dataToSign);
-      const signature = crypto.sign(null, dataToSign, {
-        key: privateKey,
-        format: 'der',
-        type: 'pkcs8',
-      });
+      const keypair = Keypair.fromSecret(this.parseStellarPrivateKey(privateKeyMaterial));
+      const signature = keypair.sign(dataToSign);
 
-      // Derive public key from private key for verification
-      const keyObject = crypto.createPrivateKey({
-        key: privateKey,
-        format: 'der',
-        type: 'pkcs8',
-      });
-
-      const publicKeyDer = crypto.createPublicKey(keyObject).export({
-        type: 'spki',
-        format: 'der',
-      });
-
-      const publicKey = this.formatStellarPublicKey(publicKeyDer);
+      const publicKey = keypair.publicKey();
 
       this.logger.log('Successfully signed data with Stellar key');
 
@@ -145,7 +127,7 @@ export class StellarKeyProvider implements IKeyProvider {
   /**
    * Parses Stellar private key back to usable format
    */
-  private parseStellarPrivateKey(privateKeyMaterial: string): Buffer {
-    return Buffer.from(privateKeyMaterial, 'hex');
+  private parseStellarPrivateKey(privateKeyMaterial: string): string {
+    return privateKeyMaterial;
   }
 }
