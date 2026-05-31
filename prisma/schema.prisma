@@ -254,43 +254,46 @@ model Project {
 /// API Key for developer authentication
 model ApiKey {
   id              String       @id @default(uuid())
-  
+
   /// Human-readable key name/description
   name            String
-  
+
   /// Hashed API key (never store plaintext)
   keyHash         String       @unique
-  
+
   /// Key prefix for identification (e.g., "mux_live_" or "mux_test_")
   keyPrefix       String
-  
+
   /// Last 4 characters of the key for identification
   lastFour        String
-  
+
   /// Project reference
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  
+
   /// Key status
   status          ApiKeyStatus @default(ACTIVE)
-  
+
   /// Key expiration (optional)
   expiresAt       DateTime?
-  
+
   /// Last used timestamp
   lastUsedAt      DateTime?
-  
+
   /// Revocation info
   revokedAt       DateTime?
   revokedReason   String?
-  
+
+  /// Grace period end time for rotated keys (allows old key to work during rotation)
+  gracePeriodEndsAt DateTime?
+
   /// Metadata
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
-  
+
   /// Relations
   usageRecords    ApiKeyUsage[]
-  
+
   @@index([keyHash])
   @@index([projectId])
   @@index([status])
