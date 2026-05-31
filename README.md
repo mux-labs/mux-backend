@@ -65,121 +65,6 @@ Readiness probe endpoint for Kubernetes and container orchestration platforms.
 
 ---
 
-## Error Handling
-
-All API endpoints return structured error responses in a consistent format for better client-side error handling and debugging.
-
-### Error Response Format
-
-```json
-{
-  "statusCode": 404,
-  "timestamp": "2026-05-30T12:00:00.000Z",
-  "path": "/api/wallets/invalid-id",
-  "method": "GET",
-  "message": "Wallet not found",
-  "error": "Not Found",
-  "requestId": "req-123-456"
-}
-```
-
-### Error Response Fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `statusCode` | number | HTTP status code (400, 404, 500, etc.) |
-| `timestamp` | string | ISO 8601 timestamp when the error occurred |
-| `path` | string | Request path that caused the error |
-| `method` | string | HTTP method (GET, POST, PUT, DELETE, etc.) |
-| `message` | string \| string[] | Human-readable error message(s) |
-| `error` | string | Error type/name (e.g., "Not Found", "Bad Request") |
-| `details` | object | Optional additional error details (validation errors, etc.) |
-| `requestId` | string | Optional request ID for tracing (from `x-request-id` header) |
-
-### Common HTTP Status Codes
-
-| Status Code | Error Type | Description |
-|-------------|------------|-------------|
-| 400 | Bad Request | Invalid request parameters or body |
-| 401 | Unauthorized | Missing or invalid authentication |
-| 403 | Forbidden | Insufficient permissions |
-| 404 | Not Found | Resource does not exist |
-| 409 | Conflict | Resource conflict (e.g., duplicate entry) |
-| 422 | Unprocessable Entity | Validation errors |
-| 429 | Too Many Requests | Rate limit exceeded |
-| 500 | Internal Server Error | Unexpected server error |
-| 503 | Service Unavailable | Service temporarily unavailable |
-
-### Validation Errors
-
-Validation errors return a 400 or 422 status with an array of error messages:
-
-```json
-{
-  "statusCode": 400,
-  "timestamp": "2026-05-30T12:00:00.000Z",
-  "path": "/api/wallets",
-  "method": "POST",
-  "message": [
-    "network must be either MAINNET or TESTNET",
-    "userId must be a valid UUID"
-  ],
-  "error": "Bad Request"
-}
-```
-
-### Error Details
-
-Some errors include additional context in the `details` field:
-
-```json
-{
-  "statusCode": 422,
-  "timestamp": "2026-05-30T12:00:00.000Z",
-  "path": "/api/users",
-  "method": "POST",
-  "message": "Validation failed",
-  "error": "Unprocessable Entity",
-  "details": {
-    "field": "email",
-    "constraint": "isEmail",
-    "value": "invalid-email"
-  }
-}
-```
-
-### Security Considerations
-
-- **No stack traces**: Stack traces are never exposed in production
-- **Sanitized messages**: Sensitive data (passwords, API keys, database URLs) are automatically sanitized
-- **No internal paths**: File paths and internal implementation details are hidden
-- **Request tracing**: Use the `x-request-id` header for distributed tracing
-
-### Client Integration
-
-When integrating with the API, always check the `statusCode` field and handle errors appropriately:
-
-```typescript
-try {
-  const response = await fetch('/api/wallets/123');
-  const data = await response.json();
-  
-  if (!response.ok) {
-    // Handle structured error
-    console.error(`Error ${data.statusCode}: ${data.message}`);
-    console.error(`Path: ${data.path}, Method: ${data.method}`);
-    
-    if (data.details) {
-      console.error('Details:', data.details);
-    }
-  }
-} catch (error) {
-  console.error('Network error:', error);
-}
-```
-
----
-
 ## Key Features
 
 ### 🔐 Invisible Wallets
@@ -211,6 +96,44 @@ try {
 * Track balances and transactions
 * Human-readable transaction history
 * Cached reads for fast UX
+
+---
+
+## Database Setup
+
+This project uses **PostgreSQL** via **Prisma ORM**. You must set the `DATABASE_URL` environment variable before running migrations or starting the server.
+
+### Environment Variables
+
+Copy `.env.example` to `.env` (or create `.env`) and set:
+
+```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
+```
+
+**Examples:**
+
+| Environment | Connection string |
+|---|---|
+| Local dev | `postgresql://postgres:postgres@localhost:5432/mux_dev` |
+| Docker Compose | `postgresql://postgres:postgres@db:5432/mux_dev` |
+| Supabase | `postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres` |
+| Railway / Render | Use the connection string provided by the platform |
+
+### Running Migrations
+
+```bash
+# Apply all pending migrations (development)
+pnpm prisma:migrate
+
+# Apply migrations in production / CI (non-interactive)
+pnpm prisma:migrate:prod
+
+# Seed the database with demo users and wallets (dev only)
+pnpm prisma:seed
+```
+
+> The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
 
 ---
 
@@ -255,3 +178,15 @@ MIT
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting large changes.
+
+---
+
+## Request Logging Middleware
+
+A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
+
+- Sets an `x-request-id` header (honors incoming `x-request-id` if present).
+- Logs method, URL, client IP and request id when requests start and when they finish.
+- Is robust to stale/invalid request objects and will not crash the application.
+
+The middleware is registered in `src/main.ts` and runs for all incoming requests.
