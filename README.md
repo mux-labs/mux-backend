@@ -27,7 +27,7 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
-* Health monitoring and liveness checks
+* Health monitoring and readiness checks
 
 ---
 
@@ -40,39 +40,33 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 Liveness probe endpoint for Kubernetes and container orchestration platforms.
 
 **Purpose**: Indicates whether the application process is alive and responsive. This is a lightweight check that does NOT verify external dependencies like databases.
+#### `GET /ready`
+
+Readiness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application is ready to serve traffic by verifying database connectivity.
 
 **Response (200 OK)**:
 ```json
 {
-  "status": "ok",
+  "status": "ready",
   "timestamp": "2026-05-30T12:00:00.000Z",
-  "uptime": 3600,
-  "version": "0.0.1"
+  "database": {
+    "connected": true,
+    "responseTime": 15
+  }
 }
 ```
 
-**Response Fields**:
-| Field | Type | Description |
-|-------|------|-------------|
-| `status` | string | Always "ok" if the process is alive |
-| `timestamp` | string | ISO 8601 timestamp of the health check |
-| `uptime` | number | Application uptime in seconds |
-| `version` | string | Application version (optional) |
+**Response (503 Service Unavailable)**: Returned when the database is not accessible.
 
 **Use Cases**:
-- Kubernetes liveness probes (restart unhealthy pods)
-- Container health checks
-- Load balancer health monitoring
-- Uptime monitoring and alerting
-- Process monitoring
-
-**Difference from /ready**:
-- `/health` - Checks if the process is alive (liveness)
-- `/ready` - Checks if the app can serve traffic (readiness, includes DB check)
+- Kubernetes readiness probes
+- Load balancer health checks
+- Container orchestration platforms
+- CI/CD deployment verification
 
 **Authentication**: Public endpoint (no API key required)
-
-**Performance**: Responds in <10ms (no external dependencies checked)
 
 ---
 
@@ -107,6 +101,44 @@ Liveness probe endpoint for Kubernetes and container orchestration platforms.
 * Track balances and transactions
 * Human-readable transaction history
 * Cached reads for fast UX
+
+---
+
+## Database Setup
+
+This project uses **PostgreSQL** via **Prisma ORM**. You must set the `DATABASE_URL` environment variable before running migrations or starting the server.
+
+### Environment Variables
+
+Copy `.env.example` to `.env` (or create `.env`) and set:
+
+```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
+```
+
+**Examples:**
+
+| Environment | Connection string |
+|---|---|
+| Local dev | `postgresql://postgres:postgres@localhost:5432/mux_dev` |
+| Docker Compose | `postgresql://postgres:postgres@db:5432/mux_dev` |
+| Supabase | `postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres` |
+| Railway / Render | Use the connection string provided by the platform |
+
+### Running Migrations
+
+```bash
+# Apply all pending migrations (development)
+pnpm prisma:migrate
+
+# Apply migrations in production / CI (non-interactive)
+pnpm prisma:migrate:prod
+
+# Seed the database with demo users and wallets (dev only)
+pnpm prisma:seed
+```
+
+> The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
 
 ---
 
@@ -151,3 +183,15 @@ MIT
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting large changes.
+
+---
+
+## Request Logging Middleware
+
+A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
+
+- Sets an `x-request-id` header (honors incoming `x-request-id` if present).
+- Logs method, URL, client IP and request id when requests start and when they finish.
+- Is robust to stale/invalid request objects and will not crash the application.
+
+The middleware is registered in `src/main.ts` and runs for all incoming requests.

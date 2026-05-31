@@ -1,41 +1,66 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { PrismaService } from './prisma/prisma.service';
 
 @Injectable()
 export class AppService {
   private readonly logger = new Logger(AppService.name);
-  private readonly startTime: Date;
 
-  constructor() {
-    this.startTime = new Date();
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   getHello(): string {
     return 'Hello World!';
   }
 
   /**
-   * Check application liveness (process is alive and responsive)
-   * This is a lightweight check that doesn't verify external dependencies
-   * @returns Object with status and uptime information
+   * Check application readiness by pinging the database
+   * @returns Object with status and database connectivity information
    */
-  checkHealth(): {
+  async checkReadiness(): Promise<{
     status: string;
     timestamp: string;
-    uptime: number;
-    version?: string;
-  } {
-    const timestamp = new Date().toISOString();
-    const uptime = Math.floor((Date.now() - this.startTime.getTime()) / 1000);
-
-    this.logger.debug(`Health check: OK (uptime: ${uptime}s)`);
-
-    return {
-      status: 'ok',
-      timestamp,
-      uptime,
-      ...(process.env.npm_package_version && {
-        version: process.env.npm_package_version,
-      }),
+    database: {
+      connected: boolean;
+      responseTime?: number;
+      error?: string;
     };
+  }> {
+    const timestamp = new Date().toISOString();
+    const startTime = Date.now();
+
+    try {
+      // Perform a simple database query to verify connectivity
+      // Using $queryRaw with a simple SELECT 1 query
+      await this.prisma.$queryRaw`SELECT 1`;
+      const responseTime = Date.now() - startTime;
+
+      this.logger.log(`Database ping successful (${responseTime}ms)`);
+
+      return {
+        status: 'ready',
+        timestamp,
+        database: {
+          connected: true,
+          responseTime,
+        },
+      };
+    } catch (error) {
+      const responseTime = Date.now() - startTime;
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+
+      this.logger.error(
+        `Database ping failed (${responseTime}ms): ${errorMessage}`,
+      );
+
+      return {
+        status: 'not_ready',
+        timestamp,
+        database: {
+          connected: false,
+          responseTime,
+          error: errorMessage,
+        },
+      };
+    }
   }
 }

@@ -1,15 +1,26 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { AppService } from './app.service';
+import { PrismaService } from './prisma/prisma.service';
 
 describe('AppService', () => {
   let service: AppService;
+  let prismaService: PrismaService;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
-      providers: [AppService],
+      providers: [
+        AppService,
+        {
+          provide: PrismaService,
+          useValue: {
+            $queryRaw: jest.fn(),
+          },
+        },
+      ],
     }).compile();
 
     service = module.get<AppService>(AppService);
+    prismaService = module.get<PrismaService>(PrismaService);
   });
 
   it('should be defined', () => {
@@ -22,103 +33,59 @@ describe('AppService', () => {
     });
   });
 
-  describe('checkHealth', () => {
-    it('should return health status with ok status', () => {
-      const result = service.checkHealth();
+  describe('checkReadiness', () => {
+    it('should return ready status when database is connected', async () => {
+      // Mock successful database query
+      jest.spyOn(prismaService, '$queryRaw').mockResolvedValue([{ '?column?': 1 }]);
 
-      expect(result.status).toBe('ok');
+      const result = await service.checkReadiness();
+
+      expect(result.status).toBe('ready');
+      expect(result.database.connected).toBe(true);
+      expect(result.database.responseTime).toBeGreaterThanOrEqual(0);
       expect(result.timestamp).toBeDefined();
-      expect(result.uptime).toBeDefined();
+      expect(prismaService.$queryRaw).toHaveBeenCalledTimes(1);
     });
 
-    it('should return valid ISO timestamp', () => {
-      const result = service.checkHealth();
+    it('should return not_ready status when database connection fails', async () => {
+      // Mock database connection failure
+      const dbError = new Error('Connection refused');
+      jest.spyOn(prismaService, '$queryRaw').mockRejectedValue(dbError);
 
+      const result = await service.checkReadiness();
+
+      expect(result.status).toBe('not_ready');
+      expect(result.database.connected).toBe(false);
+      expect(result.database.responseTime).toBeGreaterThanOrEqual(0);
+      expect(result.database.error).toBe('Connection refused');
       expect(result.timestamp).toBeDefined();
-      expect(new Date(result.timestamp).toString()).not.toBe('Invalid Date');
-      
-      // Verify it's a recent timestamp (within last second)
-      const timestamp = new Date(result.timestamp);
-      const now = new Date();
-      const diff = now.getTime() - timestamp.getTime();
-      expect(diff).toBeLessThan(1000);
+      expect(prismaService.$queryRaw).toHaveBeenCalledTimes(1);
     });
 
-    it('should return uptime as a number', () => {
-      const result = service.checkHealth();
+    it('should handle unknown errors gracefully', async () => {
+      // Mock unknown error type
+      jest.spyOn(prismaService, '$queryRaw').mockRejectedValue('Unknown error');
 
-      expect(typeof result.uptime).toBe('number');
-      expect(result.uptime).toBeGreaterThanOrEqual(0);
+      const result = await service.checkReadiness();
+
+      expect(result.status).toBe('not_ready');
+      expect(result.database.connected).toBe(false);
+      expect(result.database.error).toBe('Unknown error');
     });
 
-    it('should return increasing uptime on subsequent calls', async () => {
-      const result1 = service.checkHealth();
-      
-      // Wait a bit
-      await new Promise(resolve => setTimeout(resolve, 100));
-      
-      const result2 = service.checkHealth();
+    it('should measure response time accurately', async () => {
+      // Mock delayed database response
+      jest.spyOn(prismaService, '$queryRaw').mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            setTimeout(() => resolve([{ '?column?': 1 }]), 50);
+          }),
+      );
 
-      expect(result2.uptime).toBeGreaterThanOrEqual(result1.uptime);
-    });
+      const result = await service.checkReadiness();
 
-    it('should include version if npm_package_version is set', () => {
-      const originalVersion = process.env.npm_package_version;
-      process.env.npm_package_version = '1.0.0';
-
-      const result = service.checkHealth();
-
-      expect(result.version).toBe('1.0.0');
-
-      // Restore original value
-      if (originalVersion) {
-        process.env.npm_package_version = originalVersion;
-      } else {
-        delete process.env.npm_package_version;
-      }
-    });
-
-    it('should not include version if npm_package_version is not set', () => {
-      const originalVersion = process.env.npm_package_version;
-      delete process.env.npm_package_version;
-
-      const result = service.checkHealth();
-
-      expect(result.version).toBeUndefined();
-
-      // Restore original value
-      if (originalVersion) {
-        process.env.npm_package_version = originalVersion;
-      }
-    });
-
-    it('should return consistent structure on multiple calls', () => {
-      const result1 = service.checkHealth();
-      const result2 = service.checkHealth();
-
-      expect(result1).toHaveProperty('status');
-      expect(result1).toHaveProperty('timestamp');
-      expect(result1).toHaveProperty('uptime');
-
-      expect(result2).toHaveProperty('status');
-      expect(result2).toHaveProperty('timestamp');
-      expect(result2).toHaveProperty('uptime');
-    });
-
-    it('should always return ok status', () => {
-      // Call multiple times
-      for (let i = 0; i < 5; i++) {
-        const result = service.checkHealth();
-        expect(result.status).toBe('ok');
-      }
-    });
-
-    it('should calculate uptime from service start time', () => {
-      const result = service.checkHealth();
-
-      // Uptime should be a small number since service was just created
-      expect(result.uptime).toBeGreaterThanOrEqual(0);
-      expect(result.uptime).toBeLessThan(10); // Less than 10 seconds
+      expect(result.database.connected).toBe(true);
+      expect(result.database.responseTime).toBeGreaterThanOrEqual(50);
     });
   });
 });

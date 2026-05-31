@@ -9,7 +9,15 @@ describe('AppController', () => {
   beforeEach(async () => {
     const app: TestingModule = await Test.createTestingModule({
       controllers: [AppController],
-      providers: [AppService],
+      providers: [
+        {
+          provide: AppService,
+          useValue: {
+            getHello: jest.fn().mockReturnValue('Hello World!'),
+            checkReadiness: jest.fn(),
+          },
+        },
+      ],
     }).compile();
 
     appController = app.get<AppController>(AppController);
@@ -22,37 +30,44 @@ describe('AppController', () => {
     });
   });
 
-  describe('checkHealth', () => {
-    it('should return health status from service', () => {
-      const result = appController.checkHealth();
+  describe('checkReadiness', () => {
+    it('should return ready status when database is connected', async () => {
+      const mockReadyResponse = {
+        status: 'ready',
+        timestamp: new Date().toISOString(),
+        database: {
+          connected: true,
+          responseTime: 10,
+        },
+      };
 
-      expect(result).toHaveProperty('status', 'ok');
-      expect(result).toHaveProperty('timestamp');
-      expect(result).toHaveProperty('uptime');
+      jest.spyOn(appService, 'checkReadiness').mockResolvedValue(mockReadyResponse);
+
+      const result = await appController.checkReadiness();
+
+      expect(result).toEqual(mockReadyResponse);
+      expect(result.status).toBe('ready');
+      expect(result.database.connected).toBe(true);
+      expect(appService.checkReadiness).toHaveBeenCalledTimes(1);
     });
 
-    it('should return valid health response structure', () => {
-      const result = appController.checkHealth();
+    it('should throw error when database is not connected', async () => {
+      const mockNotReadyResponse = {
+        status: 'not_ready',
+        timestamp: new Date().toISOString(),
+        database: {
+          connected: false,
+          responseTime: 5,
+          error: 'Connection refused',
+        },
+      };
 
-      expect(typeof result.status).toBe('string');
-      expect(typeof result.timestamp).toBe('string');
-      expect(typeof result.uptime).toBe('number');
-    });
+      jest.spyOn(appService, 'checkReadiness').mockResolvedValue(mockNotReadyResponse);
 
-    it('should call appService.checkHealth', () => {
-      const spy = jest.spyOn(appService, 'checkHealth');
-
-      appController.checkHealth();
-
-      expect(spy).toHaveBeenCalledTimes(1);
-    });
-
-    it('should return the same result as appService.checkHealth', () => {
-      const serviceResult = appService.checkHealth();
-      const controllerResult = appController.checkHealth();
-
-      expect(controllerResult.status).toBe(serviceResult.status);
-      expect(controllerResult.uptime).toBeGreaterThanOrEqual(0);
+      await expect(appController.checkReadiness()).rejects.toThrow(
+        'Service not ready: Database connection failed',
+      );
+      expect(appService.checkReadiness).toHaveBeenCalledTimes(1);
     });
   });
 });
