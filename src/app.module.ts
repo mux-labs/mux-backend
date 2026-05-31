@@ -41,8 +41,7 @@ import { ProjectsModule } from './projects/projects.module';
     BalanceIndexerModule,
     WebhookModule,
     TransactionsModule,
-    DevelopersModule,
-    ProjectsModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [
