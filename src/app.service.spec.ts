@@ -36,7 +36,9 @@ describe('AppService', () => {
   describe('checkReadiness', () => {
     it('should return ready status when database is connected', async () => {
       // Mock successful database query
-      jest.spyOn(prismaService, '$queryRaw').mockResolvedValue([{ '?column?': 1 }]);
+      jest
+        .spyOn(prismaService, '$queryRaw')
+        .mockResolvedValue([{ '?column?': 1 }]);
 
       const result = await service.checkReadiness();
 

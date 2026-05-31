@@ -40,7 +40,10 @@ export class IdempotencyService {
       this.logger.log(`Idempotency cache hit for key: ${key}`);
       return record.response;
     } catch (error) {
-      this.logger.error(`Error retrieving idempotency record for key ${key}:`, error);
+      this.logger.error(
+        `Error retrieving idempotency record for key ${key}:`,
+        error,
+      );
       return null;
     }
   }
@@ -82,7 +85,10 @@ export class IdempotencyService {
         `Idempotency record cached for key: ${key} with TTL ${ttlMs}ms`,
       );
     } catch (error) {
-      this.logger.error(`Error caching idempotency record for key ${key}:`, error);
+      this.logger.error(
+        `Error caching idempotency record for key ${key}:`,
+        error,
+      );
       // Don't throw - idempotency is a best-effort optimization
     }
   }
@@ -101,7 +107,10 @@ export class IdempotencyService {
       this.logger.log(`Cleaned up ${result.count} expired idempotency records`);
       return result.count;
     } catch (error) {
-      this.logger.error('Error cleaning up expired idempotency records:', error);
+      this.logger.error(
+        'Error cleaning up expired idempotency records:',
+        error,
+      );
       return 0;
     }
   }

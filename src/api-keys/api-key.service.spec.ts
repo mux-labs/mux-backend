@@ -223,9 +223,9 @@ describe('ApiKeyService', () => {
         expiresAt: new Date(Date.now() - 1000),
       });
 
-      await expect(
-        service.validateApiKey(result.plainTextKey),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.validateApiKey(result.plainTextKey)).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('should validate active API key successfully', async () => {
@@ -255,9 +255,7 @@ describe('ApiKeyService', () => {
       });
 
       expect(rotateResult.plainTextKey).toBeDefined();
-      expect(rotateResult.plainTextKey).not.toEqual(
-        createResult.plainTextKey,
-      );
+      expect(rotateResult.plainTextKey).not.toEqual(createResult.plainTextKey);
     });
 
     it('should keep old key valid during grace period after rotation', async () => {

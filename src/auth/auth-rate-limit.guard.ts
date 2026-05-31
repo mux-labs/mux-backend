@@ -18,9 +18,7 @@ export class AuthRateLimitGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const ipAddress = this.extractIpAddress(request);
 
-    this.logger.debug(
-      `Checking auth rate limit for IP: ${ipAddress}`,
-    );
+    this.logger.debug(`Checking auth rate limit for IP: ${ipAddress}`);
 
     // Check rate limit
     const result = await this.authRateLimitService.checkRateLimit(ipAddress);

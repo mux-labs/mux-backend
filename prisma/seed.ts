@@ -1,5 +1,8 @@
 import { PrismaClient, WalletNetwork, WalletStatus } from '../src/generated/prisma';
 
+// import { PrismaClient } from '@prisma/client';
+// import { WalletNetwork, WalletStatus } from '../src/generated/prisma';
+
 const prisma = new PrismaClient();
 
 async function main() {

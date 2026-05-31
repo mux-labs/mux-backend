@@ -32,14 +32,14 @@ describe('Auth Public Endpoint (e2e)', () => {
     it('should be accessible without API key (public endpoint)', async () => {
       // This test verifies the endpoint doesn't require authentication
       // We expect it to process the request, not return 401 Unauthorized
-      
+
       const response = await request(app.getHttpServer())
         .post('/auth/authenticate')
         .send(validAuthRequest);
 
       // Should NOT return 401 Unauthorized
       expect(response.status).not.toBe(HttpStatus.UNAUTHORIZED);
-      
+
       // Should return either 200 (success) or 400/422 (validation error)
       // but NOT 401 (authentication required)
       expect([
@@ -55,22 +55,28 @@ describe('Auth Public Endpoint (e2e)', () => {
       const response = await request(app.getHttpServer())
         .post('/auth/authenticate')
         .send(validAuthRequest);
-        // Deliberately NOT setting x-api-key header
+      // Deliberately NOT setting x-api-key header
 
       // Should NOT return 401 for missing API key
       expect(response.status).not.toBe(HttpStatus.UNAUTHORIZED);
-      expect(response.body).not.toHaveProperty('message', 'API key is required');
+      expect(response.body).not.toHaveProperty(
+        'message',
+        'API key is required',
+      );
     });
 
     it('should not require Authorization header', async () => {
       const response = await request(app.getHttpServer())
         .post('/auth/authenticate')
         .send(validAuthRequest);
-        // Deliberately NOT setting Authorization header
+      // Deliberately NOT setting Authorization header
 
       // Should NOT return 401 for missing authorization
       expect(response.status).not.toBe(HttpStatus.UNAUTHORIZED);
-      expect(response.body).not.toHaveProperty('message', 'Invalid or inactive API key');
+      expect(response.body).not.toHaveProperty(
+        'message',
+        'Invalid or inactive API key',
+      );
     });
 
     it('should accept request with minimal required fields', async () => {
@@ -145,8 +151,9 @@ describe('Auth Public Endpoint (e2e)', () => {
       ];
 
       for (const endpoint of protectedEndpoints) {
-        const response = await (request(app.getHttpServer()) as any)
-          [endpoint.method](endpoint.path);
+        const response = await (request(app.getHttpServer()) as any)[
+          endpoint.method
+        ](endpoint.path);
 
         // These should still require authentication
         // They might return 404 if routes don't exist, but should not process without auth

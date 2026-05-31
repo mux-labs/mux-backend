@@ -41,7 +41,6 @@ export class StellarHorizonService {
    */
   async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
     try {
-
       // Simplified mock implementation
       const response = await this.mockHorizonRequest(publicKey);
 

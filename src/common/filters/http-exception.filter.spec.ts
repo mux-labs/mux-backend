@@ -80,9 +80,7 @@ describe('HttpExceptionFilter', () => {
 
       filter.catch(exception, mockArgumentsHost);
 
-      expect(mockResponse.status).toHaveBeenCalledWith(
-        HttpStatus.BAD_REQUEST,
-      );
+      expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
       expect(mockResponse.json).toHaveBeenCalledWith(
         expect.objectContaining({
           statusCode: HttpStatus.BAD_REQUEST,
@@ -97,9 +95,7 @@ describe('HttpExceptionFilter', () => {
 
       filter.catch(exception, mockArgumentsHost);
 
-      expect(mockResponse.status).toHaveBeenCalledWith(
-        HttpStatus.UNAUTHORIZED,
-      );
+      expect(mockResponse.status).toHaveBeenCalledWith(HttpStatus.UNAUTHORIZED);
       expect(mockResponse.json).toHaveBeenCalledWith(
         expect.objectContaining({
           statusCode: HttpStatus.UNAUTHORIZED,

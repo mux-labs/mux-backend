@@ -110,10 +110,7 @@ describe('AuthRateLimitGuard', () => {
         HttpException,
       );
 
-      expect(mockResponse.setHeader).toHaveBeenCalledWith(
-        'Retry-After',
-        '30',
-      );
+      expect(mockResponse.setHeader).toHaveBeenCalledWith('Retry-After', '30');
     });
 
     it('should extract IP from X-Forwarded-For header', async () => {

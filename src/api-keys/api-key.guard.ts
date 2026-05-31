@@ -3,6 +3,7 @@ import {
   CanActivate,
   ExecutionContext,
   UnauthorizedException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
@@ -92,8 +93,15 @@ export class ApiKeyGuard implements CanActivate {
 
       return true;
     } catch (error) {
-      this.logger.warn(`API key validation failed: ${error.message}`);
-      throw new UnauthorizedException(error.message || 'Invalid API key');
+      this.logger.warn(`API key validation failed: ${error?.message}`);
+      // If the service threw an UnauthorizedException, preserve it (invalid key)
+      if (error instanceof UnauthorizedException) {
+        throw error;
+      }
+      // Treat other errors as upstream/service issues (map to 503)
+      throw new ServiceUnavailableException(
+        'API key validation service unavailable',
+      );
     }
   }
 

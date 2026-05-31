@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { REQUIRE_API_KEY } from '../api-keys/api-key.guard';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
@@ -11,6 +12,23 @@ const mockWalletsService = {
 
 describe('WalletsController', () => {
   let controller: WalletsController;
+  let walletsService: WalletsService;
+
+  const mockWalletsService = {
+    create: jest.fn(),
+    findAll: jest.fn(),
+    findOne: jest.fn(),
+    update: jest.fn(),
+    remove: jest.fn(),
+  };
+
+  const mockApiKeyGuard = {
+    canActivate: jest.fn(() => true),
+  };
+
+  const mockRateLimitGuard = {
+    canActivate: jest.fn(() => true),
+  };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -24,6 +42,11 @@ describe('WalletsController', () => {
     }).compile();
 
     controller = module.get<WalletsController>(WalletsController);
+    walletsService = module.get<WalletsService>(WalletsService);
+  });
+
+  afterEach(() => {
+    jest.clearAllMocks();
   });
 
   afterEach(() => {

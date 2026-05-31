@@ -41,7 +41,9 @@ describe('AppController', () => {
         },
       };
 
-      jest.spyOn(appService, 'checkReadiness').mockResolvedValue(mockReadyResponse);
+      jest
+        .spyOn(appService, 'checkReadiness')
+        .mockResolvedValue(mockReadyResponse);
 
       const result = await appController.checkReadiness();
 
@@ -62,7 +64,9 @@ describe('AppController', () => {
         },
       };
 
-      jest.spyOn(appService, 'checkReadiness').mockResolvedValue(mockNotReadyResponse);
+      jest
+        .spyOn(appService, 'checkReadiness')
+        .mockResolvedValue(mockNotReadyResponse);
 
       await expect(appController.checkReadiness()).rejects.toThrow(
         'Service not ready: Database connection failed',

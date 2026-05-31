@@ -6,10 +6,10 @@
  */
 
 export enum TransactionStatus {
-  PENDING = 'PENDING',    // Transaction created but not yet submitted to network
+  PENDING = 'PENDING', // Transaction created but not yet submitted to network
   SUBMITTED = 'SUBMITTED', // Transaction submitted to Stellar network
   CONFIRMED = 'CONFIRMED', // Transaction confirmed on-chain
-  FAILED = 'FAILED',      // Transaction failed (rejected, expired, or error)
+  FAILED = 'FAILED', // Transaction failed (rejected, expired, or error)
 }
 
 export type TransactionId = string;
@@ -19,8 +19,8 @@ export type WalletId = string;
  * Asset information for a transaction
  */
 export interface TransactionAsset {
-  type: string;    // AssetType enum as string (NATIVE, CREDIT_ALPHANUM4, etc.)
-  code?: string | null;   // e.g., "USDC" (null for native XLM)
+  type: string; // AssetType enum as string (NATIVE, CREDIT_ALPHANUM4, etc.)
+  code?: string | null; // e.g., "USDC" (null for native XLM)
   issuer?: string | null; // Issuer public key (null for native XLM)
 }
 
@@ -28,9 +28,9 @@ export interface TransactionAsset {
  * Stellar network references
  */
 export interface StellarNetworkReferences {
-  hash?: string | null;   // Stellar transaction hash
+  hash?: string | null; // Stellar transaction hash
   ledger?: number | null; // Ledger sequence number
-  fee?: string | null;    // Transaction fee paid (in stroops)
+  fee?: string | null; // Transaction fee paid (in stroops)
 }
 
 /**
@@ -38,35 +38,35 @@ export interface StellarNetworkReferences {
  */
 export interface Transaction {
   id: TransactionId;
-  
+
   /** Transaction amount (stored as string for precision) */
   amount: string;
-  
+
   /** Asset information */
   asset: TransactionAsset;
-  
+
   /** Wallet references */
   senderWalletId: WalletId;
   receiverWalletId?: WalletId | null;
-  
+
   /** Lifecycle state */
   status: TransactionStatus;
-  
+
   /** Stellar network references */
   stellarRefs: StellarNetworkReferences;
-  
+
   /** State transition tracking */
   statusChangedAt: Date;
   statusReason?: string | null;
-  
+
   /** Submission tracking */
   submittedAt?: Date | null;
   confirmedAt?: Date | null;
   failedAt?: Date | null;
-  
+
   /** Metadata for future webhooks and analytics */
   metadata?: Record<string, any> | null;
-  
+
   /** Operational metadata */
   createdAt: Date;
   updatedAt: Date;
@@ -88,7 +88,7 @@ const ALLOWED_TRANSITIONS: Readonly<
     TransactionStatus.FAILED,
   ]),
   [TransactionStatus.CONFIRMED]: new Set([]), // Terminal state
-  [TransactionStatus.FAILED]: new Set([]),    // Terminal state
+  [TransactionStatus.FAILED]: new Set([]), // Terminal state
 };
 
 /**
@@ -112,19 +112,19 @@ export function transitionTransactionStatus(
   at: Date = new Date(),
 ): Transaction {
   if (transaction.status === to) return transaction;
-  
+
   if (!canTransitionTransactionStatus(transaction.status, to)) {
     throw new Error(
       `Invalid transaction status transition: ${transaction.status} -> ${to}`,
     );
   }
-  
+
   const updates: Partial<Transaction> = {
     status: to,
     statusChangedAt: at,
     updatedAt: at,
   };
-  
+
   // Update status-specific timestamps
   if (to === TransactionStatus.SUBMITTED) {
     updates.submittedAt = at;
@@ -133,12 +133,12 @@ export function transitionTransactionStatus(
   } else if (to === TransactionStatus.FAILED) {
     updates.failedAt = at;
   }
-  
+
   // Update status reason if provided
   if (statusReason !== undefined) {
     updates.statusReason = statusReason;
   }
-  
+
   // Update Stellar network references if provided
   if (stellarRefs) {
     updates.stellarRefs = {
@@ -146,7 +146,7 @@ export function transitionTransactionStatus(
       ...stellarRefs,
     };
   }
-  
+
   return {
     ...transaction,
     ...updates,

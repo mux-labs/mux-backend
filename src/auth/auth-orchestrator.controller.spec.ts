@@ -202,9 +202,7 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'validateAuthentication')
         .mockResolvedValue(false);
 
-      const result = await controller.validateAuthentication(
-        'invalid-auth-id',
-      );
+      const result = await controller.validateAuthentication('invalid-auth-id');
 
       expect(result.valid).toBe(false);
     });
@@ -222,10 +220,7 @@ describe('AuthOrchestratorController', () => {
 
   describe('Public decorator verification', () => {
     it('should have @Public decorator on authenticate method', () => {
-      const metadata = Reflect.getMetadata(
-        IS_PUBLIC,
-        controller.authenticate,
-      );
+      const metadata = Reflect.getMetadata(IS_PUBLIC, controller.authenticate);
       expect(metadata).toBe(true);
     });
 
