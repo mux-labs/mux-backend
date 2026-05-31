@@ -1,4 +1,4 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
+import { Injectable, Logger, ConflictException, BadRequestException } from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 
 export interface FindOrCreateUserRequest {
@@ -57,6 +57,9 @@ export class IdempotentUserService {
       });
 
       if (existingUser) {
+        // Check if user is in a valid state
+        this.validateUserState(existingUser);
+
         // Update last login timestamp
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUser.id },
@@ -226,5 +229,22 @@ export class IdempotentUserService {
   private isValidEmail(email: string): boolean {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     return emailRegex.test(email);
+  }
+
+  /**
+   * Validates that a user is in a valid state for authentication
+   * Throws error if user is in an invalid/stale state (e.g., SUSPENDED, DISABLED)
+   */
+  private validateUserState(user: any): void {
+    const validStatuses = ['ACTIVE', 'PENDING'];
+
+    if (!validStatuses.includes(user.status)) {
+      this.logger.error(
+        `User ${user.id} with authId ${user.authId} is in invalid state: ${user.status}`,
+      );
+      throw new BadRequestException(
+        `User account is in an invalid state (${user.status}). Please contact support.`,
+      );
+    }
   }
 }

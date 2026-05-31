@@ -6,11 +6,16 @@ import {
   HttpStatus,
   Get,
   Param,
+  Headers,
+  Res,
+  UseGuards,
 } from '@nestjs/common';
+import { Response } from 'express';
 import {
   AuthOrchestrator,
   AuthenticationRequest,
   AuthenticationResult,
+  AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
 import { Public } from './public.decorator';
 
@@ -27,17 +32,37 @@ export class AuthOrchestratorController {
    * 3. Returns existing user + wallet if already exists
    *
    * All operations are idempotent.
-   *
-   * @Public - This endpoint must be public as it's used for initial authentication
-   * before an API key is available.
+   * Supports optional Idempotency-Key header for request deduplication.
+   * Protected by per-IP rate limiting to prevent brute force attacks.
    */
   @Post('authenticate')
-  @Public()
+  @UseGuards(AuthRateLimitGuard)
   @HttpCode(HttpStatus.OK)
   async authenticate(
     @Body() request: AuthenticationRequest,
-  ): Promise<AuthenticationResult> {
-    return await this.authOrchestrator.handleAuthentication(request);
+    @Headers('idempotency-key') idempotencyKey: string | undefined,
+    @Res() response: Response,
+  ): Promise<void> {
+    const requestWithIdempotency: AuthenticationRequestWithIdempotency = {
+      ...request,
+      idempotencyKey,
+    };
+
+    const result = await this.authOrchestrator.handleAuthentication(
+      requestWithIdempotency,
+    );
+
+    // Extract and remove metadata before sending response
+    const idempotencyReplayed = (result as any)._idempotencyReplayed ?? false;
+    const responseBody = { ...result };
+    delete (responseBody as any)._idempotencyReplayed;
+
+    // Set idempotency-replayed header if idempotency key was provided
+    if (idempotencyKey) {
+      response.setHeader('Idempotency-Replayed', idempotencyReplayed ? 'true' : 'false');
+    }
+
+    response.json(responseBody);
   }
 
   /**

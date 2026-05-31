@@ -9,6 +9,7 @@ import {
   CreateWalletOrchestratorRequest,
 } from '../wallets/wallet-creation-orchestrator.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 export interface AuthenticationRequest {
   authId: string;
@@ -16,6 +17,95 @@ export interface AuthenticationRequest {
   displayName?: string;
   authProvider?: string;
   network?: WalletNetwork;
+}
+
+export class AuthPayloadValidator {
+  static validate(payload: any): void {
+    if (!payload) {
+      throw new BadRequestException('Authentication payload is required');
+    }
+
+    if (typeof payload !== 'object') {
+      throw new BadRequestException('Authentication payload must be an object');
+    }
+
+    // Validate authId (required, maps to JWT 'sub' claim)
+    if (!payload.authId || typeof payload.authId !== 'string') {
+      throw new BadRequestException(
+        'Invalid authentication payload: authId is required and must be a string',
+      );
+    }
+
+    if (payload.authId.trim().length === 0) {
+      throw new BadRequestException(
+        'Invalid authentication payload: authId cannot be empty',
+      );
+    }
+
+    // Validate email format if provided
+    if (payload.email !== undefined && payload.email !== null) {
+      if (typeof payload.email !== 'string') {
+        throw new BadRequestException(
+          'Invalid authentication payload: email must be a string',
+        );
+      }
+
+      if (payload.email.trim().length > 0) {
+        if (!this.isValidEmail(payload.email)) {
+          throw new BadRequestException(
+            'Invalid authentication payload: email format is invalid',
+          );
+        }
+      }
+    }
+
+    // Validate displayName if provided
+    if (payload.displayName !== undefined && payload.displayName !== null) {
+      if (typeof payload.displayName !== 'string') {
+        throw new BadRequestException(
+          'Invalid authentication payload: displayName must be a string',
+        );
+      }
+
+      if (payload.displayName.trim().length === 0) {
+        throw new BadRequestException(
+          'Invalid authentication payload: displayName cannot be empty',
+        );
+      }
+    }
+
+    // Validate authProvider if provided
+    if (payload.authProvider !== undefined && payload.authProvider !== null) {
+      if (typeof payload.authProvider !== 'string') {
+        throw new BadRequestException(
+          'Invalid authentication payload: authProvider must be a string',
+        );
+      }
+
+      if (payload.authProvider.trim().length === 0) {
+        throw new BadRequestException(
+          'Invalid authentication payload: authProvider cannot be empty',
+        );
+      }
+    }
+
+    // Validate network if provided
+    if (payload.network !== undefined && payload.network !== null) {
+      if (
+        typeof payload.network !== 'string' ||
+        !Object.values(WalletNetwork).includes(payload.network)
+      ) {
+        throw new BadRequestException(
+          'Invalid authentication payload: network must be a valid WalletNetwork',
+        );
+      }
+    }
+  }
+
+  private static isValidEmail(email: string): boolean {
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    return emailRegex.test(email);
+  }
 }
 
 export interface AuthenticationResult {
@@ -47,6 +137,14 @@ export interface AuthenticationResult {
  * 2. Every authenticated user has exactly one wallet per network
  * 3. All operations are idempotent and atomic
  */
+export interface AuthenticationRequestWithIdempotency extends AuthenticationRequest {
+  idempotencyKey?: string;
+}
+
+export interface AuthenticationResultWithMetadata extends AuthenticationResult {
+  _idempotencyReplayed?: boolean;
+}
+
 @Injectable()
 export class AuthOrchestrator {
   private readonly logger = new Logger(AuthOrchestrator.name);
@@ -54,16 +152,22 @@ export class AuthOrchestrator {
   constructor(
     private readonly idempotentUserService: IdempotentUserService,
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
+    private readonly idempotencyService: IdempotencyService,
   ) {}
 
   /**
    * Handles first-time or returning user authentication.
    * Creates user and wallet atomically on first authentication.
+   * Supports idempotency via optional Idempotency-Key header.
    */
   async handleAuthentication(
-    request: AuthenticationRequest,
+    request: AuthenticationRequestWithIdempotency,
   ): Promise<AuthenticationResult> {
     const startTime = Date.now();
+
+    // Validate auth provider payload shape before processing
+    AuthPayloadValidator.validate(request);
+
     const network = request.network || WalletNetwork.TESTNET;
 
     this.logger.log(
@@ -71,6 +175,22 @@ export class AuthOrchestrator {
     );
 
     try {
+      // Check idempotency cache if key provided
+      if (request.idempotencyKey) {
+        const cachedResponse = await this.idempotencyService.getCachedResponse(
+          request.idempotencyKey,
+        );
+        if (cachedResponse) {
+          this.logger.log(
+            `Returning cached authentication result for idempotency key: ${request.idempotencyKey}`,
+          );
+          return {
+            ...cachedResponse,
+            _idempotencyReplayed: true,
+          };
+        }
+      }
+
       // Step 1: Find or create user (idempotent)
       const userResult = await this.findOrCreateUser(request);
 
@@ -90,7 +210,7 @@ export class AuthOrchestrator {
           `(newUser: ${userResult.isNewUser}, newWallet: ${walletResult.isNewWallet})`,
       );
 
-      return {
+      const result: AuthenticationResultWithMetadata = {
         user: {
           id: userResult.user.id,
           authId: userResult.user.authId,
@@ -109,7 +229,24 @@ export class AuthOrchestrator {
         },
         isNewUser: userResult.isNewUser,
         isNewWallet: walletResult.isNewWallet,
+        _idempotencyReplayed: false,
       };
+
+      // Cache response if idempotency key provided
+      if (request.idempotencyKey) {
+        const cachePayload = { ...result };
+        delete cachePayload._idempotencyReplayed;
+        await this.idempotencyService.cacheResponse(
+          request.idempotencyKey,
+          cachePayload,
+          'POST',
+          '/auth/authenticate',
+          200,
+          { ttlMs: 60000 }, // 60 seconds TTL
+        );
+      }
+
+      return result;
     } catch (error) {
       this.logger.error(
         `Authentication orchestration failed for authId ${request.authId}:`,

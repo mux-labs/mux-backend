@@ -547,6 +547,35 @@ model WebhookDelivery {
   @@index([createdAt])
 }
 
+/// Idempotency record for caching authentication and other operation responses
+model IdempotencyRecord {
+  id String @id @default(uuid())
+
+  /// Unique idempotency key provided by client
+  key String @unique
+
+  /// HTTP method of the original request
+  method String
+
+  /// Endpoint path of the original request
+  endpoint String
+
+  /// Cached response (serialized JSON)
+  response Json
+
+  /// Response status code
+  statusCode Int @default(200)
+
+  /// TTL - when this record expires
+  expiresAt DateTime
+
+  /// Metadata
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([key, endpoint])
+}
+
 /// Transaction lifecycle states
 enum TransactionStatus {
   PENDING    // Transaction created but not yet submitted to network
