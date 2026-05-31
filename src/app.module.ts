@@ -20,6 +20,8 @@ import { WebhookModule } from './webhooks/webhook.module';
 import { TransactionsModule } from './transactions/transactions.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
+import { HealthModule } from './health/health.module';
+import { IdempotentUserModule } from './users/idempotent-user.module';
 
 @Module({
   imports: [
@@ -35,13 +37,15 @@ import { ProjectsModule } from './projects/projects.module';
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
-    AuthModule,
     ApiKeyModule,
     KeyManagementModule,
     BalanceIndexerModule,
     WebhookModule,
     TransactionsModule,
+    DevelopersModule,
+    ProjectsModule,
     HealthModule,
+    IdempotentUserModule,
   ],
   controllers: [AppController],
   providers: [
