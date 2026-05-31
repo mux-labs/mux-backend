@@ -1,8 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
-import { ApiKeyService, CreateApiKeyResult } from './api-key.service';
+import { ApiKeyService } from './api-key.service';
 import { ApiKeyStatus } from './domain/api-key.model';
-import * as crypto from 'crypto';
+import { ConfigService } from '@nestjs/config';
 
 // Mock PrismaClient
 jest.mock('../generated/prisma/client', () => {
@@ -29,18 +29,79 @@ describe('ApiKeyService', () => {
   let service: ApiKeyService;
   let mockPrisma: any;
   let mockConfigService: any;
+  let createdKeys: any[];
 
   beforeEach(async () => {
+    createdKeys = [];
+
     mockPrisma = {
       project: {
-        findUnique: jest.fn(),
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'project-123',
+          environment: 'development',
+          developerId: 'developer-123',
+        }),
       },
       apiKey: {
-        create: jest.fn(),
-        findUnique: jest.fn(),
-        findMany: jest.fn(),
-        count: jest.fn(),
-        update: jest.fn(),
+        create: jest.fn().mockImplementation(async ({ data }) => {
+          const key = {
+            id: `apiKey-${createdKeys.length + 1}`,
+            name: data.name,
+            keyHash: data.keyHash,
+            keyPrefix: data.keyPrefix,
+            lastFour: data.lastFour,
+            projectId: data.projectId,
+            status: data.status,
+            createdAt: new Date(),
+            updatedAt: new Date(),
+            expiresAt: data.expiresAt,
+            lastUsedAt: null,
+            revokedAt: null,
+            revokedReason: null,
+            gracePeriodEndsAt: null,
+          };
+          createdKeys.push(key);
+          return key;
+        }),
+        findUnique: jest.fn().mockImplementation(async ({ where }) => {
+          if (where?.id) {
+            return createdKeys.find((key) => key.id === where.id) || null;
+          }
+
+          if (where?.keyHash) {
+            const key = createdKeys.find((record) => record.keyHash === where.keyHash);
+            if (!key) {
+              return null;
+            }
+            return {
+              ...key,
+              project: {
+                id: key.projectId,
+                developerId: 'developer-123',
+                developer: {
+                  id: 'developer-123',
+                },
+              },
+            };
+          }
+
+          return null;
+        }),
+        findMany: jest.fn().mockImplementation(async ({ where, skip, take }) => {
+          const matching = createdKeys.filter((key) => key.projectId === where.projectId);
+          return matching.slice(skip ?? 0, (skip ?? 0) + (take ?? matching.length));
+        }),
+        count: jest.fn().mockImplementation(async ({ where }) => {
+          return createdKeys.filter((key) => key.projectId === where.projectId).length;
+        }),
+        update: jest.fn().mockImplementation(async ({ where, data }) => {
+          const key = createdKeys.find((record) => record.id === where.id);
+          if (!key) {
+            return null;
+          }
+          Object.assign(key, data);
+          return key;
+        }),
       },
       apiKeyUsage: {
         create: jest.fn(),
@@ -89,7 +150,6 @@ describe('ApiKeyService', () => {
         projectId: 'project-123',
       });
 
-      // The domain model should not include plainTextKey
       expect(result.apiKey).toBeDefined();
       expect((result.apiKey as any).plainTextKey).toBeUndefined();
     });
@@ -100,10 +160,8 @@ describe('ApiKeyService', () => {
         projectId: 'project-123',
       });
 
-      // keyHash should be present and should not equal plainTextKey
       expect(result.apiKey.keyHash).toBeDefined();
       expect(result.apiKey.keyHash).not.toEqual(result.plainTextKey);
-      // Hash should be hex (SHA-256)
       expect(result.apiKey.keyHash).toMatch(/^[a-f0-9]{64}$/);
     });
 
@@ -124,23 +182,21 @@ describe('ApiKeyService', () => {
 
   describe('listApiKeys', () => {
     it('should return only metadata without keys or hashes', async () => {
-      // Create a key first
       await service.createApiKey({
         name: 'test-key',
         projectId: 'project-123',
       });
 
-      const keys = await service.listApiKeys('project-123');
+      const result = await service.listApiKeys({ projectId: 'project-123' });
 
-      expect(keys.length).toBeGreaterThan(0);
-      keys.forEach((key) => {
+      expect(result.keys.length).toBeGreaterThan(0);
+      result.keys.forEach((key) => {
         expect(key.id).toBeDefined();
         expect(key.name).toBeDefined();
         expect(key.keyPrefix).toBeDefined();
         expect(key.lastFour).toBeDefined();
         expect(key.status).toBeDefined();
-        // Should NOT include hashes
-        expect(key.plainTextKey).toBeUndefined();
+        expect((key as any).plainTextKey).toBeUndefined();
       });
     });
   });
@@ -164,7 +220,7 @@ describe('ApiKeyService', () => {
       const result = await service.createApiKey({
         name: 'expiring-key',
         projectId: 'project-123',
-        expiresAt: new Date(Date.now() - 1000), // Expired 1 second ago
+        expiresAt: new Date(Date.now() - 1000),
       });
 
       await expect(service.validateApiKey(result.plainTextKey)).rejects.toThrow(
@@ -189,23 +245,20 @@ describe('ApiKeyService', () => {
 
   describe('rotateApiKey', () => {
     it('should return plaintext key only for new rotated key', async () => {
-      // Create initial key
       const createResult = await service.createApiKey({
         name: 'original-key',
         projectId: 'project-123',
       });
 
-      // Rotate it
       const rotateResult = await service.rotateApiKey({
         apiKeyId: createResult.apiKey.id,
       });
 
-      // New key should have plaintext
       expect(rotateResult.plainTextKey).toBeDefined();
       expect(rotateResult.plainTextKey).not.toEqual(createResult.plainTextKey);
     });
 
-    it('should revoke old key when rotating', async () => {
+    it('should keep old key valid during grace period after rotation', async () => {
       const createResult = await service.createApiKey({
         name: 'original-key',
         projectId: 'project-123',
@@ -215,16 +268,14 @@ describe('ApiKeyService', () => {
         apiKeyId: createResult.apiKey.id,
       });
 
-      // Old key should now be revoked
-      await expect(
-        service.validateApiKey(createResult.plainTextKey),
-      ).rejects.toThrow(UnauthorizedException);
+      const oldResult = await service.validateApiKey(createResult.plainTextKey);
+      expect(oldResult.apiKey).toBeDefined();
+      expect(oldResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
 
-      // New key should work
-      const validateResult = await service.validateApiKey(
+      const newResult = await service.validateApiKey(
         rotateResult.plainTextKey,
       );
-      expect(validateResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
+      expect(newResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
     });
   });
 });

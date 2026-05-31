@@ -4,7 +4,7 @@ import {
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 
 export interface FindOrCreateUserRequest {
   authId: string;
@@ -33,11 +33,8 @@ export interface FindOrCreateUserResult {
 @Injectable()
 export class IdempotentUserService {
   private readonly logger = new Logger(IdempotentUserService.name);
-  private prisma: PrismaClient;
 
-  constructor() {
-    this.prisma = new PrismaClient({} as any);
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   async onModuleInit() {
     this.logger.log('Idempotent User Service initialized');
@@ -56,16 +53,13 @@ export class IdempotentUserService {
     this.logger.log(`Looking up user with authId: ${authId}`);
 
     try {
-      // First, try to find existing user
       const existingUser = await this.prisma.user.findUnique({
         where: { authId },
       });
 
       if (existingUser) {
-        // Check if user is in a valid state
         this.validateUserState(existingUser);
 
-        // Update last login timestamp
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUser.id },
           data: { lastLoginAt: new Date() },
@@ -81,7 +75,6 @@ export class IdempotentUserService {
         };
       }
 
-      // User doesn't exist, create new one
       const newUser = await this.prisma.user.create({
         data: {
           authId,
@@ -99,15 +92,13 @@ export class IdempotentUserService {
         user: this.mapPrismaUserToDomain(newUser),
         isNewUser: true,
       };
-    } catch (error) {
+    } catch (error: any) {
       this.logger.error(
         `Failed to find or create user with authId ${authId}:`,
         error,
       );
 
-      // Handle potential race conditions where multiple requests try to create the same user
-      if (error.code === 'P2002') {
-        // Unique constraint violation - user was created by another request
+      if (error?.code === 'P2002') {
         this.logger.log(
           `Race condition detected, retrying find for authId: ${authId}`,
         );
@@ -211,7 +202,6 @@ export class IdempotentUserService {
       return false;
     }
 
-    // Basic validation - authId should be at least 3 characters
     return authId.trim().length >= 3;
   }
 

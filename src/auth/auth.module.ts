@@ -3,12 +3,12 @@ import { AuthOrchestrator } from './auth-orchestrator.service';
 import { AuthOrchestratorController } from './auth-orchestrator.controller';
 import { AuthRateLimitService } from './auth-rate-limit.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
-import { UsersModule } from '../users/users.module';
+import { IdempotentUserModule } from '../users/idempotent-user.module';
 import { WalletsModule } from '../wallets/wallets.module';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 @Module({
-  imports: [UsersModule, WalletsModule],
+  imports: [IdempotentUserModule, WalletsModule],
   controllers: [AuthOrchestratorController],
   providers: [
     AuthOrchestrator,
