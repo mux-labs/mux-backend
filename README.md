@@ -70,6 +70,64 @@ Readiness probe endpoint for Kubernetes and container orchestration platforms.
 
 ---
 
+## API Endpoints
+
+### Authentication
+
+#### `POST /auth/authenticate`
+
+Main authentication endpoint for user onboarding and wallet creation.
+
+**Purpose**: Handles both first-time and returning users. Creates user and wallet if needed, returns existing data if already exists. All operations are idempotent.
+
+**Authentication**: **Public endpoint** (no API key required) - This must be public as it's used for initial authentication before an API key is available.
+
+**Request Body**:
+```json
+{
+  "authId": "auth-provider-user-id",
+  "email": "user@example.com",
+  "displayName": "User Name",
+  "authProvider": "CLERK",
+  "network": "TESTNET"
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "user": {
+    "id": "uuid",
+    "authId": "auth-provider-user-id",
+    "email": "user@example.com",
+    "displayName": "User Name",
+    "status": "ACTIVE",
+    "authProvider": "CLERK",
+    "createdAt": "2026-05-30T12:00:00.000Z",
+    "updatedAt": "2026-05-30T12:00:00.000Z"
+  },
+  "wallet": {
+    "id": "uuid",
+    "userId": "uuid",
+    "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "network": "TESTNET",
+    "status": "ACTIVE",
+    "createdAt": "2026-05-30T12:00:00.000Z",
+    "updatedAt": "2026-05-30T12:00:00.000Z"
+  },
+  "isNewUser": false,
+  "isNewWallet": false
+}
+```
+
+**Use Cases**:
+- Initial user authentication and onboarding
+- Automatic wallet creation for new users
+- Idempotent user/wallet retrieval for returning users
+- Integration with Web2 auth providers (Clerk, Better Auth, etc.)
+
+---
+
 ## Key Features
 
 ### 🔐 Invisible Wallets
