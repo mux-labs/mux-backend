@@ -346,7 +346,7 @@ Contributions are welcome. Please open an issue before submitting large changes.
 
 ---
 
-## Request Logging Middleware
+Request Logging Middleware
 
 A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
 
@@ -355,3 +355,30 @@ A lightweight request logging middleware has been added to the application to re
 - Is robust to stale/invalid request objects and will not crash the application.
 
 The middleware is registered in `src/main.ts` and runs for all incoming requests.
+
+---
+
+## Wallets API
+
+- `POST /wallets` - create wallet
+- `GET /wallets` - list wallets
+- `GET /wallets/:id` - get wallet
+- `PATCH /wallets/:id` - update wallet status
+- `DELETE /wallets/:id` - remove wallet
+
+Protected endpoint:
+
+- `GET /wallets/protected` - requires a valid API key. Supply API key in `Authorization` header as `ApiKey <key>` or `Bearer <key>`.
+- When a valid key is provided, the route returns a JSON object with `message`, `developer`, and `project` fields.
+
+Authentication and error behavior
+
+- API keys are validated by `ApiKeyGuard` and `ApiKeyService`.
+- Missing or invalid API keys return `401 Unauthorized`.
+- Upstream validation errors (DB connectivity, etc.) surface as `401` if they originate from `ApiKeyService` throwing `UnauthorizedException`; other unexpected errors may surface as 5xx.
+
+Testing
+
+- Unit tests are under `src/**/*spec.ts`.
+- E2E tests are under `test/` and use Jest + Supertest.
+
