@@ -26,12 +26,14 @@ export interface AuthenticationResult {
     displayName?: string;
     status: string;
     authProvider: string;
+    lastLoginAt: Date | null;
   };
   wallet: {
     id: string;
     publicKey: string;
     network: WalletNetwork;
     status: string;
+    createdAt: Date;
   };
   isNewUser: boolean;
   isNewWallet: boolean;
@@ -93,12 +95,14 @@ export class AuthOrchestrator {
           displayName: userResult.user.displayName,
           status: userResult.user.status,
           authProvider: userResult.user.authProvider,
+          lastLoginAt: userResult.user.lastLoginAt ?? null,
         },
         wallet: {
           id: walletResult.wallet.id,
           publicKey: walletResult.wallet.publicKey,
           network: walletResult.wallet.network,
           status: walletResult.wallet.status,
+          createdAt: walletResult.wallet.createdAt,
         },
         isNewUser: userResult.isNewUser,
         isNewWallet: walletResult.isNewWallet,
