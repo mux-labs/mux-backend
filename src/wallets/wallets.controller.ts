@@ -6,6 +6,7 @@ import {
   Patch,
   Param,
   Delete,
+  UseGuards,
 } from '@nestjs/common';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
@@ -32,17 +33,17 @@ export class WalletsController {
 
   @Get(':id')
   findOne(@Param('id') id: string) {
-    return this.walletsService.findOne(+id);
+    return this.walletsService.findOne(id);
   }
 
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateWalletDto: UpdateWalletDto) {
-    return this.walletsService.update(+id, updateWalletDto);
+    return this.walletsService.update(id, updateWalletDto);
   }
 
   @Delete(':id')
   remove(@Param('id') id: string) {
-    return this.walletsService.remove(+id);
+    return this.walletsService.remove(id);
   }
 
   @RequireApiKey()

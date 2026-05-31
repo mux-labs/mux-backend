@@ -353,15 +353,15 @@ export class WalletsService {
     return this.prisma.wallet.findMany();
   }
 
-  findOne(id: number) {
-    return this.findWalletById(id.toString());
+  findOne(id: string) {
+    return this.findWalletById(id);
   }
 
-  update(id: number, updateWalletDto: any) {
-    return this.updateWalletStatus(id.toString(), updateWalletDto.status);
+  update(id: string, updateWalletDto: any) {
+    return this.updateWalletStatus(id, updateWalletDto.status);
   }
 
-  remove(id: number) {
-    return this.prisma.wallet.delete({ where: { id: id.toString() } });
+  remove(id: string) {
+    return this.prisma.wallet.delete({ where: { id } });
   }
 }

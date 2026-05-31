@@ -1,4 +1,8 @@
-import { PartialType } from '@nestjs/mapped-types';
-import { CreateWalletDto } from './create-wallet.dto';
+import { IsEnum, IsOptional } from 'class-validator';
+import { WalletStatus } from '../domain/wallet.model';
 
-export class UpdateWalletDto extends PartialType(CreateWalletDto) {}
+export class UpdateWalletDto {
+  @IsOptional()
+  @IsEnum(WalletStatus)
+  status?: WalletStatus;
+}
