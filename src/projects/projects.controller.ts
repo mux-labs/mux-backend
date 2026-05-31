@@ -33,12 +33,19 @@ export class ProjectsController {
   }
 
   @Patch(':id')
-  update(@Param('id') id: string, @Body() dto: UpdateProjectDto) {
-    return this.projectsService.update(id, dto);
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateProjectDto,
+    @Query('developerId') developerId?: string,
+  ) {
+    return this.projectsService.update(id, dto, developerId);
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.projectsService.remove(id);
+  remove(
+    @Param('id') id: string,
+    @Query('developerId') developerId?: string,
+  ) {
+    return this.projectsService.remove(id, developerId);
   }
 }
