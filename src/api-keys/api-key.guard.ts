@@ -15,7 +15,13 @@ import { Request } from 'express';
 export const REQUIRE_API_KEY = 'requireApiKey';
 
 /**
+ * Metadata key for marking routes as public (no auth required)
+ */
+export const IS_PUBLIC = 'isPublic';
+
+/**
  * Guard that validates API key authentication
+ * Supports both local (REQUIRE_API_KEY) and global usage (IS_PUBLIC)
  */
 @Injectable()
 export class ApiKeyGuard implements CanActivate {
@@ -27,14 +33,24 @@ export class ApiKeyGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    // Check if route requires API key
+    // Check if route is marked as public (skip auth)
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
+      context.getHandler(),
+      context.getClass(),
+    ]);
+
+    if (isPublic) {
+      return true;
+    }
+
+    // Check if route requires API key (for explicit opt-in)
     const requireApiKey = this.reflector.get<boolean>(
       REQUIRE_API_KEY,
       context.getHandler(),
     );
 
-    if (!requireApiKey) {
-      return true; // Route doesn't require API key
+    if (requireApiKey === false) {
+      return true; // Route explicitly doesn't require API key
     }
 
     const request = context.switchToHttp().getRequest<Request>();
@@ -53,6 +69,11 @@ export class ApiKeyGuard implements CanActivate {
 
       // Attach context to request for use in controllers
       (request as any).apiKeyContext = apiKeyContext;
+
+      // Also set apiKeyInfo for backward compatibility with rate limiting
+      (request as any).apiKeyInfo = {
+        id: apiKeyContext.apiKey.id,
+      };
 
       // Record usage (async, don't await)
       const responseTime = Date.now() - startTime;

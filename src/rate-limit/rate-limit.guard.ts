@@ -9,7 +9,10 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { RateLimitService } from './rate-limit.service';
-import { ApiKeyInfo } from '../auth/api-key.service';
+
+interface ApiKeyInfo {
+  id: string;
+}
 
 export const IS_SENSITIVE_ENDPOINT = 'isSensitiveEndpoint';
 export const SensitiveEndpoint = () => SetMetadata(IS_SENSITIVE_ENDPOINT, true);
