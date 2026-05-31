@@ -27,6 +27,104 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
+* Health monitoring and readiness checks
+
+---
+
+## API Endpoints
+
+### Health & Monitoring
+
+#### `GET /health`
+
+Liveness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application process is alive and responsive. This is a lightweight check that does NOT verify external dependencies like databases.
+#### `GET /ready`
+
+Readiness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application is ready to serve traffic by verifying database connectivity.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ready",
+  "timestamp": "2026-05-30T12:00:00.000Z",
+  "database": {
+    "connected": true,
+    "responseTime": 15
+  }
+}
+```
+
+**Response (503 Service Unavailable)**: Returned when the database is not accessible.
+
+**Use Cases**:
+- Kubernetes readiness probes
+- Load balancer health checks
+- Container orchestration platforms
+- CI/CD deployment verification
+
+**Authentication**: Public endpoint (no API key required)
+
+---
+
+## API Endpoints
+
+### Authentication
+
+#### `POST /auth/authenticate`
+
+Main authentication endpoint for user onboarding and wallet creation.
+
+**Purpose**: Handles both first-time and returning users. Creates user and wallet if needed, returns existing data if already exists. All operations are idempotent.
+
+**Authentication**: **Public endpoint** (no API key required) - This must be public as it's used for initial authentication before an API key is available.
+
+**Request Body**:
+```json
+{
+  "authId": "auth-provider-user-id",
+  "email": "user@example.com",
+  "displayName": "User Name",
+  "authProvider": "CLERK",
+  "network": "TESTNET"
+}
+```
+
+**Response (200 OK)**:
+```json
+{
+  "user": {
+    "id": "uuid",
+    "authId": "auth-provider-user-id",
+    "email": "user@example.com",
+    "displayName": "User Name",
+    "status": "ACTIVE",
+    "authProvider": "CLERK",
+    "createdAt": "2026-05-30T12:00:00.000Z",
+    "updatedAt": "2026-05-30T12:00:00.000Z"
+  },
+  "wallet": {
+    "id": "uuid",
+    "userId": "uuid",
+    "publicKey": "GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX",
+    "network": "TESTNET",
+    "status": "ACTIVE",
+    "createdAt": "2026-05-30T12:00:00.000Z",
+    "updatedAt": "2026-05-30T12:00:00.000Z"
+  },
+  "isNewUser": false,
+  "isNewWallet": false
+}
+```
+
+**Use Cases**:
+- Initial user authentication and onboarding
+- Automatic wallet creation for new users
+- Idempotent user/wallet retrieval for returning users
+- Integration with Web2 auth providers (Clerk, Better Auth, etc.)
 
 ---
 
@@ -64,6 +162,44 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 ---
 
+## Database Setup
+
+This project uses **PostgreSQL** via **Prisma ORM**. You must set the `DATABASE_URL` environment variable before running migrations or starting the server.
+
+### Environment Variables
+
+Copy `.env.example` to `.env` (or create `.env`) and set:
+
+```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
+```
+
+**Examples:**
+
+| Environment | Connection string |
+|---|---|
+| Local dev | `postgresql://postgres:postgres@localhost:5432/mux_dev` |
+| Docker Compose | `postgresql://postgres:postgres@db:5432/mux_dev` |
+| Supabase | `postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres` |
+| Railway / Render | Use the connection string provided by the platform |
+
+### Running Migrations
+
+```bash
+# Apply all pending migrations (development)
+pnpm prisma:migrate
+
+# Apply migrations in production / CI (non-interactive)
+pnpm prisma:migrate:prod
+
+# Seed the database with demo users and wallets (dev only)
+pnpm prisma:seed
+```
+
+> The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
+
+---
+
 ## Security Model (MVP)
 
 * Private keys are never exposed to clients
@@ -73,6 +209,108 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Auth provider is the source of truth for identity
 
 > ⚠️ This MVP uses a custodial model. Progressive decentralization is planned.
+
+---
+
+## Authentication Flow
+
+Mux Backend supports two authentication mechanisms:
+
+### 1. API Key Authentication (Recommended for Backend Services)
+
+API keys are used for server-to-server communication and administrative tasks. Each key is securely hashed before storage.
+
+**Key Characteristics:**
+- Format: `mux_live_<random32chars>` or `mux_test_<random32chars>`
+- Transmitted via `Authorization: Bearer <key>` header
+- Returned only once at creation time
+- Hashed with SHA-256 before storage in database
+- Can be rotated, revoked, or expire at a configured time
+
+### 2. User Authentication (Primary Identity Flow)
+
+User authentication is orchestrated via the auth service and integrates with Web2 identity providers (Clerk, Better Auth, etc.).
+
+**Authentication Flow Steps:**
+
+1. **Credential Submission**
+   - Client sends `authId`, email, displayName, and authProvider to `POST /auth/authenticate`
+   - The authId is typically a provider's unique identifier (e.g., Clerk user ID)
+
+2. **User Validation**
+   - AuthOrchestrator calls IdempotentUserService to find or create the user
+   - User record is created with `status: 'ACTIVE'` by default
+
+3. **Status Check (Inactive User Rejection)**
+   - Before proceeding, the system checks the user's `status` field
+   - **If status is not `ACTIVE`** (e.g., `INACTIVE`, `SUSPENDED`, `DELETED`), authentication is rejected with `403 Forbidden` and message "Account is inactive"
+   - Missing status field defaults to `ACTIVE` for backward compatibility
+
+4. **Wallet Provisioning**
+   - If user is active, AuthOrchestrator ensures the user has a wallet on the requested network
+   - Wallet is created automatically on first authentication (idempotent)
+
+5. **Response**
+   - Returns authenticated user object with ID, status, authProvider
+   - Returns wallet object with public key and network
+   - Includes `isNewUser` and `isNewWallet` flags for client-side logic
+
+**Authentication Response Example:**
+```json
+{
+  "user": {
+    "id": "user-123",
+    "authId": "clerk-id-xyz",
+    "email": "user@example.com",
+    "displayName": "Jane Doe",
+    "status": "ACTIVE",
+    "authProvider": "CLERK"
+  },
+  "wallet": {
+    "id": "wallet-456",
+    "publicKey": "GABC123...",
+    "network": "TESTNET",
+    "status": "ACTIVE"
+  },
+  "isNewUser": true,
+  "isNewWallet": true
+}
+```
+
+### API Key Validation & Usage
+
+**Request Flow for API Key Protected Endpoints:**
+
+1. Client sends request with `Authorization: Bearer mux_live_...` header
+2. ApiKeyGuard intercepts request and extracts the key
+3. Guard delegates to ApiKeyService for validation:
+   - Hash the provided key with SHA-256
+   - Lookup in database by key hash
+   - Check if key is ACTIVE
+   - Check if key has not expired
+   - Update last_used_at timestamp (async)
+4. If valid, attach ApiKeyContext to request (apiKey, project, developer info)
+5. If invalid/expired, return `401 Unauthorized`
+
+**Key Expiry Behavior:**
+- Expired keys are marked with status `EXPIRED` on first validation attempt
+- Subsequent requests with expired keys fail with "API key has expired"
+
+### Rate Limiting & Inactive User Integration
+
+- Rate limits are enforced per API key
+- User status is checked during authentication; inactive users cannot authenticate
+- Once authenticated, API key usage is tracked independently of user status
+- Sensitive endpoints (payments, transactions) apply stricter rate limits
+
+### Environment Variables
+
+Key authentication-related environment variables (when applicable):
+
+- `AUTH_PROVIDER` — Identity provider (e.g., CLERK, BETTER_AUTH)
+- `JWT_SECRET` — (Future) JWT signing secret
+- `API_KEY_EXPIRY_DAYS` — (Future) Default API key expiry duration in days
+- `RATE_LIMIT_RPM` — Requests per minute limit (per API key)
 
 ---
 
@@ -105,3 +343,15 @@ MIT
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting large changes.
+
+---
+
+## Request Logging Middleware
+
+A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
+
+- Sets an `x-request-id` header (honors incoming `x-request-id` if present).
+- Logs method, URL, client IP and request id when requests start and when they finish.
+- Is robust to stale/invalid request objects and will not crash the application.
+
+The middleware is registered in `src/main.ts` and runs for all incoming requests.

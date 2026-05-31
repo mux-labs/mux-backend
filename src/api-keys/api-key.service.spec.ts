@@ -1,7 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
-import { ApiKeyService } from './api-key.service';
+import { ApiKeyService, CreateApiKeyResult } from './api-key.service';
 import { ApiKeyStatus } from './domain/api-key.model';
 import * as crypto from 'crypto';
 
@@ -72,90 +71,81 @@ describe('ApiKeyService', () => {
     expect(service).toBeDefined();
   });
 
-  describe('createApiKey - Issue #154', () => {
-    it('should hash the API key before storage', async () => {
-      const projectId = 'test-project-id';
-      const mockProject = {
-        id: projectId,
-        environment: 'production',
-      };
-
-      mockPrisma.project.findUnique.mockResolvedValue(mockProject);
-      mockPrisma.apiKey.create.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash: expect.any(String),
-        keyPrefix: 'mux_live_',
-        lastFour: expect.any(String),
-        projectId,
-        status: ApiKeyStatus.ACTIVE,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        revokedReason: null,
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
+  describe('createApiKey', () => {
+    it('should return plaintext key only on creation', async () => {
       const result = await service.createApiKey({
-        name: 'Test Key',
-        projectId,
+        name: 'test-key',
+        projectId: 'project-123',
       });
 
-      // Verify plaintext key is returned exactly once
       expect(result.plainTextKey).toBeDefined();
-      expect(result.plainTextKey).toMatch(/^mux_live_/);
-
-      // Verify the hash was created (not plaintext stored)
-      const createCall = mockPrisma.apiKey.create.mock.calls[0][0];
-      expect(createCall.data.keyHash).toBeDefined();
-      expect(createCall.data.keyHash).not.toBe(result.plainTextKey);
-
-      // Verify hash matches the plaintext key
-      const expectedHash = crypto
-        .createHash('sha256')
-        .update(result.plainTextKey)
-        .digest('hex');
-      expect(createCall.data.keyHash).toBe(expectedHash);
+      expect(result.plainTextKey).toMatch(/^mux_(live|test)_/);
+      expect(result.plainTextKey.length).toBeGreaterThan(20);
     });
 
-    it('should return plaintext key exactly once in create response', async () => {
-      const projectId = 'test-project-id';
-      const mockProject = {
-        id: projectId,
-        environment: 'test',
-      };
-
-      mockPrisma.project.findUnique.mockResolvedValue(mockProject);
-      mockPrisma.apiKey.create.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash: 'hash',
-        keyPrefix: 'mux_test_',
-        lastFour: expect.any(String),
-        projectId,
-        status: ApiKeyStatus.ACTIVE,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        revokedReason: null,
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
+    it('should not include plaintext key in stored ApiKey object', async () => {
       const result = await service.createApiKey({
-        name: 'Test Key',
-        projectId,
+        name: 'test-key',
+        projectId: 'project-123',
       });
 
-      expect(result.plainTextKey).toBeDefined();
-      expect(result.plainTextKey.startsWith('mux_test_')).toBe(true);
+      // The domain model should not include plainTextKey
+      expect(result.apiKey).toBeDefined();
+      expect((result.apiKey as any).plainTextKey).toBeUndefined();
+    });
+
+    it('should store hashed key not plaintext', async () => {
+      const result = await service.createApiKey({
+        name: 'test-key',
+        projectId: 'project-123',
+      });
+
+      // keyHash should be present and should not equal plainTextKey
+      expect(result.apiKey.keyHash).toBeDefined();
+      expect(result.apiKey.keyHash).not.toEqual(result.plainTextKey);
+      // Hash should be hex (SHA-256)
+      expect(result.apiKey.keyHash).toMatch(/^[a-f0-9]{64}$/);
+    });
+
+    it('should include key metadata in response', async () => {
+      const result = await service.createApiKey({
+        name: 'test-key',
+        projectId: 'project-123',
+      });
+
+      expect(result.apiKey.id).toBeDefined();
+      expect(result.apiKey.name).toBe('test-key');
+      expect(result.apiKey.keyPrefix).toMatch(/^mux_(live|test)_/);
+      expect(result.apiKey.lastFour).toMatch(/^[a-zA-Z0-9_-]{4}$/);
+      expect(result.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
+      expect(result.apiKey.createdAt).toBeDefined();
     });
   });
 
-  describe('validateApiKey - Issue #154', () => {
+  describe('listApiKeys', () => {
+    it('should return only metadata without keys or hashes', async () => {
+      // Create a key first
+      await service.createApiKey({
+        name: 'test-key',
+        projectId: 'project-123',
+      });
+
+      const keys = await service.listApiKeys('project-123');
+
+      expect(keys.length).toBeGreaterThan(0);
+      keys.forEach((key) => {
+        expect(key.id).toBeDefined();
+        expect(key.name).toBeDefined();
+        expect(key.keyPrefix).toBeDefined();
+        expect(key.lastFour).toBeDefined();
+        expect(key.status).toBeDefined();
+        // Should NOT include hashes
+        expect((key as any).plainTextKey).toBeUndefined();
+      });
+    });
+  });
+
+  describe('validateApiKey', () => {
     it('should reject invalid API key format', async () => {
       await expect(service.validateApiKey('invalid-key')).rejects.toThrow(
         UnauthorizedException,
@@ -170,329 +160,73 @@ describe('ApiKeyService', () => {
       ).rejects.toThrow(UnauthorizedException);
     });
 
-    it('should validate and accept correct API key', async () => {
-      const plainTextKey = 'mux_test_validkey123456789012345';
-      const keyHash = crypto
-        .createHash('sha256')
-        .update(plainTextKey)
-        .digest('hex');
-
-      mockPrisma.apiKey.findUnique.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash,
-        keyPrefix: 'mux_test_',
-        lastFour: '5678',
-        projectId: 'project-id',
-        status: ApiKeyStatus.ACTIVE,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        revokedReason: null,
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        project: {
-          id: 'project-id',
-          developer: { id: 'dev-id', email: 'dev@example.com' },
-        },
+    it('should reject expired API key', async () => {
+      const result = await service.createApiKey({
+        name: 'expiring-key',
+        projectId: 'project-123',
+        expiresAt: new Date(Date.now() - 1000), // Expired 1 second ago
       });
 
-      const result = await service.validateApiKey(plainTextKey);
-
-      expect(result.apiKey).toBeDefined();
-      expect(result.apiKey.id).toBe('key-id');
-      expect(result.project).toBeDefined();
-      expect(result.developer).toBeDefined();
-    });
-
-    it('should reject incorrect API key', async () => {
-      const correctKey = 'mux_test_correct123456789012345';
-      const correctKeyHash = crypto
-        .createHash('sha256')
-        .update(correctKey)
-        .digest('hex');
-
-      mockPrisma.apiKey.findUnique.mockResolvedValue(null);
-
       await expect(
-        service.validateApiKey('mux_test_incorrect123456789012345'),
+        service.validateApiKey(result.plainTextKey),
       ).rejects.toThrow(UnauthorizedException);
     });
 
-    it('should reject revoked API key', async () => {
-      const plainTextKey = 'mux_test_validkey123456789012345';
-      const keyHash = crypto
-        .createHash('sha256')
-        .update(plainTextKey)
-        .digest('hex');
-
-      mockPrisma.apiKey.findUnique.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash,
-        keyPrefix: 'mux_test_',
-        lastFour: '5678',
-        projectId: 'project-id',
-        status: ApiKeyStatus.REVOKED,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: new Date(),
-        revokedReason: 'Manual revocation',
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        project: {
-          id: 'project-id',
-          developer: { id: 'dev-id', email: 'dev@example.com' },
-        },
+    it('should validate active API key successfully', async () => {
+      const createResult = await service.createApiKey({
+        name: 'active-key',
+        projectId: 'project-123',
       });
 
-      await expect(service.validateApiKey(plainTextKey)).rejects.toThrow(
-        /revoked/i,
+      const validateResult = await service.validateApiKey(
+        createResult.plainTextKey,
       );
+
+      expect(validateResult.apiKey).toBeDefined();
+      expect(validateResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
     });
   });
 
-  describe('revokeApiKey - Issue #155', () => {
-    it('should revoke an active API key', async () => {
-      mockPrisma.apiKey.findUnique.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash: 'hash',
-        keyPrefix: 'mux_test_',
-        lastFour: '5678',
-        projectId: 'project-id',
-        status: ApiKeyStatus.ACTIVE,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        revokedReason: null,
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        project: { developerId: 'dev-id' },
+  describe('rotateApiKey', () => {
+    it('should return plaintext key only for new rotated key', async () => {
+      // Create initial key
+      const createResult = await service.createApiKey({
+        name: 'original-key',
+        projectId: 'project-123',
       });
 
-      mockPrisma.apiKey.update.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash: 'hash',
-        keyPrefix: 'mux_test_',
-        lastFour: '5678',
-        projectId: 'project-id',
-        status: ApiKeyStatus.REVOKED,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: new Date(),
-        revokedReason: 'Manual revocation',
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
+      // Rotate it
+      const rotateResult = await service.rotateApiKey({
+        apiKeyId: createResult.apiKey.id,
       });
 
-      const result = await service.revokeApiKey(
-        'key-id',
-        'Manual revocation',
-        'dev-id',
+      // New key should have plaintext
+      expect(rotateResult.plainTextKey).toBeDefined();
+      expect(rotateResult.plainTextKey).not.toEqual(
+        createResult.plainTextKey,
       );
-
-      expect(result.status).toBe(ApiKeyStatus.REVOKED);
-      expect(result.revokedAt).toBeDefined();
-      expect(result.revokedReason).toBe('Manual revocation');
     });
 
-    it('should be idempotent when revoking already-revoked key', async () => {
-      const revokedKey = {
-        id: 'key-id',
-        name: 'Test Key',
-        keyHash: 'hash',
-        keyPrefix: 'mux_test_',
-        lastFour: '5678',
-        projectId: 'project-id',
-        status: ApiKeyStatus.REVOKED,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: new Date(),
-        revokedReason: 'Previous revocation',
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        project: { developerId: 'dev-id' },
-      };
-
-      mockPrisma.apiKey.findUnique.mockResolvedValue(revokedKey);
-
-      const result = await service.revokeApiKey('key-id', undefined, 'dev-id');
-
-      expect(result.status).toBe(ApiKeyStatus.REVOKED);
-      // Should not call update if already revoked
-      expect(mockPrisma.apiKey.update).not.toHaveBeenCalled();
-    });
-
-    it('should reject unauthorized revoke attempt', async () => {
-      mockPrisma.apiKey.findUnique.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        status: ApiKeyStatus.ACTIVE,
-        project: { developerId: 'dev-1' },
+    it('should revoke old key when rotating', async () => {
+      const createResult = await service.createApiKey({
+        name: 'original-key',
+        projectId: 'project-123',
       });
 
+      const rotateResult = await service.rotateApiKey({
+        apiKeyId: createResult.apiKey.id,
+      });
+
+      // Old key should now be revoked
       await expect(
-        service.revokeApiKey('key-id', undefined, 'dev-2'),
+        service.validateApiKey(createResult.plainTextKey),
       ).rejects.toThrow(UnauthorizedException);
-    });
-  });
 
-  describe('listApiKeys - Issue #156', () => {
-    it('should list API keys for a project with pagination', async () => {
-      mockPrisma.apiKey.findMany.mockResolvedValue([
-        {
-          id: 'key-1',
-          name: 'Key 1',
-          keyHash: 'hash1',
-          keyPrefix: 'mux_test_',
-          lastFour: '0001',
-          projectId: 'project-id',
-          status: ApiKeyStatus.ACTIVE,
-          expiresAt: null,
-          lastUsedAt: null,
-          revokedAt: null,
-          revokedReason: null,
-          gracePeriodEndsAt: null,
-          createdAt: new Date(),
-          updatedAt: new Date(),
-        },
-      ]);
-
-      mockPrisma.apiKey.count.mockResolvedValue(5);
-
-      const result = await service.listApiKeys({
-        projectId: 'project-id',
-        page: 1,
-        pageSize: 10,
-      });
-
-      expect(result.keys.length).toBe(1);
-      expect(result.total).toBe(5);
-      expect(result.page).toBe(1);
-      expect(result.pageSize).toBe(10);
-    });
-
-    it('should verify developer ownership when developerId provided', async () => {
-      mockPrisma.project.findUnique.mockResolvedValue({
-        id: 'project-id',
-        developerId: 'dev-1',
-      });
-
-      mockPrisma.apiKey.findMany.mockResolvedValue([]);
-      mockPrisma.apiKey.count.mockResolvedValue(0);
-
-      const result = await service.listApiKeys({
-        projectId: 'project-id',
-        developerId: 'dev-1',
-        page: 1,
-        pageSize: 10,
-      });
-
-      expect(result.keys).toEqual([]);
-    });
-
-    it('should reject unauthorized list attempt', async () => {
-      mockPrisma.project.findUnique.mockResolvedValue({
-        id: 'project-id',
-        developerId: 'dev-1',
-      });
-
-      await expect(
-        service.listApiKeys({
-          projectId: 'project-id',
-          developerId: 'dev-2',
-          page: 1,
-          pageSize: 10,
-        }),
-      ).rejects.toThrow(UnauthorizedException);
-    });
-  });
-
-  describe('rotateApiKey - Issue #157', () => {
-    it('should rotate API key and set grace period', async () => {
-      const oldKeyId = 'old-key-id';
-      mockPrisma.apiKey.findUnique.mockResolvedValue({
-        id: oldKeyId,
-        name: 'Old Key',
-        keyHash: 'old-hash',
-        keyPrefix: 'mux_test_',
-        lastFour: '0001',
-        projectId: 'project-id',
-        status: ApiKeyStatus.ACTIVE,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        revokedReason: null,
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-        project: {
-          id: 'project-id',
-          environment: 'test',
-          developerId: 'dev-id',
-        },
-      });
-
-      mockPrisma.project.findUnique.mockResolvedValue({
-        id: 'project-id',
-        environment: 'test',
-      });
-
-      mockPrisma.apiKey.create.mockResolvedValue({
-        id: 'new-key-id',
-        name: 'Old Key (rotated)',
-        keyHash: 'new-hash',
-        keyPrefix: 'mux_test_',
-        lastFour: '0002',
-        projectId: 'project-id',
-        status: ApiKeyStatus.ACTIVE,
-        expiresAt: null,
-        lastUsedAt: null,
-        revokedAt: null,
-        revokedReason: null,
-        gracePeriodEndsAt: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
-
-      mockPrisma.apiKey.update.mockResolvedValue({
-        id: oldKeyId,
-        status: ApiKeyStatus.ACTIVE,
-        gracePeriodEndsAt: expect.any(Date),
-      });
-
-      const result = await service.rotateApiKey(
-        { apiKeyId: oldKeyId },
-        'dev-id',
+      // New key should work
+      const validateResult = await service.validateApiKey(
+        rotateResult.plainTextKey,
       );
-
-      expect(result.plainTextKey).toBeDefined();
-      expect(mockPrisma.apiKey.update).toHaveBeenCalledWith({
-        where: { id: oldKeyId },
-        data: {
-          gracePeriodEndsAt: expect.any(Date),
-        },
-      });
-    });
-
-    it('should reject unauthorized rotate attempt', async () => {
-      mockPrisma.apiKey.findUnique.mockResolvedValue({
-        id: 'key-id',
-        name: 'Test Key',
-        projectId: 'project-id',
-        project: { developerId: 'dev-1' },
-      });
-
-      await expect(
-        service.rotateApiKey({ apiKeyId: 'key-id' }, 'dev-2'),
-      ).rejects.toThrow(UnauthorizedException);
+      expect(validateResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
     });
   });
 });

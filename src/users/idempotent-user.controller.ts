@@ -15,7 +15,7 @@ import {
   type FindOrCreateUserRequest,
   type FindOrCreateUserResult,
 } from './idempotent-user.service';
-import { ApiKeyGuard } from '../auth/api-key.guard';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
   RateLimitGuard,
   SensitiveEndpoint,

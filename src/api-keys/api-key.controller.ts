@@ -28,6 +28,7 @@ export class ApiKeyController {
     const result = await this.apiKeyService.createApiKey(request);
 
     return {
+      message: 'Store this key securely — it will not be shown again',
       apiKey: {
         id: result.apiKey.id,
         name: result.apiKey.name,
@@ -120,6 +121,7 @@ export class ApiKeyController {
     );
 
     return {
+      message: 'Store this key securely — it will not be shown again',
       apiKey: {
         id: result.apiKey.id,
         name: result.apiKey.name,
