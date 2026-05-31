@@ -140,7 +140,7 @@ describe('ApiKeyService', () => {
         expect(key.lastFour).toBeDefined();
         expect(key.status).toBeDefined();
         // Should NOT include hashes
-        expect((key as any).plainTextKey).toBeUndefined();
+        expect(key.plainTextKey).toBeUndefined();
       });
     });
   });
@@ -167,9 +167,9 @@ describe('ApiKeyService', () => {
         expiresAt: new Date(Date.now() - 1000), // Expired 1 second ago
       });
 
-      await expect(
-        service.validateApiKey(result.plainTextKey),
-      ).rejects.toThrow(UnauthorizedException);
+      await expect(service.validateApiKey(result.plainTextKey)).rejects.toThrow(
+        UnauthorizedException,
+      );
     });
 
     it('should validate active API key successfully', async () => {
@@ -202,9 +202,7 @@ describe('ApiKeyService', () => {
 
       // New key should have plaintext
       expect(rotateResult.plainTextKey).toBeDefined();
-      expect(rotateResult.plainTextKey).not.toEqual(
-        createResult.plainTextKey,
-      );
+      expect(rotateResult.plainTextKey).not.toEqual(createResult.plainTextKey);
     });
 
     it('should revoke old key when rotating', async () => {

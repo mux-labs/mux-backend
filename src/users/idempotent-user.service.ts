@@ -1,4 +1,9 @@
-import { Injectable, Logger, ConflictException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 
 export interface FindOrCreateUserRequest {

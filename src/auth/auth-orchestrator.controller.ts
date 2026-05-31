@@ -59,7 +59,10 @@ export class AuthOrchestratorController {
 
     // Set idempotency-replayed header if idempotency key was provided
     if (idempotencyKey) {
-      response.setHeader('Idempotency-Replayed', idempotencyReplayed ? 'true' : 'false');
+      response.setHeader(
+        'Idempotency-Replayed',
+        idempotencyReplayed ? 'true' : 'false',
+      );
     }
 
     response.json(responseBody);

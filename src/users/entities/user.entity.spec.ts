@@ -55,7 +55,11 @@ describe('User entity', () => {
         { ...baseProps(), authId: 'x'.repeat(257) },
         'authId',
       ],
-      ['empty authProvider', { ...baseProps(), authProvider: '' }, 'authProvider'],
+      [
+        'empty authProvider',
+        { ...baseProps(), authProvider: '' },
+        'authProvider',
+      ],
       [
         'bad status',
         { ...baseProps(), status: 'NOT_A_STATUS' as UserStatus },

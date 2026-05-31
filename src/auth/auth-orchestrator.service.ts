@@ -337,9 +337,7 @@ export class AuthOrchestrator {
     const status = user.status || 'ACTIVE';
 
     if (status !== 'ACTIVE') {
-      this.logger.warn(
-        `Authentication rejected: user status is ${status}`,
-      );
+      this.logger.warn(`Authentication rejected: user status is ${status}`);
       throw new ForbiddenException('Account is inactive');
     }
   }

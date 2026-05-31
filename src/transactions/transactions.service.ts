@@ -27,8 +27,11 @@ export class TransactionsService {
   /**
    * Create a new transaction in PENDING state
    */
-  async create(createTransactionDto: CreateTransactionDto): Promise<TransactionEntity> {
-    const { amount, asset, senderWalletId, receiverWalletId, metadata } = createTransactionDto;
+  async create(
+    createTransactionDto: CreateTransactionDto,
+  ): Promise<TransactionEntity> {
+    const { amount, asset, senderWalletId, receiverWalletId, metadata } =
+      createTransactionDto;
 
     // Validate wallets exist
     const senderWallet = await this.prisma.wallet.findUnique({
@@ -45,7 +48,9 @@ export class TransactionsService {
       });
 
       if (!receiverWallet) {
-        throw new NotFoundException(`Receiver wallet ${receiverWalletId} not found`);
+        throw new NotFoundException(
+          `Receiver wallet ${receiverWalletId} not found`,
+        );
       }
     }
 
@@ -133,7 +138,12 @@ export class TransactionsService {
     }
 
     // Validate status transition
-    if (!canTransitionTransactionStatus(existing.status as TransactionStatus, updateDto.status)) {
+    if (
+      !canTransitionTransactionStatus(
+        existing.status as TransactionStatus,
+        updateDto.status,
+      )
+    ) {
       throw new BadRequestException(
         `Invalid status transition: ${existing.status} -> ${updateDto.status}`,
       );
@@ -200,10 +210,7 @@ export class TransactionsService {
   async findByWallet(walletId: string): Promise<TransactionEntity[]> {
     const transactions = await this.prisma.transaction.findMany({
       where: {
-        OR: [
-          { senderWalletId: walletId },
-          { receiverWalletId: walletId },
-        ],
+        OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
       },
       orderBy: { createdAt: 'desc' },
     });

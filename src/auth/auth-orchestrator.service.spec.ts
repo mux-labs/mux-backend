@@ -215,9 +215,9 @@ describe('AuthOrchestrator', () => {
         email: 'test@example.com',
       };
 
-      await expect(service.handleAuthentication(invalidRequest)).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.handleAuthentication(invalidRequest),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should throw BadRequestException when authId is missing', async () => {
@@ -225,9 +225,9 @@ describe('AuthOrchestrator', () => {
         email: 'test@example.com',
       } as any;
 
-      await expect(service.handleAuthentication(invalidRequest)).rejects.toThrow(
-        BadRequestException,
-      );
+      await expect(
+        service.handleAuthentication(invalidRequest),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('should return cached response when idempotency key is provided and cache hit occurs', async () => {
@@ -257,7 +257,9 @@ describe('AuthOrchestrator', () => {
         isNewWallet: false,
       };
 
-      mockIdempotencyService.getCachedResponse.mockResolvedValue(cachedResponse);
+      mockIdempotencyService.getCachedResponse.mockResolvedValue(
+        cachedResponse,
+      );
 
       // Act
       const result = await service.handleAuthentication(requestWithIdempotency);
@@ -556,9 +558,9 @@ describe('AuthOrchestrator', () => {
       });
 
       // Act & Assert
-      await expect(
-        service.handleAuthentication(authRequest),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(service.handleAuthentication(authRequest)).rejects.toThrow(
+        ForbiddenException,
+      );
     });
 
     it('should reject suspended user with ForbiddenException', async () => {
@@ -580,9 +582,9 @@ describe('AuthOrchestrator', () => {
       });
 
       // Act & Assert
-      await expect(
-        service.handleAuthentication(authRequest),
-      ).rejects.toThrow(ForbiddenException);
+      await expect(service.handleAuthentication(authRequest)).rejects.toThrow(
+        ForbiddenException,
+      );
     });
 
     it('should treat missing status field as ACTIVE (backward-compatible)', async () => {

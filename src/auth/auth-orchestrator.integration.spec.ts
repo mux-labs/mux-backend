@@ -35,7 +35,9 @@ const makeUser = (overrides: Partial<ReturnType<typeof makeUser>> = {}) => ({
   ...overrides,
 });
 
-const makeWallet = (overrides: Partial<ReturnType<typeof makeWallet>> = {}) => ({
+const makeWallet = (
+  overrides: Partial<ReturnType<typeof makeWallet>> = {},
+) => ({
   id: 'wallet-abc',
   userId: 'user-abc',
   publicKey: 'GABC1234567890',
@@ -58,8 +60,12 @@ const makeWallet = (overrides: Partial<ReturnType<typeof makeWallet>> = {}) => (
 
 describe('AuthOrchestrator (integration harness)', () => {
   let orchestrator: AuthOrchestrator;
-  let userService: jest.Mocked<Pick<IdempotentUserService, 'findOrCreateUser' | 'findUserByAuthId'>>;
-  let walletOrchestrator: jest.Mocked<Pick<WalletCreationOrchestrator, 'getWalletByUser' | 'createWallet'>>;
+  let userService: jest.Mocked<
+    Pick<IdempotentUserService, 'findOrCreateUser' | 'findUserByAuthId'>
+  >;
+  let walletOrchestrator: jest.Mocked<
+    Pick<WalletCreationOrchestrator, 'getWalletByUser' | 'createWallet'>
+  >;
 
   beforeEach(async () => {
     userService = {
@@ -122,12 +128,18 @@ describe('AuthOrchestrator (integration harness)', () => {
       expect(result.wallet.status).toBe(WalletStatus.ACTIVE);
 
       expect(walletOrchestrator.createWallet).toHaveBeenCalledWith(
-        expect.objectContaining({ userId: 'user-abc', network: WalletNetwork.TESTNET }),
+        expect.objectContaining({
+          userId: 'user-abc',
+          network: WalletNetwork.TESTNET,
+        }),
       );
     });
 
     it('defaults to TESTNET when no network is specified', async () => {
-      userService.findOrCreateUser.mockResolvedValue({ user: makeUser(), isNewUser: true });
+      userService.findOrCreateUser.mockResolvedValue({
+        user: makeUser(),
+        isNewUser: true,
+      });
       walletOrchestrator.getWalletByUser.mockResolvedValue(null);
       walletOrchestrator.createWallet.mockResolvedValue({
         wallet: makeWallet(),
@@ -135,7 +147,9 @@ describe('AuthOrchestrator (integration harness)', () => {
         isNewWallet: true,
       });
 
-      const result = await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      const result = await orchestrator.handleAuthentication({
+        authId: 'auth-abc',
+      });
 
       expect(result.wallet.network).toBe(WalletNetwork.TESTNET);
     });
@@ -150,10 +164,15 @@ describe('AuthOrchestrator (integration harness)', () => {
       const user = makeUser();
       const wallet = makeWallet();
 
-      userService.findOrCreateUser.mockResolvedValue({ user, isNewUser: false });
+      userService.findOrCreateUser.mockResolvedValue({
+        user,
+        isNewUser: false,
+      });
       walletOrchestrator.getWalletByUser.mockResolvedValue(wallet);
 
-      const result = await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      const result = await orchestrator.handleAuthentication({
+        authId: 'auth-abc',
+      });
 
       expect(result.isNewUser).toBe(false);
       expect(result.isNewWallet).toBe(false);
@@ -166,7 +185,10 @@ describe('AuthOrchestrator (integration harness)', () => {
       const user = makeUser();
       const wallet = makeWallet();
 
-      userService.findOrCreateUser.mockResolvedValue({ user, isNewUser: false });
+      userService.findOrCreateUser.mockResolvedValue({
+        user,
+        isNewUser: false,
+      });
       walletOrchestrator.getWalletByUser.mockResolvedValue(null);
       walletOrchestrator.createWallet.mockResolvedValue({
         wallet,
@@ -174,7 +196,9 @@ describe('AuthOrchestrator (integration harness)', () => {
         isNewWallet: true,
       });
 
-      const result = await orchestrator.handleAuthentication({ authId: 'auth-abc' });
+      const result = await orchestrator.handleAuthentication({
+        authId: 'auth-abc',
+      });
 
       expect(result.isNewUser).toBe(false);
       expect(result.isNewWallet).toBe(true);
@@ -188,7 +212,9 @@ describe('AuthOrchestrator (integration harness)', () => {
 
   describe('error propagation', () => {
     it('wraps user service errors in an Authentication failed error', async () => {
-      userService.findOrCreateUser.mockRejectedValue(new Error('DB unavailable'));
+      userService.findOrCreateUser.mockRejectedValue(
+        new Error('DB unavailable'),
+      );
 
       await expect(
         orchestrator.handleAuthentication({ authId: 'auth-abc' }),
@@ -196,9 +222,14 @@ describe('AuthOrchestrator (integration harness)', () => {
     });
 
     it('wraps wallet creation errors in an Authentication failed error', async () => {
-      userService.findOrCreateUser.mockResolvedValue({ user: makeUser(), isNewUser: true });
+      userService.findOrCreateUser.mockResolvedValue({
+        user: makeUser(),
+        isNewUser: true,
+      });
       walletOrchestrator.getWalletByUser.mockResolvedValue(null);
-      walletOrchestrator.createWallet.mockRejectedValue(new Error('Stellar unavailable'));
+      walletOrchestrator.createWallet.mockRejectedValue(
+        new Error('Stellar unavailable'),
+      );
 
       await expect(
         orchestrator.handleAuthentication({ authId: 'auth-abc' }),
@@ -213,17 +244,23 @@ describe('AuthOrchestrator (integration harness)', () => {
   describe('validateAuthentication', () => {
     it('returns true for an existing user', async () => {
       userService.findUserByAuthId.mockResolvedValue(makeUser());
-      await expect(orchestrator.validateAuthentication('auth-abc')).resolves.toBe(true);
+      await expect(
+        orchestrator.validateAuthentication('auth-abc'),
+      ).resolves.toBe(true);
     });
 
     it('returns true for an unknown authId (new user path)', async () => {
       userService.findUserByAuthId.mockResolvedValue(null);
-      await expect(orchestrator.validateAuthentication('new-id')).resolves.toBe(true);
+      await expect(orchestrator.validateAuthentication('new-id')).resolves.toBe(
+        true,
+      );
     });
 
     it('returns false when the lookup throws', async () => {
       userService.findUserByAuthId.mockRejectedValue(new Error('DB error'));
-      await expect(orchestrator.validateAuthentication('auth-abc')).resolves.toBe(false);
+      await expect(
+        orchestrator.validateAuthentication('auth-abc'),
+      ).resolves.toBe(false);
     });
   });
 });

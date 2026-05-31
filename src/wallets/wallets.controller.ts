@@ -13,11 +13,12 @@ import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
-import { ApiKeyContext } from '../api-keys/domain/api-key.model';
+import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
 @Controller('wallets')
-@UseGuards(ApiKeyGuard)
+@UseGuards(ApiKeyGuard, RateLimitGuard)
 export class WalletsController {
   constructor(private readonly walletsService: WalletsService) {}
 
@@ -29,6 +30,17 @@ export class WalletsController {
   @Get()
   findAll() {
     return this.walletsService.findAll();
+  }
+
+  @RequireApiKey()
+  @Get('protected')
+  async protectedEndpoint(@ApiKeyCtx() context: ApiKeyContext) {
+    // context contains developer, project, and apiKey info
+    return {
+      message: 'This endpoint is protected by API key',
+      developer: context.developer.email,
+      project: context.project.name,
+    };
   }
 
   @Get(':id')
@@ -44,16 +56,5 @@ export class WalletsController {
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.walletsService.remove(+id);
-  }
-
-  @RequireApiKey()
-  @Get('protected')
-  async protectedEndpoint(@ApiKeyCtx() context: ApiKeyContext) {
-    // context contains developer, project, and apiKey info
-    return {
-      message: 'This endpoint is protected by API key',
-      developer: context.developer.email,
-      project: context.project.name,
-    };
   }
 }

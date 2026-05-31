@@ -218,16 +218,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
       );
     } else if (statusCode >= 400) {
       // Client errors - log as warning
-      this.logger.warn(
-        `Client Error: ${message}`,
-        JSON.stringify(logContext),
-      );
+      this.logger.warn(`Client Error: ${message}`, JSON.stringify(logContext));
     } else {
       // Other errors - log as debug
-      this.logger.debug(
-        `Error: ${message}`,
-        JSON.stringify(logContext),
-      );
+      this.logger.debug(`Error: ${message}`, JSON.stringify(logContext));
     }
   }
 }

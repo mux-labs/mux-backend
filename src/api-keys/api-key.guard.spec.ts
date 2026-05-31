@@ -67,8 +67,8 @@ describe('ApiKeyGuard', () => {
     };
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
-    expect((req as any).apiKeyContext).toBeDefined();
-    expect((req as any).apiKeyInfo).toBeDefined();
+    expect(req.apiKeyContext).toBeDefined();
+    expect(req.apiKeyInfo).toBeDefined();
   });
 
   it('maps upstream validation errors to ServiceUnavailableException (503)', async () => {

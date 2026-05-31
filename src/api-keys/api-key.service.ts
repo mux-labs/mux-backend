@@ -198,9 +198,7 @@ export class ApiKeyService {
 
     // Verify ownership if developerId provided
     if (developerId && apiKey.project.developerId !== developerId) {
-      throw new UnauthorizedException(
-        'You do not have access to this API key',
-      );
+      throw new UnauthorizedException('You do not have access to this API key');
     }
 
     // If already revoked, return success (idempotent)
@@ -241,9 +239,7 @@ export class ApiKeyService {
 
     // Verify ownership if developerId provided
     if (developerId && oldKey.project.developerId !== developerId) {
-      throw new UnauthorizedException(
-        'You do not have access to this API key',
-      );
+      throw new UnauthorizedException('You do not have access to this API key');
     }
 
     // Create new key

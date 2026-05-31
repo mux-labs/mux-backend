@@ -32,8 +32,12 @@ export class WebhookService {
   /**
    * Creates a new webhook endpoint
    */
-  async createEndpoint(request: CreateWebhookEndpointRequest): Promise<WebhookEndpoint> {
-    this.logger.log(`Creating webhook endpoint for project ${request.projectId}`);
+  async createEndpoint(
+    request: CreateWebhookEndpointRequest,
+  ): Promise<WebhookEndpoint> {
+    this.logger.log(
+      `Creating webhook endpoint for project ${request.projectId}`,
+    );
 
     // Generate secret for signing
     const secret = this.generateSecret();
@@ -85,7 +89,7 @@ export class WebhookService {
    */
   async updateEndpoint(
     endpointId: string,
-    updates: UpdateWebhookEndpointRequest
+    updates: UpdateWebhookEndpointRequest,
   ): Promise<WebhookEndpoint> {
     const endpoint = await this.prisma.webhookEndpoint.update({
       where: { id: endpointId },

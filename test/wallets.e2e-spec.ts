@@ -37,7 +37,9 @@ describe('Wallets Protected Endpoint (e2e)', () => {
 
     // Apply guard globally so MVC routes are protected
     const reflector = app.get(Reflector);
-    app.useGlobalGuards(new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector));
+    app.useGlobalGuards(
+      new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector),
+    );
 
     await app.init();
   });
