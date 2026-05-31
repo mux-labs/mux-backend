@@ -44,6 +44,7 @@ import { HealthModule } from './health/health.module';
     DevelopersModule,
     ProjectsModule,
     HealthModule,
+    IdempotentUserModule,
   ],
   controllers: [AppController],
   providers: [
