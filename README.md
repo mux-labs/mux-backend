@@ -35,6 +35,11 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 
 ### Health & Monitoring
 
+#### `GET /health`
+
+Liveness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application process is alive and responsive. This is a lightweight check that does NOT verify external dependencies like databases.
 #### `GET /ready`
 
 Readiness probe endpoint for Kubernetes and container orchestration platforms.
