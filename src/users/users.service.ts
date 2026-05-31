@@ -1,42 +1,56 @@
 import {
   Injectable,
+  Logger,
   NotFoundException,
-  BadRequestException,
+  ConflictException,
 } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
+import { PrismaClient } from '../generated/prisma/client';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 @Injectable()
 export class UsersService {
-  constructor(private readonly prisma: PrismaService) {}
+  private readonly logger = new Logger(UsersService.name);
+  private prisma: PrismaClient;
+
+  constructor(prisma?: PrismaClient) {
+    this.prisma = prisma ?? new PrismaClient({} as any);
+  }
 
   async create(createUserDto: CreateUserDto) {
-    const { authId, email, displayName, authProvider } = createUserDto;
+    const { authId, email, displayName, authProvider = 'UNKNOWN' } =
+      createUserDto;
 
-    const trimmedAuthId = authId?.trim();
-    if (!trimmedAuthId) {
-      throw new BadRequestException('authId is required');
+    if (!authId || authId.trim().length < 3) {
+      throw new ConflictException(
+        'authId is required and must be at least 3 characters',
+      );
     }
 
-    return this.prisma.user.create({
-      data: {
-        authId: trimmedAuthId,
-        email,
-        displayName,
-        authProvider: authProvider?.trim() || 'UNKNOWN',
-        status: 'ACTIVE',
-        lastLoginAt: new Date(),
-      },
-    });
+    try {
+      const user = await this.prisma.user.create({
+        data: {
+          authId: authId.trim(),
+          email: email?.trim() || null,
+          displayName: displayName?.trim() || null,
+          authProvider,
+          status: 'ACTIVE',
+        },
+      });
+
+      this.logger.log(`Created new user ${user.id}`);
+      return this.mapPrismaUser(user);
+    } catch (error: any) {
+      this.logger.error('Failed to create user:', error);
+      if (error?.code === 'P2002') {
+        throw new ConflictException('User authId already exists');
+      }
+      throw new Error('User creation failed');
+    }
   }
 
   async findAll() {
-    return this.prisma.user.findMany({
-      where: {
-        deletedAt: null,
-      },
-    });
+    return this.prisma.user.findMany({ where: { deletedAt: null } });
   }
 
   async findOne(id: string) {
@@ -45,61 +59,58 @@ export class UsersService {
     });
 
     if (!user || user.deletedAt) {
-      throw new NotFoundException(`User with id ${id} not found`);
+      throw new NotFoundException(`User with ID ${id} not found`);
     }
 
-    return user;
+    return this.mapPrismaUser(user);
   }
 
   async update(id: string, updateUserDto: UpdateUserDto) {
-    const data: Record<string, unknown> = {};
+    try {
+      const updatedUser = await this.prisma.user.update({
+        where: { id },
+        data: {
+          authId: updateUserDto.authId?.trim(),
+          email: updateUserDto.email?.trim(),
+          displayName: updateUserDto.displayName?.trim(),
+          authProvider: updateUserDto.authProvider,
+          updatedAt: new Date(),
+        },
+      });
 
-    if (updateUserDto.email !== undefined) {
-      data.email = updateUserDto.email;
+      return this.mapPrismaUser(updatedUser);
+    } catch (error: any) {
+      this.logger.error(`Failed to update user ${id}:`, error);
+      if (error?.code === 'P2002') {
+        throw new ConflictException('User authId already exists');
+      }
+      throw new NotFoundException(`User with ID ${id} not found`);
     }
-    if (updateUserDto.displayName !== undefined) {
-      data.displayName = updateUserDto.displayName;
-    }
-    if (updateUserDto.authProvider !== undefined) {
-      data.authProvider = updateUserDto.authProvider;
-    }
-    if (updateUserDto.status !== undefined) {
-      data.status = updateUserDto.status;
-    }
-
-    if (Object.keys(data).length === 0) {
-      throw new BadRequestException('No update fields provided');
-    }
-
-    const existingUser = await this.prisma.user.findUnique({
-      where: { id },
-    });
-
-    if (!existingUser || existingUser.deletedAt) {
-      throw new NotFoundException(`User with id ${id} not found`);
-    }
-
-    return this.prisma.user.update({
-      where: { id },
-      data,
-    });
   }
 
   async remove(id: string) {
-    const existingUser = await this.prisma.user.findUnique({
-      where: { id },
-    });
-
-    if (!existingUser || existingUser.deletedAt) {
-      throw new NotFoundException(`User with id ${id} not found`);
+    try {
+      return this.prisma.user.update({
+        where: { id },
+        data: { deletedAt: new Date() },
+      });
+    } catch (error) {
+      this.logger.error(`Failed to remove user ${id}:`, error);
+      throw new NotFoundException(`User with ID ${id} not found`);
     }
+  }
 
-    return this.prisma.user.update({
-      where: { id },
-      data: {
-        deletedAt: new Date(),
-        status: 'DELETED',
-      },
-    });
+  private mapPrismaUser(prismaUser: any) {
+    return {
+      id: prismaUser.id,
+      authId: prismaUser.authId,
+      email: prismaUser.email,
+      displayName: prismaUser.displayName,
+      status: prismaUser.status,
+      authProvider: prismaUser.authProvider,
+      lastLoginAt: prismaUser.lastLoginAt,
+      createdAt: prismaUser.createdAt,
+      updatedAt: prismaUser.updatedAt,
+    };
   }
 }
