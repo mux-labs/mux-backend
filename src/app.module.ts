@@ -18,8 +18,8 @@ import { KeyManagementModule } from './key-management/key-management.module';
 import { BalanceIndexerModule } from './balance-indexer/balance-indexer.module';
 import { WebhookModule } from './webhooks/webhook.module';
 import { TransactionsModule } from './transactions/transactions.module';
-import { HealthModule } from './health/health.module';
-
+import { DevelopersModule } from './developers/developers.module';
+import { ProjectsModule } from './projects/projects.module';
 
 @Module({
   imports: [

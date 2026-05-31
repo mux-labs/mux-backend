@@ -27,6 +27,41 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
+* Health monitoring and readiness checks
+
+---
+
+## API Endpoints
+
+### Health & Monitoring
+
+#### `GET /ready`
+
+Readiness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application is ready to serve traffic by verifying database connectivity.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ready",
+  "timestamp": "2026-05-30T12:00:00.000Z",
+  "database": {
+    "connected": true,
+    "responseTime": 15
+  }
+}
+```
+
+**Response (503 Service Unavailable)**: Returned when the database is not accessible.
+
+**Use Cases**:
+- Kubernetes readiness probes
+- Load balancer health checks
+- Container orchestration platforms
+- CI/CD deployment verification
+
+**Authentication**: Public endpoint (no API key required)
 
 ---
 
@@ -61,6 +96,44 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Track balances and transactions
 * Human-readable transaction history
 * Cached reads for fast UX
+
+---
+
+## Database Setup
+
+This project uses **PostgreSQL** via **Prisma ORM**. You must set the `DATABASE_URL` environment variable before running migrations or starting the server.
+
+### Environment Variables
+
+Copy `.env.example` to `.env` (or create `.env`) and set:
+
+```env
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
+```
+
+**Examples:**
+
+| Environment | Connection string |
+|---|---|
+| Local dev | `postgresql://postgres:postgres@localhost:5432/mux_dev` |
+| Docker Compose | `postgresql://postgres:postgres@db:5432/mux_dev` |
+| Supabase | `postgresql://postgres:[password]@db.[project].supabase.co:5432/postgres` |
+| Railway / Render | Use the connection string provided by the platform |
+
+### Running Migrations
+
+```bash
+# Apply all pending migrations (development)
+pnpm prisma:migrate
+
+# Apply migrations in production / CI (non-interactive)
+pnpm prisma:migrate:prod
+
+# Seed the database with demo users and wallets (dev only)
+pnpm prisma:seed
+```
+
+> The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
 
 ---
 
@@ -105,3 +178,15 @@ MIT
 ## Contributing
 
 Contributions are welcome. Please open an issue before submitting large changes.
+
+---
+
+## Request Logging Middleware
+
+A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
+
+- Sets an `x-request-id` header (honors incoming `x-request-id` if present).
+- Logs method, URL, client IP and request id when requests start and when they finish.
+- Is robust to stale/invalid request objects and will not crash the application.
+
+The middleware is registered in `src/main.ts` and runs for all incoming requests.
