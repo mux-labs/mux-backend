@@ -21,7 +21,6 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 
-
 @Module({
   imports: [
     ConfigModule.forRoot({

@@ -27,6 +27,41 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
+* Health monitoring and readiness checks
+
+---
+
+## API Endpoints
+
+### Health & Monitoring
+
+#### `GET /ready`
+
+Readiness probe endpoint for Kubernetes and container orchestration platforms.
+
+**Purpose**: Indicates whether the application is ready to serve traffic by verifying database connectivity.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ready",
+  "timestamp": "2026-05-30T12:00:00.000Z",
+  "database": {
+    "connected": true,
+    "responseTime": 15
+  }
+}
+```
+
+**Response (503 Service Unavailable)**: Returned when the database is not accessible.
+
+**Use Cases**:
+- Kubernetes readiness probes
+- Load balancer health checks
+- Container orchestration platforms
+- CI/CD deployment verification
+
+**Authentication**: Public endpoint (no API key required)
 
 ---
 
