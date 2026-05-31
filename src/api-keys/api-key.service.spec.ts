@@ -2,16 +2,69 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { UnauthorizedException } from '@nestjs/common';
 import { ApiKeyService, CreateApiKeyResult } from './api-key.service';
 import { ApiKeyStatus } from './domain/api-key.model';
+import * as crypto from 'crypto';
+
+// Mock PrismaClient
+jest.mock('../generated/prisma/client', () => {
+  return {
+    PrismaClient: jest.fn().mockImplementation(() => ({
+      project: {
+        findUnique: jest.fn(),
+      },
+      apiKey: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        count: jest.fn(),
+        update: jest.fn(),
+      },
+      apiKeyUsage: {
+        create: jest.fn(),
+      },
+    })),
+  };
+});
 
 describe('ApiKeyService', () => {
   let service: ApiKeyService;
+  let mockPrisma: any;
+  let mockConfigService: any;
 
   beforeEach(async () => {
+    mockPrisma = {
+      project: {
+        findUnique: jest.fn(),
+      },
+      apiKey: {
+        create: jest.fn(),
+        findUnique: jest.fn(),
+        findMany: jest.fn(),
+        count: jest.fn(),
+        update: jest.fn(),
+      },
+      apiKeyUsage: {
+        create: jest.fn(),
+      },
+    };
+
+    mockConfigService = {
+      get: jest.fn((key: string) => {
+        if (key === 'API_KEY_ROTATION_GRACE_SECONDS') {
+          return 3600;
+        }
+        return undefined;
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
-      providers: [ApiKeyService],
+      providers: [
+        ApiKeyService,
+        { provide: ConfigService, useValue: mockConfigService },
+      ],
     }).compile();
 
     service = module.get<ApiKeyService>(ApiKeyService);
+    service['prisma'] = mockPrisma;
   });
 
   it('should be defined', () => {
@@ -100,6 +153,8 @@ describe('ApiKeyService', () => {
     });
 
     it('should reject non-existent API key', async () => {
+      mockPrisma.apiKey.findUnique.mockResolvedValue(null);
+
       await expect(
         service.validateApiKey('mux_test_nonexistent'),
       ).rejects.toThrow(UnauthorizedException);

@@ -21,6 +21,7 @@ export interface ApiKey {
   lastUsedAt?: Date | null;
   revokedAt?: Date | null;
   revokedReason?: string | null;
+  gracePeriodEndsAt?: Date | null;
   createdAt: Date;
   updatedAt: Date;
 }
