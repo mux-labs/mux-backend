@@ -1,4 +1,4 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
 import {
   IdempotentUserService,
   FindOrCreateUserRequest,
@@ -116,12 +116,14 @@ export interface AuthenticationResult {
     displayName?: string;
     status: string;
     authProvider: string;
+    lastLoginAt: Date | null;
   };
   wallet: {
     id: string;
     publicKey: string;
     network: WalletNetwork;
     status: string;
+    createdAt: Date;
   };
   isNewUser: boolean;
   isNewWallet: boolean;
@@ -192,6 +194,9 @@ export class AuthOrchestrator {
       // Step 1: Find or create user (idempotent)
       const userResult = await this.findOrCreateUser(request);
 
+      // Step 1.5: Check if user is active
+      this.validateUserStatus(userResult.user);
+
       // Step 2: Ensure user has a wallet (idempotent)
       const walletResult = await this.ensureUserHasWallet(
         userResult.user.id,
@@ -213,12 +218,14 @@ export class AuthOrchestrator {
           displayName: userResult.user.displayName,
           status: userResult.user.status,
           authProvider: userResult.user.authProvider,
+          lastLoginAt: userResult.user.lastLoginAt ?? null,
         },
         wallet: {
           id: walletResult.wallet.id,
           publicKey: walletResult.wallet.publicKey,
           network: walletResult.wallet.network,
           status: walletResult.wallet.status,
+          createdAt: walletResult.wallet.createdAt,
         },
         isNewUser: userResult.isNewUser,
         isNewWallet: walletResult.isNewWallet,
@@ -318,6 +325,22 @@ export class AuthOrchestrator {
         error,
       );
       return false;
+    }
+  }
+
+  /**
+   * Validates that user status permits authentication
+   * Rejects users that are inactive, suspended, or soft-deleted
+   * Treats missing status as active (backward-compatible)
+   */
+  private validateUserStatus(user: { status?: string }): void {
+    const status = user.status || 'ACTIVE';
+
+    if (status !== 'ACTIVE') {
+      this.logger.warn(
+        `Authentication rejected: user status is ${status}`,
+      );
+      throw new ForbiddenException('Account is inactive');
     }
   }
 }

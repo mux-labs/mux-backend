@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException } from '@nestjs/common';
-import { AuthOrchestrator, AuthPayloadValidator } from './auth-orchestrator.service';
+import { ForbiddenException } from '@nestjs/common';
+import { AuthOrchestrator } from './auth-orchestrator.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
@@ -427,6 +427,8 @@ describe('AuthOrchestrator', () => {
       expect(result.isNewWallet).toBe(true);
       expect(result.user.id).toBe('user-123');
       expect(result.wallet.id).toBe('wallet-123');
+      expect(result.user.lastLoginAt).toBeInstanceOf(Date);
+      expect(result.wallet.createdAt).toBeInstanceOf(Date);
       expect(idempotentUserService.findOrCreateUser).toHaveBeenCalledWith({
         authId: 'auth-123',
         email: 'test@example.com',
@@ -481,6 +483,8 @@ describe('AuthOrchestrator', () => {
       expect(result.isNewWallet).toBe(false);
       expect(result.user.id).toBe('user-123');
       expect(result.wallet.id).toBe('wallet-123');
+      expect(result.user.lastLoginAt).toBeInstanceOf(Date);
+      expect(result.wallet.createdAt).toBeInstanceOf(Date);
       expect(walletCreationOrchestrator.createWallet).not.toHaveBeenCalled();
     });
 
@@ -531,6 +535,98 @@ describe('AuthOrchestrator', () => {
       expect(result.isNewUser).toBe(false);
       expect(result.isNewWallet).toBe(true);
       expect(walletCreationOrchestrator.createWallet).toHaveBeenCalled();
+    });
+
+    it('should reject inactive user with ForbiddenException', async () => {
+      // Arrange
+      const mockUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'INACTIVE',
+        authProvider: 'GOOGLE',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue({
+        user: mockUser,
+        isNewUser: false,
+      });
+
+      // Act & Assert
+      await expect(
+        service.handleAuthentication(authRequest),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('should reject suspended user with ForbiddenException', async () => {
+      // Arrange
+      const mockUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        status: 'SUSPENDED',
+        authProvider: 'GOOGLE',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue({
+        user: mockUser,
+        isNewUser: false,
+      });
+
+      // Act & Assert
+      await expect(
+        service.handleAuthentication(authRequest),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('should treat missing status field as ACTIVE (backward-compatible)', async () => {
+      // Arrange
+      const mockUser = {
+        id: 'user-123',
+        authId: 'auth-123',
+        email: 'test@example.com',
+        displayName: 'Test User',
+        // status field intentionally missing
+        authProvider: 'GOOGLE',
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const mockWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'encrypted',
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        statusChangedAt: new Date(),
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue({
+        user: mockUser,
+        isNewUser: false,
+      });
+
+      mockWalletCreationOrchestrator.getWalletByUser.mockResolvedValue(
+        mockWallet,
+      );
+
+      // Act
+      const result = await service.handleAuthentication(authRequest);
+
+      // Assert
+      expect(result.user.id).toBe('user-123');
+      expect(walletCreationOrchestrator.createWallet).not.toHaveBeenCalled();
     });
   });
 

@@ -85,14 +85,18 @@ model User {
   lastLoginAt DateTime?
 
   /// Operational metadata
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
 
   /// Relation to user's wallets
   wallets Wallet[]
 
   @@index([authId])
   @@index([authProvider])
+  @@index([deletedAt])
 }
 
 /// Internal lifecycle states (wallets are not user-facing).
@@ -164,6 +168,7 @@ model Wallet {
   @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
+  @@index([rotatedFromId])
 }
 
 /// Recovery request lifecycle states
@@ -187,7 +192,11 @@ model RecoveryRequest {
   createdAt DateTime       @default(now())
   updatedAt DateTime       @updatedAt
 
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
   @@index([walletId, status])
+  @@index([deletedAt])
 }
 
 /// API Key status lifecycle
@@ -209,14 +218,18 @@ model Developer {
   status      String   @default("ACTIVE")
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
   projects    Project[]
-  
+
   @@index([email])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// Project entity for organizing API keys and usage
@@ -239,62 +252,83 @@ model Project {
   rateLimitRpm Int     @default(60)
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
-  apiKeys         ApiKey[]
-  apiKeyUsage     ApiKeyUsage[]
+  apiKeys          ApiKey[]
+  apiKeyUsage      ApiKeyUsage[]
   webhookEndpoints WebhookEndpoint[]
-  
+
   @@index([developerId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// API Key for developer authentication
 model ApiKey {
   id              String       @id @default(uuid())
-  
+
   /// Human-readable key name/description
   name            String
-  
+
   /// Hashed API key (never store plaintext)
   keyHash         String       @unique
-  
+
   /// Key prefix for identification (e.g., "mux_live_" or "mux_test_")
   keyPrefix       String
-  
+
   /// Last 4 characters of the key for identification
   lastFour        String
-  
+
   /// Project reference
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
-  
+
   /// Key status
   status          ApiKeyStatus @default(ACTIVE)
-  
+
   /// Key expiration (optional)
   expiresAt       DateTime?
-  
+
   /// Last used timestamp
   lastUsedAt      DateTime?
-  
+
   /// Revocation info
   revokedAt       DateTime?
   revokedReason   String?
-  
+
   /// Metadata
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
-  
+
   /// Relations
-  usageRecords    ApiKeyUsage[]
-  
+  usageRecords     ApiKeyUsage[]
+  rateLimitRecords RateLimitRecord[]
+
   @@index([keyHash])
   @@index([projectId])
   @@index([status])
   @@index([keyPrefix])
+}
+
+/// Sliding-window rate limit tracking per API key and endpoint
+model RateLimitRecord {
+  id           String   @id @default(uuid())
+  apiKeyId     String
+  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  endpoint     String
+  windowStart  DateTime
+  requestCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([apiKeyId, endpoint, windowStart])
+  @@index([apiKeyId])
+  @@index([windowStart])
 }
 
 /// API Key usage tracking for analytics and rate limiting
@@ -452,14 +486,18 @@ model WebhookEndpoint {
   lastSuccessAt DateTime?
   
   /// Metadata
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
-  
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
   /// Relations
   deliveries  WebhookDelivery[]
-  
+
   @@index([projectId])
   @@index([status])
+  @@index([deletedAt])
 }
 
 /// Webhook delivery attempt tracking
@@ -590,6 +628,8 @@ model Transaction {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
   
+  @@index([senderWalletId])
+  @@index([receiverWalletId])
   @@index([senderWalletId, status])
   @@index([receiverWalletId, status])
   @@index([status, createdAt])

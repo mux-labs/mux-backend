@@ -16,7 +16,7 @@ import {
   type WalletOrchestrationResult,
 } from './wallet-creation-orchestrator.service';
 import { WalletNetwork } from './domain/wallet.model';
-import { ApiKeyGuard } from '../auth/api-key.guard';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
   RateLimitGuard,
   SensitiveEndpoint,
