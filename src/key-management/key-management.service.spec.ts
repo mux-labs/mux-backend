@@ -147,4 +147,45 @@ describe('KeyManagementService', () => {
       expect(logsAsString).not.toMatch(/secret.*seed/i);
     });
   });
+
+  describe('getSecurityModel', () => {
+    it('should return the custody model identifier', () => {
+      const model = service.getSecurityModel();
+      expect(model.custodyModel).toBe('server-side-custodial');
+    });
+
+    it('should describe AES-256-GCM encryption at rest', () => {
+      const { encryptionAtRest } = service.getSecurityModel();
+      expect(encryptionAtRest.algorithm).toBe('aes-256-gcm');
+      expect(encryptionAtRest.keyLengthBits).toBe(256);
+      expect(encryptionAtRest.ivLengthBits).toBe(128);
+      expect(encryptionAtRest.authTagLengthBits).toBe(128);
+    });
+
+    it('should report plaintext exposure as in-memory-only', () => {
+      const { keyGeneration } = service.getSecurityModel();
+      expect(keyGeneration.plaintextExposure).toBe('in-memory-only');
+    });
+
+    it('should list both rotation chain fields', () => {
+      const { rotation } = service.getSecurityModel();
+      expect(rotation.chainFields).toContain('rotatedFromId');
+      expect(rotation.chainFields).toContain('successorId');
+    });
+
+    it('should confirm rotation uses an atomic transaction', () => {
+      const { rotation } = service.getSecurityModel();
+      expect(rotation.atomicTransaction).toBe(true);
+    });
+
+    it('should list registered providers', () => {
+      const { registeredProviders } = service.getSecurityModel();
+      expect(registeredProviders).toContain(KeyType.STELLAR_ED25519);
+    });
+
+    it('should reference the docs path', () => {
+      const { docsPath } = service.getSecurityModel();
+      expect(docsPath).toBe('docs/custody-security-model.md');
+    });
+  });
 });

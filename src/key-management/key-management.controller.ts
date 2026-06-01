@@ -79,6 +79,15 @@ export class KeyManagementController {
   }
 
   /**
+   * Returns a machine-readable summary of the custody security model.
+   * See docs/custody-security-model.md for the full narrative.
+   */
+  @Get('security-model')
+  getSecurityModel() {
+    return this.keyManagementService.getSecurityModel();
+  }
+
+  /**
    * Gets audit log (admin only)
    */
   @Get('audit')

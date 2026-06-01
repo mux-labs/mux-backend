@@ -22,6 +22,33 @@ export interface SignRequest {
   publicKey: string; // For audit trail
 }
 
+export interface SecurityModelSummary {
+  custodyModel: 'server-side-custodial';
+  encryptionAtRest: {
+    algorithm: string;
+    keyLengthBits: number;
+    ivLengthBits: number;
+    authTagLengthBits: number;
+    aad: string;
+  };
+  keyGeneration: {
+    provider: string;
+    keyType: string;
+    plaintextExposure: 'in-memory-only';
+  };
+  rotation: {
+    chainFields: string[];
+    atomicTransaction: boolean;
+    rotatableStatuses: string[];
+  };
+  auditLog: {
+    operations: string[];
+    maxInMemoryEntries: number;
+  };
+  registeredProviders: string[];
+  docsPath: string;
+}
+
 /**
  * Custodial Key Management Service
  *
@@ -225,6 +252,39 @@ export class KeyManagementService {
       this.logger.error('Key re-encryption failed:', error);
       throw new Error('Key re-encryption failed');
     }
+  }
+
+  /**
+   * Returns a machine-readable summary of the custody security model.
+   * Mirrors docs/custody-security-model.md.
+   */
+  getSecurityModel(): SecurityModelSummary {
+    return {
+      custodyModel: 'server-side-custodial',
+      encryptionAtRest: {
+        algorithm: 'aes-256-gcm',
+        keyLengthBits: 256,
+        ivLengthBits: 128,
+        authTagLengthBits: 128,
+        aad: 'wallet-secret',
+      },
+      keyGeneration: {
+        provider: 'StellarKeyProvider',
+        keyType: KeyType.STELLAR_ED25519,
+        plaintextExposure: 'in-memory-only',
+      },
+      rotation: {
+        chainFields: ['rotatedFromId', 'successorId'],
+        atomicTransaction: true,
+        rotatableStatuses: ['ACTIVE', 'ROTATING'],
+      },
+      auditLog: {
+        operations: ['GENERATE', 'SIGN', 'ROTATE', 'REVOKE', 'ACCESS'],
+        maxInMemoryEntries: 1000,
+      },
+      registeredProviders: Array.from(this.providers.keys()),
+      docsPath: 'docs/custody-security-model.md',
+    };
   }
 
   /**
