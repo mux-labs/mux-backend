@@ -11,7 +11,7 @@ describe('ApiKeyGuard', () => {
     mockApiKeyService = {
       validateApiKey: jest.fn(async (key: string) => ({
         apiKey: { id: 'key-id' },
-        project: { id: 'proj-id' },
+        project: { id: 'proj-id', rateLimitRpm: 10 },
         developer: { id: 'dev-id' },
       })),
       recordUsage: jest.fn(async () => {}),
@@ -53,22 +53,46 @@ describe('ApiKeyGuard', () => {
     jest.spyOn(reflector, 'get').mockReturnValue(true);
 
     const req: any = {
-      headers: { authorization: 'ApiKey mux_test_abc' },
+      headers: { authorization: 'ApiKey mux_test_abc', 'user-agent': 'jest' },
       path: '/wallets/protected',
       method: 'GET',
       ip: '127.0.0.1',
-      headers: { 'user-agent': 'jest' },
+      socket: { remoteAddress: '127.0.0.1' },
+    };
+
+    const res: any = {
+      statusCode: 200,
+      on: jest.fn((event, callback) => {
+        if (event === 'finish') {
+          callback();
+        }
+      }),
     };
 
     const context: any = {
       getHandler: () => undefined,
       getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => req }),
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
     };
 
     await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(req.apiKeyContext).toBeDefined();
-    expect(req.apiKeyInfo).toBeDefined();
+    expect(req.apiKeyInfo).toEqual({
+      id: 'key-id',
+      project: {
+        rateLimitRpm: 10,
+      },
+    });
+    expect(mockApiKeyService.recordUsage).toHaveBeenCalledWith(
+      'key-id',
+      'proj-id',
+      'GET /wallets/protected',
+      'GET',
+      200,
+      '127.0.0.1',
+      'jest',
+      expect.any(Number),
+    );
   });
 
   it('maps upstream validation errors to ServiceUnavailableException (503)', async () => {
