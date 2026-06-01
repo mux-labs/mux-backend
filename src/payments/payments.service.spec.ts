@@ -14,6 +14,7 @@ describe('PaymentsService', () => {
         create: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
+        delete: jest.fn(),
       },
     };
     limitsService = {
@@ -95,6 +96,33 @@ describe('PaymentsService', () => {
         'Limit exceeded',
       );
       expect(prisma.payment.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('remove', () => {
+    it('should throw NotFoundException when payment does not exist', async () => {
+      prisma.payment.findUnique.mockResolvedValue(null);
+      await expect(service.remove(99)).rejects.toThrow('Payment #99 not found');
+      expect(prisma.payment.delete).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when payment is not PENDING', async () => {
+      prisma.payment.findUnique.mockResolvedValue({ id: 1, status: 'CONFIRMED' });
+      await expect(service.remove(1)).rejects.toThrow(
+        'Cannot delete payment in status: CONFIRMED',
+      );
+      expect(prisma.payment.delete).not.toHaveBeenCalled();
+    });
+
+    it('should delete and return payment when status is PENDING', async () => {
+      const payment = { id: 1, status: 'PENDING', amount: 100 };
+      prisma.payment.findUnique.mockResolvedValue(payment);
+      prisma.payment.delete.mockResolvedValue(payment);
+
+      const result = await service.remove(1);
+
+      expect(prisma.payment.delete).toHaveBeenCalledWith({ where: { id: 1 } });
+      expect(result).toEqual(payment);
     });
   });
 });
