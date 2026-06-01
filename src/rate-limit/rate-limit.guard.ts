@@ -12,6 +12,9 @@ import { RateLimitService } from './rate-limit.service';
 
 interface ApiKeyInfo {
   id: string;
+  project: {
+    rateLimitRpm: number;
+  };
 }
 
 export const IS_SENSITIVE_ENDPOINT = 'isSensitiveEndpoint';
@@ -49,6 +52,7 @@ export class RateLimitGuard implements CanActivate {
     const result = await this.rateLimitService.checkRateLimit(
       apiKeyInfo.id,
       endpoint,
+      apiKeyInfo.project.rateLimitRpm,
       isSensitive,
     );
 

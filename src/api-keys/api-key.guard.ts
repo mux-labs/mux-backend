@@ -74,22 +74,40 @@ export class ApiKeyGuard implements CanActivate {
       // Also set apiKeyInfo for backward compatibility with rate limiting
       (request as any).apiKeyInfo = {
         id: apiKeyContext.apiKey.id,
+        project: {
+          rateLimitRpm: apiKeyContext.project.rateLimitRpm,
+        },
       };
 
-      // Record usage (async, don't await)
-      const responseTime = Date.now() - startTime;
-      this.apiKeyService
-        .recordUsage(
-          apiKeyContext.apiKey.id,
-          apiKeyContext.project.id,
-          request.path,
-          request.method,
-          undefined, // Status code not available yet
-          request.ip,
-          request.headers['user-agent'],
-          responseTime,
-        )
-        .catch((err) => this.logger.error('Failed to record usage:', err));
+      // Record usage after response completes to capture final status code and latency
+      const requestStart = Date.now();
+      const response = context.switchToHttp().getResponse();
+
+      if (response && typeof response.on === 'function') {
+        response.on('finish', () => {
+          const responseTime = Date.now() - requestStart;
+          const endpoint = `${request.method} ${request.path}`;
+          const statusCode = response.statusCode || 0;
+          const ipAddress =
+            (request.headers['x-forwarded-for'] as string | undefined)
+              ?.split(',')[0]
+              .trim() ||
+            request.ip ||
+            request.socket?.remoteAddress ||
+            'unknown';
+
+          this.apiKeyService.recordUsage(
+            apiKeyContext.apiKey.id,
+            apiKeyContext.project.id,
+            endpoint,
+            request.method,
+            statusCode,
+            ipAddress,
+            request.headers['user-agent'],
+            responseTime,
+          );
+        });
+      }
 
       return true;
     } catch (error) {

@@ -7,12 +7,15 @@ import {
   ApiKeyStatus,
   Developer,
   Project,
+  ApiKeyContext,
 } from './domain/api-key.model';
+
+export type ApiKeyInfo = ApiKeyContext;
 
 export interface CreateApiKeyRequest {
   name: string;
   projectId: string;
-  expiresAt?: Date;
+  expiresAt?: Date | string;
 }
 
 export interface CreateApiKeyResult {
@@ -77,6 +80,10 @@ export class ApiKeyService {
     const keyPrefix = `mux_${environment}_`;
     const lastFour = randomPart.slice(-4);
 
+    const expiresAt = request.expiresAt
+      ? new Date(request.expiresAt)
+      : undefined;
+
     // Store hashed key
     const apiKey = await this.prisma.apiKey.create({
       data: {
@@ -86,7 +93,7 @@ export class ApiKeyService {
         lastFour,
         projectId: request.projectId,
         status: ApiKeyStatus.ACTIVE,
-        expiresAt: request.expiresAt,
+        expiresAt,
       },
     });
 
@@ -103,11 +110,7 @@ export class ApiKeyService {
   /**
    * Validates an API key and returns context if valid
    */
-  async validateApiKey(plainTextKey: string): Promise<{
-    apiKey: ApiKey;
-    project: Project;
-    developer: Developer;
-  }> {
+  async validateApiKey(plainTextKey: string): Promise<ApiKeyInfo> {
     if (!plainTextKey || !plainTextKey.startsWith('mux_')) {
       throw new UnauthorizedException('Invalid API key format');
     }
