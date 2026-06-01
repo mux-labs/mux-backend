@@ -20,6 +20,19 @@ export type OrchestrationPhase =
   | 'wallet-activation'
   | 'idempotency-store';
 
+export type OrchestrationOutcome = 'created' | 'existing' | 'idempotent' | 'failed';
+
+export interface OrchestratorMetrics {
+  userId: string;
+  network: WalletNetwork;
+  outcome: OrchestrationOutcome;
+  durationMs: number;
+  /** Phase timings in milliseconds, only present for new wallet creation. */
+  phases?: Partial<Record<OrchestrationPhase, number>>;
+  /** Set when outcome is 'failed'. */
+  failedPhase?: OrchestrationPhase;
+}
+
 export class WalletOrchestrationError extends Error {
   constructor(
     message: string,
@@ -131,6 +144,12 @@ export class WalletCreationOrchestrator {
             this.logger.log(
               `Returning cached result for idempotency key: ${request.idempotencyKey}`,
             );
+            this.emitMetrics({
+              userId: request.userId,
+              network: request.network,
+              outcome: 'idempotent',
+              durationMs: Date.now() - startTime,
+            });
             return existingResult;
           }
         }
@@ -140,6 +159,12 @@ export class WalletCreationOrchestrator {
           this.logger.log(
             `User ${request.userId} already has wallet on ${request.network}`,
           );
+          this.emitMetrics({
+            userId: request.userId,
+            network: request.network,
+            outcome: 'existing',
+            durationMs: Date.now() - startTime,
+          });
           return {
             wallet: context.existingWallet,
             privateKey: '',
@@ -167,16 +192,30 @@ export class WalletCreationOrchestrator {
           );
         }
 
+        this.emitMetrics({
+          userId: request.userId,
+          network: request.network,
+          outcome: 'created',
+          durationMs: Date.now() - startTime,
+          phases: newWallet.phaseTimings,
+        });
+
         return txResult;
       });
 
-      const duration = Date.now() - startTime;
-      this.logger.log(
-        `Wallet creation orchestration completed in ${duration}ms for user ${request.userId}`,
-      );
-
       return result;
     } catch (error) {
+      const failedPhase =
+        error instanceof WalletOrchestrationError ? error.phase : undefined;
+
+      this.emitMetrics({
+        userId: request.userId,
+        network: request.network,
+        outcome: 'failed',
+        durationMs: Date.now() - startTime,
+        failedPhase,
+      });
+
       this.logger.error(
         `Wallet creation orchestration failed for user ${request.userId}:`,
         error,
@@ -195,6 +234,27 @@ export class WalletCreationOrchestrator {
         'wallet-persist',
         error,
       );
+    }
+  }
+
+  private emitMetrics(metrics: OrchestratorMetrics): void {
+    const parts = [
+      `outcome=${metrics.outcome}`,
+      `userId=${metrics.userId}`,
+      `network=${metrics.network}`,
+      `durationMs=${metrics.durationMs}`,
+    ];
+    if (metrics.failedPhase) parts.push(`failedPhase=${metrics.failedPhase}`);
+    if (metrics.phases) {
+      for (const [phase, ms] of Object.entries(metrics.phases)) {
+        parts.push(`phase.${phase}=${ms}ms`);
+      }
+    }
+    const line = `[orchestrator-metrics] ${parts.join(' ')}`;
+    if (metrics.outcome === 'failed') {
+      this.logger.warn(line);
+    } else {
+      this.logger.log(line);
     }
   }
 
@@ -286,13 +346,16 @@ export class WalletCreationOrchestrator {
   private async createNewWallet(
     context: OrchestrationContext,
     tx: any,
-  ): Promise<{ wallet: Wallet; privateKey: string }> {
+  ): Promise<{ wallet: Wallet; privateKey: string; phaseTimings: Partial<Record<OrchestrationPhase, number>> }> {
     const { request } = context;
+    const phaseTimings: Partial<Record<OrchestrationPhase, number>> = {};
 
     // Phase: key-generation
     let keyPair: { publicKey: string; privateKey: string };
     try {
+      const t = Date.now();
       keyPair = this.generateStellarKeyPair();
+      phaseTimings['key-generation'] = Date.now() - t;
     } catch (error) {
       throw new WalletOrchestrationError(
         'Key generation failed',
@@ -304,9 +367,11 @@ export class WalletCreationOrchestrator {
     // Phase: key-encryption
     let encryptedSecret: string;
     try {
+      const t = Date.now();
       encryptedSecret = this.encryptionService.encryptAndSerialize(
         keyPair.privateKey,
       );
+      phaseTimings['key-encryption'] = Date.now() - t;
     } catch (error) {
       throw new WalletOrchestrationError(
         'Key encryption failed',
@@ -318,6 +383,7 @@ export class WalletCreationOrchestrator {
     // Phase: wallet-persist (PROVISIONING)
     let provisioningWallet: any;
     try {
+      const t = Date.now();
       provisioningWallet = await tx.wallet.create({
         data: {
           userId: request.userId,
@@ -329,6 +395,7 @@ export class WalletCreationOrchestrator {
           secretVersion: 1,
         },
       });
+      phaseTimings['wallet-persist'] = Date.now() - t;
     } catch (error) {
       throw new WalletOrchestrationError(
         'Wallet persist failed',
@@ -340,6 +407,7 @@ export class WalletCreationOrchestrator {
     // Phase: wallet-activation (ACTIVE) — still inside the same transaction
     let activatedWallet: any;
     try {
+      const t = Date.now();
       activatedWallet = await tx.wallet.update({
         where: { id: provisioningWallet.id },
         data: {
@@ -347,6 +415,7 @@ export class WalletCreationOrchestrator {
           statusChangedAt: new Date(),
         },
       });
+      phaseTimings['wallet-activation'] = Date.now() - t;
     } catch (error) {
       throw new WalletOrchestrationError(
         'Wallet activation failed',
@@ -362,6 +431,7 @@ export class WalletCreationOrchestrator {
     return {
       wallet: this.mapPrismaWalletToDomain(activatedWallet),
       privateKey: keyPair.privateKey,
+      phaseTimings,
     };
   }
 

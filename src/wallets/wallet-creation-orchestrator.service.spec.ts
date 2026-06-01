@@ -1,6 +1,7 @@
 import {
   WalletCreationOrchestrator,
   WalletOrchestrationError,
+  OrchestratorMetrics,
   CreateWalletOrchestratorRequest,
 } from './wallet-creation-orchestrator.service';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
@@ -364,6 +365,88 @@ describe('WalletCreationOrchestrator', () => {
 
       const count = await orchestrator.cleanupStaleProvisioningWallets();
       expect(count).toBe(0);
+    });
+  });
+
+  describe('metrics logging', () => {
+    let logSpy: jest.SpyInstance;
+    let warnSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
+      warnSpy = jest.spyOn(orchestrator['logger'], 'warn').mockImplementation(() => {});
+    });
+
+    const provisioningWallet = {
+      id: 'wallet-123', userId: 'user-123', publicKey: 'GABC',
+      encryptedSecret: 'enc', encryptionVersion: 1, secretVersion: 1,
+      network: WalletNetwork.TESTNET, status: WalletStatus.PROVISIONING,
+      statusReason: null, statusChangedAt: new Date(),
+      rotatedFromId: null, createdAt: new Date(), updatedAt: new Date(),
+    };
+    const activeWallet = { ...provisioningWallet, status: WalletStatus.ACTIVE };
+
+    it('should emit outcome=created with phase timings on new wallet', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET });
+
+      const metricsCall = logSpy.mock.calls.find(([msg]) =>
+        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      );
+      expect(metricsCall).toBeDefined();
+      const line: string = metricsCall[0];
+      expect(line).toContain('outcome=created');
+      expect(line).toContain('userId=user-123');
+      expect(line).toContain('network=TESTNET');
+      expect(line).toMatch(/durationMs=\d+/);
+      expect(line).toMatch(/phase\.key-generation=\d+ms/);
+      expect(line).toMatch(/phase\.key-encryption=\d+ms/);
+      expect(line).toMatch(/phase\.wallet-persist=\d+ms/);
+      expect(line).toMatch(/phase\.wallet-activation=\d+ms/);
+    });
+
+    it('should emit outcome=existing when wallet already exists', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.wallet.findFirst.mockResolvedValue(activeWallet);
+
+      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET });
+
+      const metricsCall = logSpy.mock.calls.find(([msg]) =>
+        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      );
+      expect(metricsCall[0]).toContain('outcome=existing');
+    });
+
+    it('should emit outcome=failed with failedPhase via warn on error', async () => {
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockRejectedValue(new Error('db error'));
+
+      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET }).catch(() => {});
+
+      const metricsCall = warnSpy.mock.calls.find(([msg]) =>
+        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      );
+      expect(metricsCall).toBeDefined();
+      const line: string = metricsCall[0];
+      expect(line).toContain('outcome=failed');
+      expect(line).toContain('failedPhase=wallet-persist');
+    });
+
+    it('should emit outcome=failed without failedPhase for non-orchestration errors', async () => {
+      mockPrisma.$transaction.mockRejectedValue(new Error('connection lost'));
+
+      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET }).catch(() => {});
+
+      const metricsCall = warnSpy.mock.calls.find(([msg]) =>
+        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      );
+      expect(metricsCall[0]).toContain('outcome=failed');
+      expect(metricsCall[0]).not.toContain('failedPhase=');
     });
   });
 
