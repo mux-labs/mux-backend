@@ -25,13 +25,34 @@ export class TransactionsService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * Create a new transaction in PENDING state
+   * Create a new transaction in PENDING state.
+   * If an idempotencyKey is supplied and a transaction with that key already
+   * exists, the existing transaction is returned without creating a duplicate.
    */
   async create(
     createTransactionDto: CreateTransactionDto,
   ): Promise<TransactionEntity> {
-    const { amount, asset, senderWalletId, receiverWalletId, metadata } =
-      createTransactionDto;
+    const {
+      amount,
+      asset,
+      senderWalletId,
+      receiverWalletId,
+      metadata,
+      idempotencyKey,
+    } = createTransactionDto;
+
+    // Idempotency check: return existing transaction if key already used
+    if (idempotencyKey) {
+      const existing = await this.prisma.transaction.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existing) {
+        this.logger.log(
+          `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
+        );
+        return this.mapPrismaToEntity(existing);
+      }
+    }
 
     // Validate wallets exist
     const senderWallet = await this.prisma.wallet.findUnique({
@@ -55,22 +76,43 @@ export class TransactionsService {
     }
 
     // Create transaction in database
-    const created = await this.prisma.transaction.create({
-      data: {
-        amount,
-        assetType: asset.type,
-        assetCode: asset.code ?? null,
-        assetIssuer: asset.issuer ?? null,
-        senderWalletId,
-        receiverWalletId: receiverWalletId ?? null,
-        status: TransactionStatus.PENDING,
-        metadata: metadata ?? null,
-      },
-    });
+    try {
+      const created = await this.prisma.transaction.create({
+        data: {
+          amount,
+          assetType: asset.type,
+          assetCode: asset.code ?? null,
+          assetIssuer: asset.issuer ?? null,
+          senderWalletId,
+          receiverWalletId: receiverWalletId ?? null,
+          status: TransactionStatus.PENDING,
+          metadata: metadata ?? null,
+          idempotencyKey: idempotencyKey ?? null,
+        },
+      });
 
-    this.logger.log(`Created transaction ${created.id} in PENDING state`);
+      this.logger.log(`Created transaction ${created.id} in PENDING state`);
 
-    return this.mapPrismaToEntity(created);
+      return this.mapPrismaToEntity(created);
+    } catch (error: any) {
+      // Handle race condition: two concurrent requests with the same idempotency key
+      if (
+        idempotencyKey &&
+        error?.code === 'P2002' &&
+        error?.meta?.target?.includes('idempotencyKey')
+      ) {
+        const existing = await this.prisma.transaction.findUnique({
+          where: { idempotencyKey },
+        });
+        if (existing) {
+          this.logger.log(
+            `Idempotency race resolved for key ${idempotencyKey}, returning transaction ${existing.id}`,
+          );
+          return this.mapPrismaToEntity(existing);
+        }
+      }
+      throw error;
+    }
   }
 
   /**
@@ -240,6 +282,7 @@ export class TransactionsService {
       confirmedAt: prismaTransaction.confirmedAt,
       failedAt: prismaTransaction.failedAt,
       metadata: prismaTransaction.metadata,
+      idempotencyKey: prismaTransaction.idempotencyKey,
       createdAt: prismaTransaction.createdAt,
       updatedAt: prismaTransaction.updatedAt,
     };

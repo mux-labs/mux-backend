@@ -623,6 +623,9 @@ model Transaction {
   
   /// Metadata for future webhooks and analytics
   metadata Json? // Flexible JSON for additional transaction context
+
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
   
   /// Operational metadata
   createdAt DateTime @default(now())
@@ -636,4 +639,5 @@ model Transaction {
   @@index([stellarHash])
   @@index([stellarLedger])
   @@index([createdAt])
+  @@index([idempotencyKey])
 }
