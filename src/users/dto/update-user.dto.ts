@@ -1,4 +1,5 @@
-import { IsEmail, IsOptional, IsString } from 'class-validator';
+import { IsEmail, IsEnum, IsOptional, IsString } from 'class-validator';
+import { UserStatus } from '../entities/user.entity';
 
 export class UpdateUserDto {
   @IsOptional()
@@ -14,6 +15,6 @@ export class UpdateUserDto {
   authProvider?: string;
 
   @IsOptional()
-  @IsString()
-  status?: string;
+  @IsEnum(UserStatus)
+  status?: UserStatus;
 }

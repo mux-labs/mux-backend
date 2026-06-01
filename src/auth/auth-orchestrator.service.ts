@@ -1,9 +1,10 @@
-import { Injectable, Logger, ForbiddenException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, BadRequestException } from '@nestjs/common';
 import {
   IdempotentUserService,
   FindOrCreateUserRequest,
   FindOrCreateUserResult,
 } from '../users/idempotent-user.service';
+import { UserStatus } from '../users/entities/user.entity';
 import {
   WalletCreationOrchestrator,
   CreateWalletOrchestratorRequest,
@@ -334,9 +335,9 @@ export class AuthOrchestrator {
    * Treats missing status as active (backward-compatible)
    */
   private validateUserStatus(user: { status?: string }): void {
-    const status = user.status || 'ACTIVE';
+    const status = (user.status || UserStatus.ACTIVE) as UserStatus;
 
-    if (status !== 'ACTIVE') {
+    if (status !== UserStatus.ACTIVE) {
       this.logger.warn(`Authentication rejected: user status is ${status}`);
       throw new ForbiddenException('Account is inactive');
     }
