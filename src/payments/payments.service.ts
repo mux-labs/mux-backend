@@ -1,6 +1,5 @@
 import { Injectable } from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
-import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
 
@@ -12,36 +11,36 @@ export class PaymentsService {
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
-    const { fromId, toId, amount, currency, description } = createPaymentDto;
+    const { fromWalletId, toWalletId, amount, currency, description } =
+      createPaymentDto;
 
-    await this.limitsService.checkLimits(fromId, amount);
+    await this.limitsService.checkLimits(fromWalletId, amount);
 
-    return this.prisma.payment.create({
+    return this.prisma.transaction.create({
       data: {
-        fromId,
-        toId,
-        amount,
-        currency,
-        description,
-        userId: fromId, // Legacy support: default to sender
+        senderWalletId: fromWalletId,
+        receiverWalletId: toWalletId,
+        amount: String(amount),
+        assetType: currency,
+        metadata: description ? { description } : undefined,
         status: 'PENDING',
       },
     });
   }
 
   findAll() {
-    return this.prisma.payment.findMany();
+    return this.prisma.transaction.findMany();
   }
 
-  findOne(id: number) {
-    return this.prisma.payment.findUnique({ where: { id } });
+  findOne(id: string) {
+    return this.prisma.transaction.findUnique({ where: { id } });
   }
 
-  update(id: number, updatePaymentDto: UpdatePaymentDto) {
-    return `This action updates a #${id} payment`;
+  update(id: string, _dto: any) {
+    return `This action updates payment ${id}`;
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} payment`;
+  remove(id: string) {
+    return `This action removes payment ${id}`;
   }
 }

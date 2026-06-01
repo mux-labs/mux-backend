@@ -8,9 +8,12 @@ describe('PaymentsService', () => {
   let prisma: any;
   let limitsService: any;
 
+  const fromWalletId = 'wallet-uuid-sender';
+  const toWalletId = 'wallet-uuid-receiver';
+
   beforeEach(async () => {
     prisma = {
-      payment: {
+      transaction: {
         create: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
@@ -36,65 +39,61 @@ describe('PaymentsService', () => {
   });
 
   describe('create', () => {
-    it('should create payment if limits check passes', async () => {
+    it('should create a transaction if limits check passes', async () => {
       limitsService.checkLimits.mockResolvedValue(undefined);
-      const paymentDate = new Date();
-      prisma.payment.create.mockResolvedValue({
-        id: 1,
-        fromId: 1,
-        toId: 2,
-        amount: 100,
-        currency: 'USD',
-        description: 'Test payment',
+      const now = new Date();
+      const txRecord = {
+        id: 'tx-uuid-1',
+        senderWalletId: fromWalletId,
+        receiverWalletId: toWalletId,
+        amount: '100',
+        assetType: 'USD',
         status: 'PENDING',
-        userId: 1,
-        createdAt: paymentDate,
-        updatedAt: paymentDate,
-      });
+        createdAt: now,
+        updatedAt: now,
+      };
+      prisma.transaction.create.mockResolvedValue(txRecord);
 
       const dto = {
-        fromId: 1,
-        toId: 2,
+        fromWalletId,
+        toWalletId,
         amount: 100,
         currency: 'USD',
         description: 'Test payment',
       };
       const result = await service.create(dto as any);
 
-      expect(limitsService.checkLimits).toHaveBeenCalledWith(1, 100);
-      expect(prisma.payment.create).toHaveBeenCalledWith({
+      expect(limitsService.checkLimits).toHaveBeenCalledWith(fromWalletId, 100);
+      expect(prisma.transaction.create).toHaveBeenCalledWith({
         data: {
-          fromId: 1,
-          toId: 2,
-          amount: 100,
-          currency: 'USD',
-          description: 'Test payment',
-          userId: 1,
+          senderWalletId: fromWalletId,
+          receiverWalletId: toWalletId,
+          amount: '100',
+          assetType: 'USD',
+          metadata: { description: 'Test payment' },
           status: 'PENDING',
         },
       });
-      expect(result).toEqual({
-        id: 1,
-        fromId: 1,
-        toId: 2,
-        amount: 100,
-        currency: 'USD',
-        description: 'Test payment',
-        status: 'PENDING',
-        userId: 1,
-        createdAt: paymentDate,
-        updatedAt: paymentDate,
-      });
+      expect(result).toEqual(txRecord);
+    });
+
+    it('should omit metadata when no description provided', async () => {
+      limitsService.checkLimits.mockResolvedValue(undefined);
+      prisma.transaction.create.mockResolvedValue({});
+
+      await service.create({ fromWalletId, toWalletId, amount: 50, currency: 'XLM' } as any);
+
+      const call = prisma.transaction.create.mock.calls[0][0];
+      expect(call.data.metadata).toBeUndefined();
     });
 
     it('should throw if limits check fails', async () => {
       limitsService.checkLimits.mockRejectedValue(new Error('Limit exceeded'));
 
-      const dto = { fromId: 1, toId: 2, amount: 100, currency: 'USD' };
-      await expect(service.create(dto as any)).rejects.toThrow(
-        'Limit exceeded',
-      );
-      expect(prisma.payment.create).not.toHaveBeenCalled();
+      await expect(
+        service.create({ fromWalletId, toWalletId, amount: 100, currency: 'USD' } as any),
+      ).rejects.toThrow('Limit exceeded');
+      expect(prisma.transaction.create).not.toHaveBeenCalled();
     });
   });
 });
