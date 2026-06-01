@@ -205,14 +205,27 @@ export class TransactionsService {
   }
 
   /**
-   * Find transactions by wallet ID
+   * Find transactions by wallet ID with pagination
    */
-  async findByWallet(walletId: string): Promise<TransactionEntity[]> {
+  async findByWallet(
+    walletId: string,
+    pagination?: { limit?: number; offset?: number },
+  ): Promise<TransactionEntity[]> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException(`Wallet ${walletId} not found`);
+    }
+
     const transactions = await this.prisma.transaction.findMany({
       where: {
         OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
       },
       orderBy: { createdAt: 'desc' },
+      take: pagination?.limit,
+      skip: pagination?.offset,
     });
 
     return transactions.map((t) => this.mapPrismaToEntity(t));
