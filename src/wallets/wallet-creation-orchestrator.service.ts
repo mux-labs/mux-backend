@@ -11,6 +11,26 @@ import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import * as crypto from 'crypto';
 
+export type OrchestrationPhase =
+  | 'user-resolution'
+  | 'idempotency-check'
+  | 'key-generation'
+  | 'key-encryption'
+  | 'wallet-persist'
+  | 'wallet-activation'
+  | 'idempotency-store';
+
+export class WalletOrchestrationError extends Error {
+  constructor(
+    message: string,
+    public readonly phase: OrchestrationPhase,
+    public readonly cause?: unknown,
+  ) {
+    super(message);
+    this.name = 'WalletOrchestrationError';
+  }
+}
+
 export interface User {
   id: string;
   authId: string;
@@ -60,8 +80,9 @@ export class WalletCreationOrchestrator {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
     private idempotentUserService: IdempotentUserService,
+    prismaClient?: PrismaClient,
   ) {
-    this.prisma = new PrismaClient({} as any);
+    this.prisma = prismaClient ?? new PrismaClient(undefined);
   }
 
   async onModuleInit() {
@@ -77,7 +98,15 @@ export class WalletCreationOrchestrator {
   }
 
   /**
-   * Orchestrates the complete wallet creation flow with atomic operations and idempotency
+   * Orchestrates the complete wallet creation flow with atomic operations and idempotency.
+   *
+   * Rollback strategy:
+   * - Wallets are first written in PROVISIONING status inside a DB transaction.
+   * - On success the same transaction updates the wallet to ACTIVE.
+   * - If any step throws, Prisma rolls back the entire transaction automatically,
+   *   leaving no partial wallet record in the database.
+   * - Stale PROVISIONING wallets (from crashed processes) can be cleaned up via
+   *   `cleanupStaleProvisioningWallets`.
    */
   async createWallet(
     request: CreateWalletOrchestratorRequest,
@@ -88,11 +117,11 @@ export class WalletCreationOrchestrator {
     );
 
     try {
-      // Use database transaction for atomicity
       const result = await this.prisma.$transaction(async (tx) => {
+        // --- Phase: user-resolution ---
         const context = await this.buildOrchestrationContext(request, tx);
 
-        // Check idempotency if key provided
+        // --- Phase: idempotency-check ---
         if (request.idempotencyKey) {
           const existingResult = await this.checkIdempotency(
             request.idempotencyKey,
@@ -113,28 +142,32 @@ export class WalletCreationOrchestrator {
           );
           return {
             wallet: context.existingWallet,
-            privateKey: '', // Empty for existing wallets
+            privateKey: '',
             isNewWallet: false,
             idempotencyKey: request.idempotencyKey,
           };
         }
 
-        // Create new wallet atomically
+        // --- Phases: key-generation → key-encryption → wallet-persist → wallet-activation ---
         const newWallet = await this.createNewWallet(context, tx);
 
-        const result: WalletOrchestrationResult = {
+        const txResult: WalletOrchestrationResult = {
           wallet: newWallet.wallet,
           privateKey: newWallet.privateKey,
           isNewWallet: true,
           idempotencyKey: request.idempotencyKey,
         };
 
-        // Store idempotency record if key provided
+        // --- Phase: idempotency-store ---
         if (request.idempotencyKey) {
-          await this.storeIdempotencyRecord(request.idempotencyKey, result, tx);
+          await this.storeIdempotencyRecord(
+            request.idempotencyKey,
+            txResult,
+            tx,
+          );
         }
 
-        return result;
+        return txResult;
       });
 
       const duration = Date.now() - startTime;
@@ -149,12 +182,40 @@ export class WalletCreationOrchestrator {
         error,
       );
 
-      if (error instanceof ConflictException) {
+      if (error instanceof ConflictException || error instanceof NotFoundException) {
         throw error;
       }
 
-      throw new Error('Wallet creation orchestration failed');
+      if (error instanceof WalletOrchestrationError) {
+        throw error;
+      }
+
+      throw new WalletOrchestrationError(
+        'Wallet creation orchestration failed',
+        'wallet-persist',
+        error,
+      );
     }
+  }
+
+  /**
+   * Removes stale PROVISIONING wallets older than `olderThanMs` milliseconds.
+   * Call this from a scheduled job or on startup to recover from crashed orchestrations.
+   */
+  async cleanupStaleProvisioningWallets(olderThanMs = 5 * 60 * 1000): Promise<number> {
+    const cutoff = new Date(Date.now() - olderThanMs);
+    const { count } = await this.prisma.wallet.deleteMany({
+      where: {
+        status: WalletStatus.PROVISIONING,
+        createdAt: { lt: cutoff },
+      },
+    });
+    if (count > 0) {
+      this.logger.warn(
+        `Cleaned up ${count} stale PROVISIONING wallet(s) older than ${olderThanMs}ms`,
+      );
+    }
+    return count;
   }
 
   /**
@@ -216,7 +277,11 @@ export class WalletCreationOrchestrator {
   }
 
   /**
-   * Creates a new wallet with encrypted private key storage
+   * Creates a new wallet using a two-phase write inside the active transaction:
+   *   1. Insert with status PROVISIONING (rollback-safe sentinel).
+   *   2. Activate to ACTIVE in the same transaction.
+   *
+   * If any step throws, Prisma rolls back both writes automatically.
    */
   private async createNewWallet(
     context: OrchestrationContext,
@@ -224,39 +289,80 @@ export class WalletCreationOrchestrator {
   ): Promise<{ wallet: Wallet; privateKey: string }> {
     const { request } = context;
 
-    // Generate new keypair
-    const keyPair = this.generateStellarKeyPair();
-
-    // Encrypt the private key before storage
-    const encryptedSecret = this.encryptionService.encryptAndSerialize(
-      keyPair.privateKey,
-    );
-
+    // Phase: key-generation
+    let keyPair: { publicKey: string; privateKey: string };
     try {
-      const createdWallet = await tx.wallet.create({
+      keyPair = this.generateStellarKeyPair();
+    } catch (error) {
+      throw new WalletOrchestrationError(
+        'Key generation failed',
+        'key-generation',
+        error,
+      );
+    }
+
+    // Phase: key-encryption
+    let encryptedSecret: string;
+    try {
+      encryptedSecret = this.encryptionService.encryptAndSerialize(
+        keyPair.privateKey,
+      );
+    } catch (error) {
+      throw new WalletOrchestrationError(
+        'Key encryption failed',
+        'key-encryption',
+        error,
+      );
+    }
+
+    // Phase: wallet-persist (PROVISIONING)
+    let provisioningWallet: any;
+    try {
+      provisioningWallet = await tx.wallet.create({
         data: {
           userId: request.userId,
           publicKey: keyPair.publicKey,
           encryptedSecret,
           network: request.network,
-          status: 'ACTIVE',
+          status: WalletStatus.PROVISIONING,
           encryptionVersion: 1,
           secretVersion: 1,
         },
       });
-
-      this.logger.log(
-        `Created new wallet for user ${request.userId} on ${request.network}`,
-      );
-
-      return {
-        wallet: this.mapPrismaWalletToDomain(createdWallet),
-        privateKey: keyPair.privateKey,
-      };
     } catch (error) {
-      this.logger.error('Failed to create wallet in transaction:', error);
-      throw new Error('Wallet creation failed');
+      throw new WalletOrchestrationError(
+        'Wallet persist failed',
+        'wallet-persist',
+        error,
+      );
     }
+
+    // Phase: wallet-activation (ACTIVE) — still inside the same transaction
+    let activatedWallet: any;
+    try {
+      activatedWallet = await tx.wallet.update({
+        where: { id: provisioningWallet.id },
+        data: {
+          status: WalletStatus.ACTIVE,
+          statusChangedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      throw new WalletOrchestrationError(
+        'Wallet activation failed',
+        'wallet-activation',
+        error,
+      );
+    }
+
+    this.logger.log(
+      `Created and activated wallet for user ${request.userId} on ${request.network}`,
+    );
+
+    return {
+      wallet: this.mapPrismaWalletToDomain(activatedWallet),
+      privateKey: keyPair.privateKey,
+    };
   }
 
   /**
