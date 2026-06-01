@@ -8,6 +8,9 @@ async function bootstrap() {
   // Attach request logging middleware early in the pipeline
   app.use(requestLogger as any);
 
+  // Set global API prefix for versioning
+  app.setGlobalPrefix('v1');
+
   await app.listen(process.env.PORT ?? 3000);
 }
 
