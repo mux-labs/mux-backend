@@ -339,6 +339,7 @@ export class WalletsService {
       statusReason: prismaWallet.statusReason,
       statusChangedAt: prismaWallet.statusChangedAt,
       rotatedFromId: prismaWallet.rotatedFromId,
+      successorId: prismaWallet.successorId,
       createdAt: prismaWallet.createdAt,
       updatedAt: prismaWallet.updatedAt,
     };

@@ -48,6 +48,9 @@ export interface Wallet {
   /** Rotation lineage (if this wallet is a successor). */
   rotatedFromId?: WalletId | null;
 
+  /** Direct link to the wallet that replaced this one during rotation. */
+  successorId?: WalletId | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
