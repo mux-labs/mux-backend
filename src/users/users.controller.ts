@@ -6,10 +6,12 @@ import {
   Patch,
   Param,
   Delete,
+  Query,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { UserStatus } from './entities/user.entity';
 
 @Controller('users')
 export class UsersController {
@@ -21,12 +23,28 @@ export class UsersController {
   }
 
   @Get()
-  async findAll() {
-    return this.usersService.findAll();
+  async findAll(
+    @Query('page') page?: string,
+    @Query('limit') limit?: string,
+    @Query('status') status?: string,
+  ) {
+    const parsedPage = page ? parseInt(page, 10) : undefined;
+    const parsedLimit = limit ? parseInt(limit, 10) : undefined;
+    const validStatus = Object.values(UserStatus).includes(
+      status as UserStatus,
+    )
+      ? (status as UserStatus)
+      : undefined;
+
+    return this.usersService.findAll({
+      page: parsedPage && parsedPage > 0 ? parsedPage : undefined,
+      limit: parsedLimit && parsedLimit > 0 ? parsedLimit : undefined,
+      status: validStatus,
+    });
   }
 
   @Get(':id')
-r  findOne(@Param('id') id: string) {
+  findOne(@Param('id') id: string) {
     return this.usersService.findOne(id);
   }
 

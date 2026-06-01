@@ -270,7 +270,7 @@ describe('IdempotentUserService', () => {
       );
     });
 
-    it('should accept user with PENDING status', async () => {
+    it('should reject user with invalid status (PENDING)', async () => {
       // Arrange
       const pendingUser = {
         id: 'user-123',
@@ -285,18 +285,11 @@ describe('IdempotentUserService', () => {
       };
 
       mockPrisma.user.findUnique.mockResolvedValue(pendingUser);
-      mockPrisma.user.update.mockResolvedValue({
-        ...pendingUser,
-        lastLoginAt: new Date(),
-      });
 
-      // Act
-      const result = await service.findOrCreateUser(createRequest);
-
-      // Assert
-      expect(result.isNewUser).toBe(false);
-      expect(result.user.authId).toBe('auth-123');
-      expect(mockPrisma.user.update).toHaveBeenCalled();
+      // Act & Assert
+      await expect(service.findOrCreateUser(createRequest)).rejects.toThrow(
+        BadRequestException,
+      );
     });
 
     it('should correctly map Clerk subject to authId field', async () => {
