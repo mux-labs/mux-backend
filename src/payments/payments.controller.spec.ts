@@ -1,6 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
 describe('PaymentsController', () => {
   let controller: PaymentsController;
@@ -20,7 +22,12 @@ describe('PaymentsController', () => {
           },
         },
       ],
-    }).compile();
+    })
+      .overrideGuard(ApiKeyGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<PaymentsController>(PaymentsController);
   });
