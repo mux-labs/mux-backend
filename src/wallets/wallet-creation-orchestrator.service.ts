@@ -67,6 +67,37 @@ export interface CreateWalletOrchestratorRequest {
   idempotencyKey?: string; // Optional idempotency key
 }
 
+/**
+ * The result of a wallet creation or idempotency-replay request.
+ *
+ * ## Idempotency contract
+ *
+ * When an `idempotencyKey` is provided with a `createWallet` call:
+ *
+ * 1. **First call** – a new wallet is created (or an existing one for the same
+ *    `userId`/`network` pair is returned). The result is persisted under the
+ *    supplied key for 24 hours.
+ *
+ * 2. **Subsequent calls with the same key, same `userId`/`network`** – the
+ *    cached result is replayed.  `isNewWallet` reflects the value from the
+ *    original call so consumers can distinguish first-creation from
+ *    replay.  `privateKey` is **always empty on replay** – the private key is
+ *    sensitive material and must only be consumed on the initial response.
+ *
+ * 3. **Subsequent calls with the same key but a different `userId` or
+ *    `network`** – a `ConflictException` is thrown (HTTP 409).  An idempotency
+ *    key must map to exactly one operation.
+ *
+ * 4. **Calls after the TTL has expired** – the key is treated as new; a fresh
+ *    operation is performed and a new cache entry is stored.
+ *
+ * @property wallet       - The wallet domain object (always present).
+ * @property privateKey   - Raw private key, **only populated on first creation**;
+ *                          empty string on replay or when returning an existing wallet.
+ * @property isNewWallet  - `true` on the first call that created the wallet;
+ *                          replayed as-is from the original response.
+ * @property idempotencyKey - The key that was supplied (echoed back for convenience).
+ */
 export interface WalletOrchestrationResult {
   wallet: Wallet;
   privateKey: string; // Only returned during creation for immediate use
@@ -89,10 +120,33 @@ export interface IdempotencyRecord {
   expiresAt: Date;
 }
 
+/** Shape of the JSON blob stored in `idempotencyRecord.response` for wallet ops. */
+interface WalletIdempotencyCacheEntry {
+  userId: string;
+  network: WalletNetwork;
+  wallet: Wallet;
+  isNewWallet: boolean;
+  idempotencyKey?: string;
+  // privateKey is intentionally absent – never persisted
+}
+
+/**
+ * Orchestrates the complete wallet-creation lifecycle with atomic database
+ * operations and a durable idempotency layer.
+ *
+ * ## Idempotency contract (summary)
+ * See {@link WalletOrchestrationResult} for the full specification.
+ * - TTL: 24 hours per key.
+ * - Conflict (same key, different userId/network): throws `ConflictException`.
+ * - Replay: returns original `isNewWallet`; `privateKey` is always cleared.
+ */
 @Injectable()
 export class WalletCreationOrchestrator {
   private readonly logger = new Logger(WalletCreationOrchestrator.name);
   private prisma: PrismaClient;
+
+  /** Idempotency records for wallet operations are retained for 24 hours. */
+  private readonly IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 
   constructor(
     private encryptionService: EncryptionService,
@@ -143,6 +197,7 @@ export class WalletCreationOrchestrator {
         if (request.idempotencyKey) {
           const existingResult = await this.checkIdempotency(
             request.idempotencyKey,
+            request,
             tx,
           );
           if (existingResult) {
@@ -452,30 +507,109 @@ export class WalletCreationOrchestrator {
   }
 
   /**
-   * Checks idempotency for duplicate requests
+   * Looks up a persisted idempotency record for the given key.
+   *
+   * Returns a replay result when the key exists and has not expired AND the
+   * cached operation matches the incoming `request` (same `userId` and
+   * `network`).  Throws `ConflictException` when the key is reused for a
+   * different operation.
+   *
+   * The replayed result always has `privateKey` set to an empty string –
+   * private keys are sensitive material that must not be re-exposed after the
+   * original response.  `isNewWallet` is replayed verbatim from the original
+   * response so callers can still distinguish first-creation from replay.
    */
   private async checkIdempotency(
     idempotencyKey: string,
-    tx: any, // Use any for transaction client to avoid type issues
+    request: CreateWalletOrchestratorRequest,
+    tx: any,
   ): Promise<WalletOrchestrationResult | null> {
-    // In a real implementation, this would query an idempotency table
-    // For now, we'll skip this as we don't have the table structure
-    return null;
+    const record = await tx.idempotencyRecord.findUnique({
+      where: { key: idempotencyKey },
+    });
+
+    if (!record) {
+      return null;
+    }
+
+    // Treat expired records as absent; clean up lazily within the transaction
+    if (record.expiresAt < new Date()) {
+      await tx.idempotencyRecord.delete({ where: { key: idempotencyKey } });
+      return null;
+    }
+
+    const cached = record.response as WalletIdempotencyCacheEntry;
+
+    // Reject if the same key was previously used for a different operation
+    if (cached.userId !== request.userId || cached.network !== request.network) {
+      throw new ConflictException(
+        `Idempotency key "${idempotencyKey}" was already used for a different userId or network`,
+      );
+    }
+
+    this.logger.log(`Idempotency cache hit for key: ${idempotencyKey}`);
+
+    return {
+      wallet: cached.wallet,
+      privateKey: '', // Never re-expose the private key on replay
+      isNewWallet: cached.isNewWallet, // Replay the original value for consistency
+      idempotencyKey,
+    };
   }
 
   /**
-   * Stores idempotency record for future duplicate requests
+   * Persists an idempotency record so future duplicate requests can be
+   * detected and replayed.
+   *
+   * The private key is intentionally excluded from the stored payload.
+   * A unique-constraint violation (P2002) is silently ignored because it
+   * means a concurrent request already stored an equivalent record.
+   * Other storage errors are logged but do not propagate – a failed
+   * idempotency write must not roll back a successful wallet creation.
    */
   private async storeIdempotencyRecord(
     idempotencyKey: string,
     result: WalletOrchestrationResult,
-    tx: any, // Use any for transaction client to avoid type issues
+    request: CreateWalletOrchestratorRequest,
+    tx: any,
   ): Promise<void> {
-    // In a real implementation, this would store in an idempotency table
-    // For now, we'll skip this as we don't have the table structure
-    this.logger.log(
-      `Idempotency record would be stored for key: ${idempotencyKey}`,
-    );
+    const expiresAt = new Date(Date.now() + this.IDEMPOTENCY_TTL_MS);
+
+    const cacheEntry: WalletIdempotencyCacheEntry = {
+      userId: request.userId,
+      network: request.network,
+      wallet: result.wallet,
+      isNewWallet: result.isNewWallet,
+      idempotencyKey: result.idempotencyKey,
+      // privateKey deliberately omitted
+    };
+
+    try {
+      await tx.idempotencyRecord.create({
+        data: {
+          key: idempotencyKey,
+          method: 'INTERNAL',
+          endpoint: 'wallet-creation',
+          statusCode: 200,
+          expiresAt,
+          response: cacheEntry as any,
+        },
+      });
+      this.logger.log(`Idempotency record stored for key: ${idempotencyKey}`);
+    } catch (error: any) {
+      if (error?.code === 'P2002') {
+        // Concurrent request already stored an equivalent record – safe to ignore
+        this.logger.log(
+          `Idempotency record already exists for key: ${idempotencyKey} (concurrent write)`,
+        );
+        return;
+      }
+      // Non-fatal: log but do not rethrow to avoid rolling back the wallet creation
+      this.logger.error(
+        `Failed to store idempotency record for key ${idempotencyKey}:`,
+        error,
+      );
+    }
   }
 
   /**
