@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
-import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
+import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  WalletStatusResponse,
+} from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import * as crypto from 'crypto';
@@ -119,11 +124,22 @@ export class WalletCreationOrchestrator {
           };
         }
 
-        // Create new wallet atomically
+        // Create new wallet in PROVISIONING status (Issue #188)
         const newWallet = await this.createNewWallet(context, tx);
 
+        // Fund testnet account on create (Issue #187)
+        if (request.network === WalletNetwork.TESTNET) {
+          await this.fundTestnetAccount(newWallet.wallet.publicKey);
+        }
+
+        // Transition PROVISIONING -> ACTIVE (Issue #188)
+        const activatedWallet = await this.activateWallet(
+          newWallet.wallet.id,
+          tx,
+        );
+
         const result: WalletOrchestrationResult = {
-          wallet: newWallet.wallet,
+          wallet: activatedWallet,
           privateKey: newWallet.privateKey,
           isNewWallet: true,
           idempotencyKey: request.idempotencyKey,
@@ -239,7 +255,7 @@ export class WalletCreationOrchestrator {
           publicKey: keyPair.publicKey,
           encryptedSecret,
           network: request.network,
-          status: 'ACTIVE',
+          status: 'PROVISIONING', // Start in PROVISIONING (Issue #188)
           encryptionVersion: 1,
           secretVersion: 1,
         },
@@ -341,5 +357,116 @@ export class WalletCreationOrchestrator {
   ): Promise<boolean> {
     const existingWallet = await this.getWalletByUser(userId, network);
     return existingWallet === null;
+  }
+
+  // ──────────────────────────────────────────────
+  // #187: Fund testnet account on create
+  // ──────────────────────────────────────────────
+
+  /**
+   * Funds a testnet account using Stellar Friendbot.
+   * For TESTNET wallets, this adds initial XLM for transaction fees.
+   */
+  private async fundTestnetAccount(publicKey: string): Promise<void> {
+    const horizonUrl = this.configService.get<string>(
+      'STELLAR_HORIZON_URL',
+      'https://horizon-testnet.stellar.org',
+    );
+
+    // Friendbot endpoint is specific to Stellar testnet
+    const friendbotUrl = `https://friendbot.stellar.org?addr=${publicKey}`;
+
+    try {
+      this.logger.log(
+        `Funding testnet account ${publicKey.substring(0, 8)}... via Friendbot`,
+      );
+
+      const response = await fetch(friendbotUrl, { method: 'GET' });
+
+      if (!response.ok) {
+        const errorBody = await response.text();
+        this.logger.warn(
+          `Friendbot funding responded with status ${response.status}: ${errorBody}`,
+        );
+        // Friendbot can sometimes return errors for already-funded accounts;
+        // we don't want to fail the entire flow
+        return;
+      }
+
+      this.logger.log(
+        `Successfully funded testnet account ${publicKey.substring(0, 8)}...`,
+      );
+    } catch (error) {
+      // Network errors during Friendbot calls should not block wallet creation
+      this.logger.warn(
+        `Friendbot funding request failed for ${publicKey.substring(0, 8)}... : ${error.message}`,
+      );
+      // Non-blocking: wallet is already created in PROVISIONING state
+    }
+  }
+
+  /**
+   * Returns the wallet status response (public helper).
+   */
+  async getWalletStatus(walletId: string): Promise<WalletStatusResponse> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    }
+
+    return {
+      id: wallet.id,
+      status: wallet.status as WalletStatus,
+      statusReason: wallet.statusReason,
+      statusChangedAt: wallet.statusChangedAt,
+      network: wallet.network as WalletNetwork,
+      publicKey: wallet.publicKey,
+      userId: wallet.userId,
+      updatedAt: wallet.updatedAt,
+    };
+  }
+
+  /**
+   * Returns all wallets for a given userId (public helper).
+   */
+  async findWalletsByUserId(userId: string): Promise<Wallet[]> {
+    const wallets = await this.prisma.wallet.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return wallets.map((w) => this.mapPrismaWalletToDomain(w));
+  }
+
+  /**
+   * Transitions a PROVISIONING wallet to ACTIVE within a transaction.
+   */
+  private async activateWallet(
+    walletId: string,
+    tx: any,
+  ): Promise<Wallet> {
+    try {
+      const updatedWallet = await tx.wallet.update({
+        where: { id: walletId },
+        data: {
+          status: 'ACTIVE',
+          statusReason: 'Wallet provisioned and activated',
+          statusChangedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+
+      this.logger.log(
+        `Activated wallet ${walletId} (PROVISIONING -> ACTIVE)`,
+      );
+
+      return this.mapPrismaWalletToDomain(updatedWallet);
+    } catch (error) {
+      this.logger.error(`Failed to activate wallet ${walletId}:`, error);
+      throw new Error('Wallet activation within transaction failed');
+    }
   }
 }
