@@ -2,7 +2,8 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
 import { WalletNetwork } from './domain/wallet.model';
-import { EncryptionService } from '../encryption/encryption.service';
+import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
+import { KeyDecryptionException } from '../key-management/exceptions/key-decryption.exception';
 import { PrismaClient } from '../generated/prisma/client';
 
 // Mock Prisma Client
@@ -198,16 +199,39 @@ describe('WalletsService', () => {
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockImplementation(() => {
-          const error = new Error('Decryption failed') as any;
-          error.code = 'DECRYPTION_FAILED';
-          throw error;
+          throw new DecryptionError('Decryption failed', 'DECRYPTION_FAILED');
         });
 
       await expect(
         service.getDecryptedPrivateKey('wallet-123'),
-      ).rejects.toThrow(
-        'Wallet key decryption failed - possible data corruption',
-      );
+      ).rejects.toThrow(KeyDecryptionException);
+    });
+
+    it('should surface correct reason code in KeyDecryptionException', async () => {
+      const mockWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        encryptedSecret: 'encrypted-secret',
+        status: 'ACTIVE',
+      };
+
+      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      jest
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockImplementation(() => {
+          throw new DecryptionError('Invalid key', 'INVALID_KEY');
+        });
+
+      let caught: KeyDecryptionException | undefined;
+      try {
+        await service.getDecryptedPrivateKey('wallet-123');
+      } catch (e) {
+        caught = e as KeyDecryptionException;
+      }
+
+      expect(caught).toBeInstanceOf(KeyDecryptionException);
+      expect(caught!.reason).toBe('INVALID_KEY');
+      expect(caught!.getStatus()).toBe(422);
     });
   });
 

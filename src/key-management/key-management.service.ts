@@ -2,7 +2,10 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
-import { EncryptionService } from '../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -10,6 +13,7 @@ import {
   EncryptedKeyMaterial,
   KeyOperationAudit,
 } from './domain/key-types';
+import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 
 export interface GenerateKeyRequest {
   keyType: KeyType;
@@ -123,6 +127,8 @@ export class KeyManagementService {
    * Signs data WITHOUT exposing the private key
    *
    * This is the ONLY way to use private keys - they are never returned.
+   *
+   * @throws KeyDecryptionException if the encrypted key material cannot be decrypted
    */
   async sign(request: SignRequest): Promise<SignatureResult> {
     const startTime = Date.now();
@@ -161,6 +167,29 @@ export class KeyManagementService {
 
       return signature;
     } catch (error) {
+      // Handle decrypt failures — log and convert to typed HTTP exception
+      if (error instanceof DecryptionError) {
+        this.auditKeyOperation({
+          operation: 'SIGN',
+          keyId: 'unknown',
+          publicKey: request.publicKey,
+          timestamp: new Date(),
+          success: false,
+          errorMessage: `decrypt_failure:${error.code}`,
+        });
+
+        this.logger.error(
+          `Key decryption failed during sign for publicKey=${request.publicKey.substring(0, 12)}...:`,
+          { code: error.code },
+        );
+
+        throw new KeyDecryptionException(
+          request.publicKey,
+          error.code,
+          'Key material could not be decrypted — the key may be corrupted or the encryption key may have changed',
+        );
+      }
+
       this.auditKeyOperation({
         operation: 'SIGN',
         keyId: 'unknown',
@@ -177,6 +206,8 @@ export class KeyManagementService {
 
   /**
    * Validates that encrypted key material is valid and matches the public key
+   *
+   * @throws KeyDecryptionException if the key material cannot be decrypted
    */
   async validateKey(
     publicKey: string,
@@ -188,6 +219,14 @@ export class KeyManagementService {
     try {
       return await provider.validateKeyPair(publicKey, encryptedKeyMaterial);
     } catch (error) {
+      if (error instanceof DecryptionError) {
+        this.logger.error(
+          `Key decryption failed during validate for publicKey=${publicKey.substring(0, 12)}...:`,
+          { code: error.code },
+        );
+        throw new KeyDecryptionException(publicKey, error.code);
+      }
+
       this.logger.error('Key validation failed:', error);
       return false;
     }
@@ -195,13 +234,16 @@ export class KeyManagementService {
 
   /**
    * Re-encrypts key material (for key rotation or encryption version upgrade)
+   *
+   * @throws KeyDecryptionException if the existing key material cannot be decrypted
    */
   async reEncryptKey(
     encryptedKeyMaterial: string,
     keyType: KeyType,
+    keyId: string = 'unknown',
   ): Promise<EncryptedKeyMaterial> {
     try {
-      // Decrypt with old encryption
+      // Decrypt with current encryption key
       const privateKeyMaterial =
         this.encryptionService.deserializeAndDecrypt(encryptedKeyMaterial);
 
@@ -209,11 +251,7 @@ export class KeyManagementService {
       const newEncryptedData =
         this.encryptionService.encryptAndSerialize(privateKeyMaterial);
 
-      // Derive public key for result
-      const provider = this.getProvider(keyType);
-      const keyPair = await provider.generateKeyPair(keyType); // Temp for structure
-
-      this.logger.log('Successfully re-encrypted key material');
+      this.logger.log(`Successfully re-encrypted key material for key ${keyId}`);
 
       return {
         encryptedData: newEncryptedData,
@@ -222,6 +260,18 @@ export class KeyManagementService {
         publicKey: '', // Would derive from private key in production
       };
     } catch (error) {
+      if (error instanceof DecryptionError) {
+        this.logger.error(
+          `Key decryption failed during re-encrypt for key ${keyId}:`,
+          { code: error.code },
+        );
+        throw new KeyDecryptionException(
+          keyId,
+          error.code,
+          'Cannot re-encrypt key material — decryption failed',
+        );
+      }
+
       this.logger.error('Key re-encryption failed:', error);
       throw new Error('Key re-encryption failed');
     }
