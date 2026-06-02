@@ -37,6 +37,13 @@ export interface Wallet {
   /** Supports rotation by incrementing secret material while preserving history. */
   secretVersion: number;
 
+  /**
+   * Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+   * Increment when the key algorithm or derivation path changes so consumers can detect
+   * stale material and trigger re-encryption or re-issuance.
+   */
+  keyVersion: number;
+
   /** Mainnet/testnet separation. */
   network: WalletNetwork;
 
@@ -47,6 +54,9 @@ export interface Wallet {
 
   /** Rotation lineage (if this wallet is a successor). */
   rotatedFromId?: WalletId | null;
+
+  /** Direct link to the wallet that replaced this one during rotation. */
+  successorId?: WalletId | null;
 
   createdAt: Date;
   updatedAt: Date;
@@ -111,4 +121,18 @@ export function transitionWalletStatus(
     statusChangedAt: at,
     updatedAt: at,
   };
+}
+
+/**
+ * Status response DTO exposed via the status endpoint.
+ */
+export interface WalletStatusResponse {
+  id: string;
+  status: WalletStatus;
+  statusReason: string | null;
+  statusChangedAt: Date;
+  network: WalletNetwork;
+  publicKey: string;
+  userId: string;
+  updatedAt: Date;
 }

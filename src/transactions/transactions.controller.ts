@@ -9,8 +9,10 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
+import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
+import { BuildTransactionDto } from './dto/build-transaction.dto';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
   RateLimitGuard,
@@ -21,7 +23,20 @@ import { TransactionStatus } from './domain/transaction.model';
 @Controller('transactions')
 @UseGuards(ApiKeyGuard, RateLimitGuard)
 export class TransactionsController {
-  constructor(private readonly transactionsService: TransactionsService) {}
+  constructor(
+    private readonly transactionsService: TransactionsService,
+    private readonly stellarBuildService: StellarTransactionBuildService,
+  ) {}
+
+  /**
+   * Build an unsigned Stellar payment transaction XDR.
+   * The returned XDR must be signed before submission to the network.
+   */
+  @Post('build')
+  @SensitiveEndpoint()
+  buildTransaction(@Body() dto: BuildTransactionDto) {
+    return this.stellarBuildService.buildPayment(dto);
+  }
 
   @Post()
   @SensitiveEndpoint()
@@ -47,8 +62,15 @@ export class TransactionsController {
   }
 
   @Get('wallet/:walletId')
-  findByWallet(@Param('walletId') walletId: string) {
-    return this.transactionsService.findByWallet(walletId);
+  findByWallet(
+    @Param('walletId') walletId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.transactionsService.findByWallet(walletId, {
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
   }
 
   @Get('stellar/:hash')

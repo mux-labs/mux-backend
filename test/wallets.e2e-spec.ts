@@ -48,9 +48,9 @@ describe('Wallets Protected Endpoint (e2e)', () => {
     await app.close();
   });
 
-  it('/wallets/protected (GET) with valid ApiKey returns 200 and context', async () => {
+  it('/v1/wallets/protected (GET) with valid ApiKey returns 200 and context', async () => {
     const res = await request(app.getHttpServer())
-      .get('/wallets/protected')
+      .get('/v1/wallets/protected')
       .set('Authorization', 'ApiKey mux_test_abc')
       .expect(200);
 
