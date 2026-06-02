@@ -16,6 +16,9 @@ describe('DevelopersService', () => {
         update: jest.fn(),
         delete: jest.fn(),
       },
+      project: {
+        findMany: jest.fn(),
+      },
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -43,6 +46,20 @@ describe('DevelopersService', () => {
 
     expect(prisma.developer.findUnique).toHaveBeenCalledWith({ where: { id: 'dev-123' } });
     expect(result).toEqual({ id: 'dev-123', email: 'test@example.com' });
+  });
+
+  it('should list projects for a developer', async () => {
+    prisma.developer.findUnique.mockResolvedValue({ id: 'dev-123', email: 'test@example.com' });
+    prisma.project.findMany.mockResolvedValue([
+      { id: 'proj-123', name: 'Test Project', developerId: 'dev-123' },
+    ]);
+
+    const result = await service.findProjects('dev-123');
+
+    expect(prisma.project.findMany).toHaveBeenCalledWith({ where: { developerId: 'dev-123' } });
+    expect(result).toEqual([
+      { id: 'proj-123', name: 'Test Project', developerId: 'dev-123' },
+    ]);
   });
 
   it('should throw NotFoundException when developer is missing', async () => {

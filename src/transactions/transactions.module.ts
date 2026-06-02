@@ -6,6 +6,10 @@ import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module'
 
 @Module({
   imports: [PrismaModule, BalanceIndexerModule],
+import { WebhookModule } from '../webhooks/webhook.module';
+
+@Module({
+  imports: [PrismaModule, WebhookModule],
   controllers: [TransactionsController],
   providers: [TransactionsService],
   exports: [TransactionsService],

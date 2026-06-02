@@ -26,6 +26,11 @@ export class DevelopersService {
     return this.prisma.developer.update({ where: { id }, data: dto });
   }
 
+  async findProjects(id: string) {
+    await this.findOne(id);
+    return this.prisma.project.findMany({ where: { developerId: id } });
+  }
+
   async remove(id: string) {
     await this.findOne(id);
     return this.prisma.developer.delete({ where: { id } });
