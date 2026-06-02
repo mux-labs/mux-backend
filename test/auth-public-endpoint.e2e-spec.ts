@@ -20,7 +20,7 @@ describe('Auth Public Endpoint (e2e)', () => {
     await app.close();
   });
 
-  describe('POST /auth/authenticate', () => {
+  describe('POST /v1/auth/authenticate', () => {
     const validAuthRequest = {
       authId: 'test-auth-id-123',
       email: 'test@example.com',
@@ -34,7 +34,7 @@ describe('Auth Public Endpoint (e2e)', () => {
       // We expect it to process the request, not return 401 Unauthorized
 
       const response = await request(app.getHttpServer())
-        .post('/auth/authenticate')
+        .post('/v1/auth/authenticate')
         .send(validAuthRequest);
 
       // Should NOT return 401 Unauthorized
@@ -53,7 +53,7 @@ describe('Auth Public Endpoint (e2e)', () => {
 
     it('should not require x-api-key header', async () => {
       const response = await request(app.getHttpServer())
-        .post('/auth/authenticate')
+        .post('/v1/auth/authenticate')
         .send(validAuthRequest);
       // Deliberately NOT setting x-api-key header
 
@@ -67,7 +67,7 @@ describe('Auth Public Endpoint (e2e)', () => {
 
     it('should not require Authorization header', async () => {
       const response = await request(app.getHttpServer())
-        .post('/auth/authenticate')
+        .post('/v1/auth/authenticate')
         .send(validAuthRequest);
       // Deliberately NOT setting Authorization header
 

@@ -1,18 +1,18 @@
 import { Module } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { TransactionsController } from './transactions.controller';
-import { StellarSigningService } from './stellar-signing.service';
-import { HorizonSubmissionService } from './horizon-submission.service';
+import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { PrismaModule } from '../prisma/prisma.module';
+import { BalanceIndexerModule } from '../balance-indexer/balance-indexer.module';
 
 @Module({
-  imports: [PrismaModule],
+  imports: [PrismaModule, BalanceIndexerModule],
+import { WebhookModule } from '../webhooks/webhook.module';
+
+@Module({
+  imports: [PrismaModule, WebhookModule],
   controllers: [TransactionsController],
-  providers: [
-    TransactionsService,
-    StellarSigningService,
-    HorizonSubmissionService,
-  ],
-  exports: [TransactionsService, StellarSigningService, HorizonSubmissionService],
+  providers: [TransactionsService, StellarTransactionBuildService],
+  exports: [TransactionsService, StellarTransactionBuildService],
 })
 export class TransactionsModule {}

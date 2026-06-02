@@ -30,6 +30,8 @@ export class Transaction {
 
   metadata?: Record<string, any> | null;
 
+  idempotencyKey?: string | null;
+
   createdAt: Date;
   updatedAt: Date;
 }

@@ -67,4 +67,6 @@ export class CreateTransactionDto {
   @IsOptional()
   @IsObject()
   metadata?: Record<string, any>;
+  /** Optional client-supplied key to prevent duplicate submissions */
+  idempotencyKey?: string;
 }
