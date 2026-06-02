@@ -1,22 +1,10 @@
-import { IsInt, IsOptional, IsString, Min } from 'class-validator';
+import { IsString } from 'class-validator';
+import { ProjectSettingsDto } from './project-settings.dto';
 
-export class CreateProjectDto {
+export class CreateProjectDto extends ProjectSettingsDto {
   @IsString()
   name: string;
 
   @IsString()
   developerId: string;
-
-  @IsOptional()
-  @IsString()
-  description?: string;
-
-  @IsOptional()
-  @IsString()
-  environment?: string;
-
-  @IsOptional()
-  @IsInt()
-  @Min(1)
-  rateLimitRpm?: number;
 }

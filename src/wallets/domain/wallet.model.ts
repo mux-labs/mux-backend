@@ -115,3 +115,17 @@ export function transitionWalletStatus(
     updatedAt: at,
   };
 }
+
+/**
+ * Status response DTO exposed via the status endpoint.
+ */
+export interface WalletStatusResponse {
+  id: string;
+  status: WalletStatus;
+  statusReason: string | null;
+  statusChangedAt: Date;
+  network: WalletNetwork;
+  publicKey: string;
+  userId: string;
+  updatedAt: Date;
+}

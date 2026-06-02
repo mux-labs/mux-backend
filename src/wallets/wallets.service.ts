@@ -6,7 +6,12 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
-import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
+import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  WalletStatusResponse,
+} from './domain/wallet.model';
 import {
   EncryptionService,
   DecryptionError,
@@ -343,6 +348,90 @@ export class WalletsService {
       createdAt: prismaWallet.createdAt,
       updatedAt: prismaWallet.updatedAt,
     };
+  }
+
+  // ──────────────────────────────────────────────
+  // #185: Wallet Status Endpoint
+  // ──────────────────────────────────────────────
+
+  /**
+   * Returns the current status of a wallet.
+   */
+  async getWalletStatus(walletId: string): Promise<WalletStatusResponse> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    }
+
+    return {
+      id: wallet.id,
+      status: wallet.status as WalletStatus,
+      statusReason: wallet.statusReason,
+      statusChangedAt: wallet.statusChangedAt,
+      network: wallet.network as WalletNetwork,
+      publicKey: wallet.publicKey,
+      userId: wallet.userId,
+      updatedAt: wallet.updatedAt,
+    };
+  }
+
+  /**
+   * Transitions a PROVISIONING wallet to ACTIVE.
+   */
+  async activateWallet(
+    walletId: string,
+    statusReason?: string,
+  ): Promise<Wallet> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
+    }
+
+    if (wallet.status !== 'PROVISIONING') {
+      throw new Error(
+        `Cannot activate wallet in status: ${wallet.status}. Only PROVISIONING wallets can be activated.`,
+      );
+    }
+
+    try {
+      const updatedWallet = await this.prisma.wallet.update({
+        where: { id: walletId },
+        data: {
+          status: 'ACTIVE',
+          statusReason: statusReason ?? 'Wallet provisioned and activated',
+          statusChangedAt: new Date(),
+          updatedAt: new Date(),
+        },
+      });
+
+      this.logger.log(`Activated wallet ${walletId} (PROVISIONING -> ACTIVE)`);
+      return this.mapPrismaWalletToDomain(updatedWallet);
+    } catch (error) {
+      this.logger.error(`Failed to activate wallet ${walletId}:`, error);
+      throw new Error('Wallet activation failed');
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // #189: Wallet List by UserId
+  // ──────────────────────────────────────────────
+
+  /**
+   * Returns all wallets for a given userId.
+   */
+  async findWalletsByUserId(userId: string): Promise<Wallet[]> {
+    const wallets = await this.prisma.wallet.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    return wallets.map((w) => this.mapPrismaWalletToDomain(w));
   }
 
   // Legacy methods for compatibility
