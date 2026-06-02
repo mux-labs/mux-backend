@@ -10,4 +10,6 @@ export class CreateTransactionDto {
   senderWalletId: string;
   receiverWalletId?: string;
   metadata?: Record<string, any>;
+  /** Optional client-supplied key to prevent duplicate submissions */
+  idempotencyKey?: string;
 }
