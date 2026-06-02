@@ -4,6 +4,8 @@ import { WalletsService, CreateWalletRequest } from './wallets.service';
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { PrismaClient } from '../generated/prisma/client';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyType } from '../key-management/domain/key-types';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -17,10 +19,19 @@ const mockPrisma = {
   },
 };
 
+// Mock KeyManagementService
+const mockKeyManagementService = {
+  generateKey: jest.fn(),
+  sign: jest.fn(),
+  validateKey: jest.fn(),
+  getAuditLog: jest.fn(),
+};
+
 describe('WalletsService', () => {
   let service: WalletsService;
   let encryptionService: EncryptionService;
   let configService: ConfigService;
+  let keyManagementService: KeyManagementService;
   let prisma: PrismaClient;
 
   beforeEach(async () => {
@@ -46,6 +57,10 @@ describe('WalletsService', () => {
           useValue: mockConfigService,
         },
         {
+          provide: KeyManagementService,
+          useValue: mockKeyManagementService,
+        },
+        {
           provide: PrismaClient,
           useValue: mockPrisma,
         },
@@ -55,6 +70,7 @@ describe('WalletsService', () => {
     service = module.get<WalletsService>(WalletsService);
     encryptionService = module.get<EncryptionService>(EncryptionService);
     configService = module.get<ConfigService>(ConfigService);
+    keyManagementService = module.get<KeyManagementService>(KeyManagementService);
     prisma = module.get<PrismaClient>(PrismaClient);
   });
 
@@ -104,17 +120,29 @@ describe('WalletsService', () => {
 
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
       mockPrisma.wallet.create.mockResolvedValue(mockWallet);
+      
+      // Mock KeyManagementService.generateKey
+      mockKeyManagementService.generateKey.mockResolvedValue({
+        encryptedData: 'encrypted-secret',
+        encryptionVersion: 1,
+        keyType: KeyType.STELLAR_ED25519,
+        publicKey: 'public-key-123',
+      });
+      
       jest
-        .spyOn(encryptionService, 'encryptAndSerialize')
-        .mockReturnValue('encrypted-secret');
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('decrypted-private-key');
 
       const result = await service.createWallet(createWalletRequest);
 
       expect(result.wallet.id).toBe('wallet-123');
       expect(result.wallet.userId).toBe('user-123');
       expect(result.wallet.publicKey).toBe('public-key-123');
-      expect(result.privateKey).toBeDefined();
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalled();
+      expect(result.privateKey).toBe('decrypted-private-key');
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
+      });
     });
 
     it('should throw ConflictException if user already has a wallet on the network', async () => {
@@ -271,16 +299,28 @@ describe('WalletsService', () => {
 
       mockPrisma.wallet.findUnique.mockResolvedValue(existingWallet);
       mockPrisma.wallet.update.mockResolvedValue(updatedWallet);
+      
+      // Mock KeyManagementService.generateKey
+      mockKeyManagementService.generateKey.mockResolvedValue({
+        encryptedData: 'new-encrypted-secret',
+        encryptionVersion: 1,
+        keyType: KeyType.STELLAR_ED25519,
+        publicKey: 'new-public-key',
+      });
+      
       jest
-        .spyOn(encryptionService, 'encryptAndSerialize')
-        .mockReturnValue('new-encrypted-secret');
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('new-private-key');
 
       const result = await service.rotateWalletKey('wallet-123');
 
       expect(result.wallet.id).toBe('wallet-123');
       expect(result.wallet.secretVersion).toBe(2);
-      expect(result.privateKey).toBeDefined();
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalled();
+      expect(result.privateKey).toBe('new-private-key');
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { walletId: 'wallet-123', operation: 'rotation' },
+      });
     });
 
     it('should throw NotFoundException if wallet not found', async () => {

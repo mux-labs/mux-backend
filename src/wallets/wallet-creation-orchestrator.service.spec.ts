@@ -7,6 +7,8 @@ import {
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { PrismaClient } from '../generated/prisma/client';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyType } from '../key-management/domain/key-types';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -33,11 +35,20 @@ const mockConfigService = {
   get: jest.fn(),
 };
 
+// Mock KeyManagementService
+const mockKeyManagementService = {
+  generateKey: jest.fn(),
+  sign: jest.fn(),
+  validateKey: jest.fn(),
+  getAuditLog: jest.fn(),
+};
+
 describe('WalletCreationOrchestrator', () => {
   let orchestrator: WalletCreationOrchestrator;
   let prismaClient: jest.Mocked<PrismaClient>;
   let encryptionService: jest.Mocked<EncryptionService>;
   let configService: jest.Mocked<ConfigService>;
+  let keyManagementService: jest.Mocked<KeyManagementService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -55,6 +66,10 @@ describe('WalletCreationOrchestrator', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: KeyManagementService,
+          useValue: mockKeyManagementService,
+        },
       ],
     }).compile();
 
@@ -64,15 +79,20 @@ describe('WalletCreationOrchestrator', () => {
     prismaClient = module.get(PrismaClient);
     encryptionService = module.get(EncryptionService);
     configService = module.get(ConfigService);
+    keyManagementService = module.get(KeyManagementService);
 
     // Reset all mocks
     jest.clearAllMocks();
 
     // Setup default mock returns
     mockEncryptionService.validateConfiguration.mockReturnValue(true);
-    mockEncryptionService.encryptAndSerialize.mockReturnValue(
-      'encrypted-private-key',
-    );
+    mockEncryptionService.deserializeAndDecrypt.mockReturnValue('decrypted-private-key');
+    mockKeyManagementService.generateKey.mockResolvedValue({
+      encryptedData: 'encrypted-private-key',
+      encryptionVersion: 1,
+      keyType: KeyType.STELLAR_ED25519,
+      publicKey: 'GABC123DEF456',
+    });
   });
 
   describe('createWallet', () => {
@@ -119,7 +139,7 @@ describe('WalletCreationOrchestrator', () => {
           network: WalletNetwork.TESTNET,
           status: 'ACTIVE',
         }),
-        privateKey: expect.any(String),
+        privateKey: 'decrypted-private-key',
         isNewWallet: true,
         idempotencyKey: 'unique-key-123',
       });
@@ -131,7 +151,7 @@ describe('WalletCreationOrchestrator', () => {
       expect(mockPrisma.wallet.create).toHaveBeenCalledWith({
         data: {
           userId: 'user-123',
-          publicKey: expect.any(String),
+          publicKey: 'GABC123DEF456',
           encryptedSecret: 'encrypted-private-key',
           network: WalletNetwork.TESTNET,
           status: 'ACTIVE',
@@ -140,9 +160,10 @@ describe('WalletCreationOrchestrator', () => {
         },
       });
 
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(
-        expect.any(String),
-      );
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
+      });
     });
 
     it('should return existing wallet if user already has one', async () => {
@@ -270,7 +291,7 @@ describe('WalletCreationOrchestrator', () => {
           id: 'wallet-123',
           userId: 'user-123',
         }),
-        privateKey: expect.any(String),
+        privateKey: 'decrypted-private-key',
         isNewWallet: true,
         idempotencyKey: undefined,
       });

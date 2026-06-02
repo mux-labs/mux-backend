@@ -9,6 +9,8 @@ import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyType } from '../key-management/domain/key-types';
 import * as crypto from 'crypto';
 
 export interface User {
@@ -60,6 +62,7 @@ export class WalletCreationOrchestrator {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
     private idempotentUserService: IdempotentUserService,
+    private keyManagementService: KeyManagementService,
   ) {
     this.prisma = new PrismaClient({} as any);
   }
@@ -224,23 +227,21 @@ export class WalletCreationOrchestrator {
   ): Promise<{ wallet: Wallet; privateKey: string }> {
     const { request } = context;
 
-    // Generate new keypair
-    const keyPair = this.generateStellarKeyPair();
-
-    // Encrypt the private key before storage
-    const encryptedSecret = this.encryptionService.encryptAndSerialize(
-      keyPair.privateKey,
-    );
+    // Generate new keypair using centralized key management service
+    const encryptedKeyMaterial = await this.keyManagementService.generateKey({
+      keyType: KeyType.STELLAR_ED25519,
+      metadata: { userId: request.userId, network: request.network },
+    });
 
     try {
       const createdWallet = await tx.wallet.create({
         data: {
           userId: request.userId,
-          publicKey: keyPair.publicKey,
-          encryptedSecret,
+          publicKey: encryptedKeyMaterial.publicKey,
+          encryptedSecret: encryptedKeyMaterial.encryptedData,
           network: request.network,
           status: 'ACTIVE',
-          encryptionVersion: 1,
+          encryptionVersion: encryptedKeyMaterial.encryptionVersion,
           secretVersion: 1,
         },
       });
@@ -249,9 +250,14 @@ export class WalletCreationOrchestrator {
         `Created new wallet for user ${request.userId} on ${request.network}`,
       );
 
+      // Temporarily decrypt for return (only during creation)
+      const privateKey = this.encryptionService.deserializeAndDecrypt(
+        encryptedKeyMaterial.encryptedData,
+      );
+
       return {
         wallet: this.mapPrismaWalletToDomain(createdWallet),
-        privateKey: keyPair.privateKey,
+        privateKey,
       };
     } catch (error) {
       this.logger.error('Failed to create wallet in transaction:', error);
@@ -284,17 +290,6 @@ export class WalletCreationOrchestrator {
     this.logger.log(
       `Idempotency record would be stored for key: ${idempotencyKey}`,
     );
-  }
-
-  /**
-   * Generates a Stellar keypair (simplified for MVP)
-   */
-  private generateStellarKeyPair(): { publicKey: string; privateKey: string } {
-    // In real implementation, use stellar-sdk: Stellar.Keypair.random()
-    const privateKey = crypto.randomBytes(32).toString('hex');
-    const publicKey = `G${crypto.randomBytes(32).toString('hex').toUpperCase()}`;
-
-    return { publicKey, privateKey };
   }
 
   /**
