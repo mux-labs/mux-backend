@@ -17,6 +17,7 @@ import {
   DetailedKeyStatistics,
   KeyOperationMetrics,
 } from './domain/key-statistics';
+import { KeyRotationAuditService } from './key-rotation-audit.service';
 
 export interface GenerateKeyRequest {
   keyType: KeyType;
@@ -545,6 +546,18 @@ export class KeyManagementService {
    */
   private auditKeyOperation(audit: KeyOperationAudit): void {
     this.auditLog.push(audit);
+
+    // Persist to database for compliance and long-term retention
+    this.auditService
+      .persistAuditLog(
+        this.auditService.convertToPersistentFormat(audit, {
+          retentionDays: 365, // Keep audit logs for 1 year
+        }),
+      )
+      .catch((error) => {
+        // Already logged in service, just ensure it doesn't break the main flow
+        this.logger.error('Audit persistence failed (non-blocking):', error.message);
+      });
 
     // In production, send to external audit system
     this.logger.log(
