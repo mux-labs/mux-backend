@@ -9,6 +9,7 @@ import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import * as crypto from 'crypto';
 
 export interface User {
@@ -60,6 +61,7 @@ export class WalletCreationOrchestrator {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
     private idempotentUserService: IdempotentUserService,
+    private webhookEventEmitter: WebhookEventEmitterService,
   ) {
     this.prisma = new PrismaClient({} as any);
   }
@@ -133,6 +135,19 @@ export class WalletCreationOrchestrator {
         if (request.idempotencyKey) {
           await this.storeIdempotencyRecord(request.idempotencyKey, result, tx);
         }
+
+        // Emit wallet.created webhook (fire-and-forget, outside tx)
+        this.webhookEventEmitter
+          .emitWalletCreated({
+            walletId: newWallet.wallet.id,
+            userId: newWallet.wallet.userId,
+            publicKey: newWallet.wallet.publicKey,
+            network: newWallet.wallet.network,
+            status: newWallet.wallet.status,
+          })
+          .catch((err) =>
+            this.logger.error('Failed to emit wallet.created webhook:', err),
+          );
 
         return result;
       });
