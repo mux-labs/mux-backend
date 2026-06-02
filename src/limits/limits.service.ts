@@ -1,52 +1,63 @@
-import { Injectable } from '@nestjs/common';
-import { CreateLimitDto } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
+import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
+import { UpdateLimitDto } from './dto/update-limit.dto';
+
+export const LIMIT_ERROR_CODES = {
+  PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
+  DAILY_LIMIT_EXCEEDED: 'LIMIT_DAILY_EXCEEDED',
+} as const;
+
+export type LimitErrorCode = (typeof LIMIT_ERROR_CODES)[keyof typeof LIMIT_ERROR_CODES];
+
+export class LimitExceededException extends HttpException {
+  constructor(
+    public readonly errorCode: LimitErrorCode,
+    message: string,
+  ) {
+    super({ errorCode, message }, HttpStatus.UNPROCESSABLE_ENTITY);
+  }
+}
 
 @Injectable()
 export class LimitsService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async setLimits(userId: number, daily: number, perTx: number) {
-    return this.prisma.userLimit.upsert({
-      where: { userId },
+  async setLimits(walletId: string, daily: number, perTx: number) {
+    return this.prisma.walletLimit.upsert({
+      where: { walletId },
       update: { dailyLimit: daily, perTransactionLimit: perTx },
-      create: { userId, dailyLimit: daily, perTransactionLimit: perTx },
+      create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
     });
   }
 
-  async getLimits(userId: number) {
-    return this.prisma.userLimit.findUnique({
-      where: { userId },
-    });
+  async getLimits(walletId: string) {
+    return this.prisma.walletLimit.findUnique({ where: { walletId } });
   }
 
-  async checkLimits(userId: number, amount: number): Promise<void> {
-    const limits = await this.getLimits(userId);
-    if (!limits) return; // No limits set
+  async checkLimits(walletId: string, amount: number): Promise<void> {
+    const limits = await this.getLimits(walletId);
+    if (!limits) return;
 
-    if (amount > limits.perTransactionLimit) {
-      throw new Error(
-        `Transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+    // Enforce per-transaction cap: a cap of 0 blocks all transactions
+    if (limits.perTransactionLimit >= 0 && amount > limits.perTransactionLimit) {
+      throw new LimitExceededException(
+        LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
+        `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
       );
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    // Enforce daily cap only when a positive daily limit is configured
+    if (limits.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
 
-    const usage = await this.prisma.payment.aggregate({
-      where: {
-        fromId: userId,
-        createdAt: {
-          gte: startOfDay,
-        },
-      },
-      _sum: {
-        amount: true,
-      },
+    const txns = await this.prisma.transaction.findMany({
+      where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+      select: { amount: true },
     });
 
-    const currentDailyTotal = usage._sum.amount || 0;
+    const currentDailyTotal = txns.reduce((sum, t) => sum + Number(t.amount), 0);
     if (currentDailyTotal + amount > limits.dailyLimit) {
       throw new Error(
         `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
@@ -54,23 +65,9 @@ export class LimitsService {
     }
   }
 
-  create(createLimitDto: CreateLimitDto) {
-    return 'This action adds a new limit';
-  }
-
-  findAll() {
-    return `This action returns all limits`;
-  }
-
-  findOne(id: number) {
-    return `This action returns a #${id} limit`;
-  }
-
-  update(id: number, updateLimitDto: UpdateLimitDto) {
-    return `This action updates a #${id} limit`;
-  }
-
-  remove(id: number) {
-    return `This action removes a #${id} limit`;
+  async removeLimits(walletId: string) {
+    const existing = await this.getLimits(walletId);
+    if (!existing) throw new NotFoundException(`No limits found for wallet ${walletId}`);
+    return this.prisma.walletLimit.delete({ where: { walletId } });
   }
 }

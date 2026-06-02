@@ -13,6 +13,7 @@ import {
   BalanceIndexerService,
   SyncBalancesRequest,
 } from './balance-indexer.service';
+
 import { Asset, AssetType } from './domain/balance.model';
 
 @Controller('balances')
@@ -20,8 +21,8 @@ export class BalanceIndexerController {
   constructor(private readonly balanceIndexerService: BalanceIndexerService) {}
 
   /**
-   * GET /balances/wallet/:walletId
-   * Returns all indexed balances for a wallet.
+   * Gets balance for a specific wallet and asset.
+   * Pass assetType query param for a single asset, or omit for all balances.
    */
   @Get('wallet/:walletId')
   async getWalletBalances(@Param('walletId') walletId: string) {
@@ -41,24 +42,25 @@ export class BalanceIndexerController {
     @Query('assetCode') assetCode?: string,
     @Query('assetIssuer') assetIssuer?: string,
   ) {
-    const asset: Asset = {
-      type: (assetType as AssetType) || AssetType.NATIVE,
-      code: assetCode,
-      issuer: assetIssuer,
-    };
-
-    const balance = await this.balanceIndexerService.getBalance(walletId, asset);
-    if (!balance) {
-      throw new NotFoundException(
-        `No balance found for wallet ${walletId} and asset ${assetType}`,
+    if (assetType) {
+      const asset: Asset = {
+        type: (assetType as AssetType) || AssetType.NATIVE,
+        code: assetCode,
+        issuer: assetIssuer,
+      };
+      const balance = await this.balanceIndexerService.getBalance(
+        walletId,
+        asset,
       );
     }
-    return balance;
+
+    const balances = await this.balanceIndexerService.getAllBalances(walletId);
+    return { walletId, balances };
   }
 
   /**
-   * POST /balances/wallet/:walletId/sync
-   * Syncs balances from Stellar Horizon for a specific wallet.
+   * Manually triggers a balance sync for a single wallet from Stellar Horizon.
+   * Useful when a wallet owner reports stale balance data.
    */
   @Post('wallet/:walletId/sync')
   @HttpCode(HttpStatus.OK)
@@ -70,13 +72,21 @@ export class BalanceIndexerController {
       walletId,
       forceRefresh: body.forceRefresh || false,
     };
-
     return await this.balanceIndexerService.syncWalletBalances(request);
   }
 
   /**
-   * POST /balances/wallet/:walletId/reconcile
-   * Reconciles a wallet's balance with on-chain state.
+   * Manually triggers a full balance sync across all active wallets.
+   * Admin-only operation. Tracked via BalanceSyncJob records.
+   */
+  @Post('sync-all')
+  @HttpCode(HttpStatus.OK)
+  async syncAllWallets() {
+    return await this.balanceIndexerService.syncAllWallets();
+  }
+
+  /**
+   * Reconciles a wallet's indexed balance with on-chain state.
    */
   @Post('wallet/:walletId/reconcile')
   @HttpCode(HttpStatus.OK)
@@ -90,17 +100,49 @@ export class BalanceIndexerController {
       code: body.assetCode,
       issuer: body.assetIssuer,
     };
-
     return await this.balanceIndexerService.reconcileBalance(walletId, asset);
   }
 
   /**
-   * POST /balances/reconcile-all
-   * Reconciles all balances (admin operation).
+   * Reconciles all balances for all active wallets.
+   * Admin-only maintenance operation.
    */
   @Post('reconcile-all')
   @HttpCode(HttpStatus.OK)
   async reconcileAllBalances() {
     return await this.balanceIndexerService.reconcileAllBalances();
+  }
+
+  /**
+   * Syncs balances with retry backoff
+   */
+  @Post('wallet/:walletId/sync-with-retry')
+  @HttpCode(HttpStatus.OK)
+  async syncWithRetry(
+    @Param('walletId') walletId: string,
+    @Body() body: { forceRefresh?: boolean } = {},
+  ) {
+    return this.balanceIndexerService.syncWalletBalancesWithRetry({
+      walletId,
+      forceRefresh: body.forceRefresh || false,
+    });
+  }
+
+  /**
+   * Detects stale balances for a wallet
+   */
+  @Get('wallet/:walletId/stale')
+  async detectStaleBalances(@Param('walletId') walletId: string) {
+    return this.balanceIndexerService.detectStaleBalances(walletId);
+  }
+
+  /**
+   * Triggers the scheduled sync manually
+   */
+  @Post('sync-all')
+  @HttpCode(HttpStatus.OK)
+  async syncAll() {
+    await this.balanceIndexerService.runScheduledSync();
+    return { status: 'scheduled sync triggered' };
   }
 }

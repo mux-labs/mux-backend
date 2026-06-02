@@ -59,6 +59,74 @@ async function main() {
     console.log(`  Seeded user: ${userData.displayName} (${user.id})`);
   }
 
+  console.log('Seeding developer onboarding data...');
+
+  const onboardingDevelopers = [
+    {
+      email: 'alice@developer.mux.dev',
+      name: 'Alice Developer',
+      company: 'Mux Labs',
+      status: 'ACTIVE',
+      projectId: 'project-onboard-alice',
+      projectName: 'Alice Starter Project',
+      projectDescription: 'Onboarding project for Alice Developer',
+      environment: 'development',
+      rateLimitRpm: 100,
+    },
+    {
+      email: 'bob@developer.mux.dev',
+      name: 'Bob Developer',
+      company: 'Mux Labs',
+      status: 'ACTIVE',
+      projectId: 'project-onboard-bob',
+      projectName: 'Bob Starter Project',
+      projectDescription: 'Onboarding project for Bob Developer',
+      environment: 'staging',
+      rateLimitRpm: 250,
+    },
+  ];
+
+  for (const developerData of onboardingDevelopers) {
+    const developer = await prisma.developer.upsert({
+      where: { email: developerData.email },
+      update: {
+        name: developerData.name,
+        company: developerData.company,
+        status: developerData.status,
+        deletedAt: null,
+      },
+      create: {
+        email: developerData.email,
+        name: developerData.name,
+        company: developerData.company,
+        status: developerData.status,
+      },
+    });
+
+    await prisma.project.upsert({
+      where: { id: developerData.projectId },
+      update: {
+        name: developerData.projectName,
+        description: developerData.projectDescription,
+        environment: developerData.environment,
+        rateLimitRpm: developerData.rateLimitRpm,
+        status: 'ACTIVE',
+        developerId: developer.id,
+      },
+      create: {
+        id: developerData.projectId,
+        name: developerData.projectName,
+        description: developerData.projectDescription,
+        environment: developerData.environment,
+        rateLimitRpm: developerData.rateLimitRpm,
+        status: 'ACTIVE',
+        developerId: developer.id,
+      },
+    });
+
+    console.log(`  Seeded developer: ${developer.name} (${developer.id})`);
+  }
+
   console.log('Seed complete.');
 }
 
