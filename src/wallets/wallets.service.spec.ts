@@ -107,6 +107,7 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
         encryptionVersion: 1,
         secretVersion: 1,
+        keyVersion: 1,
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
@@ -289,6 +290,7 @@ describe('WalletsService', () => {
         publicKey: 'old-public-key',
         encryptedSecret: 'old-encrypted-secret',
         secretVersion: 1,
+        keyVersion: 1,
       };
 
       const updatedWallet = {
@@ -297,6 +299,7 @@ describe('WalletsService', () => {
         publicKey: 'new-public-key',
         encryptedSecret: 'new-encrypted-secret',
         secretVersion: 2,
+        keyVersion: 2,
         network: WalletNetwork.TESTNET,
         status: 'ACTIVE',
         encryptionVersion: 1,

@@ -71,6 +71,7 @@ describe('KeyManagementService', () => {
       expect(result).toHaveProperty('publicKey');
       expect(result).toHaveProperty('keyType', KeyType.STELLAR_ED25519);
       expect(result).toHaveProperty('encryptionVersion');
+      expect(result).toHaveProperty('keyVersion', 1);
 
       // Critical: Should NOT contain plaintext private key
       expect(result).not.toHaveProperty('privateKey');

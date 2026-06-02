@@ -119,6 +119,7 @@ export class KeyManagementService {
       return {
         encryptedData,
         encryptionVersion: 1,
+        keyVersion: 1,
         keyType: request.keyType,
         publicKey: keyPair.publicKey,
       };
@@ -269,7 +270,8 @@ export class KeyManagementService {
 
       return {
         encryptedData: newEncryptedData,
-        encryptionVersion: 2, // Increment version
+        encryptionVersion: 2, // Increment encryption envelope version
+        keyVersion: currentKeyVersion, // Key algorithm version is unchanged on re-encryption
         keyType,
         publicKey: '', // Would derive from private key in production
       };

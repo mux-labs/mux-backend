@@ -465,6 +465,7 @@ export class WalletCreationOrchestrator {
           status: 'PROVISIONING', // Start in PROVISIONING (Issue #188)
           encryptionVersion: 1,
           secretVersion: 1,
+          keyVersion: 1,
         },
       });
       phaseTimings['wallet-persist'] = Date.now() - t;
@@ -624,6 +625,7 @@ export class WalletCreationOrchestrator {
       encryptedSecret: prismaWallet.encryptedSecret,
       encryptionVersion: prismaWallet.encryptionVersion,
       secretVersion: prismaWallet.secretVersion,
+      keyVersion: prismaWallet.keyVersion ?? 1,
       network: prismaWallet.network as WalletNetwork,
       status: prismaWallet.status as WalletStatus,
       statusReason: prismaWallet.statusReason,
