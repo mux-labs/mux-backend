@@ -35,6 +35,7 @@ export class KeyManagementController {
       publicKey: result.publicKey,
       encryptedData: result.encryptedData,
       encryptionVersion: result.encryptionVersion,
+      keyVersion: result.keyVersion,
       keyType: result.keyType,
       // Note: No private key is ever returned
     };

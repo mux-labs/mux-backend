@@ -85,6 +85,7 @@ export class WalletsService {
           status: 'ACTIVE',
           encryptionVersion: 1,
           secretVersion: 1,
+          keyVersion: 1,
         },
       });
 
@@ -239,6 +240,7 @@ export class WalletsService {
           publicKey: newKeyPair.publicKey,
           encryptedSecret: newEncryptedSecret,
           secretVersion: existingWallet.secretVersion + 1,
+          keyVersion: existingWallet.keyVersion + 1,
           updatedAt: new Date(),
         },
       });
@@ -334,6 +336,7 @@ export class WalletsService {
       encryptedSecret: prismaWallet.encryptedSecret,
       encryptionVersion: prismaWallet.encryptionVersion,
       secretVersion: prismaWallet.secretVersion,
+      keyVersion: prismaWallet.keyVersion ?? 1,
       network: prismaWallet.network as WalletNetwork,
       status: prismaWallet.status as WalletStatus,
       statusReason: prismaWallet.statusReason,

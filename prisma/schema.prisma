@@ -140,6 +140,11 @@ model Wallet {
   /// Supports rotation by incrementing secret material while preserving history.
   secretVersion Int @default(1)
 
+  /// Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+  /// Increment when the key algorithm or derivation path changes so consumers can detect
+  /// stale material and trigger re-encryption or re-issuance.
+  keyVersion Int @default(1)
+
   network WalletNetwork
   status  WalletStatus  @default(PROVISIONING)
 

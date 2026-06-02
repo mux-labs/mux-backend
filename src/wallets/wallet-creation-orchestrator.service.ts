@@ -242,6 +242,7 @@ export class WalletCreationOrchestrator {
           status: 'ACTIVE',
           encryptionVersion: 1,
           secretVersion: 1,
+          keyVersion: 1,
         },
       });
 
@@ -308,6 +309,7 @@ export class WalletCreationOrchestrator {
       encryptedSecret: prismaWallet.encryptedSecret,
       encryptionVersion: prismaWallet.encryptionVersion,
       secretVersion: prismaWallet.secretVersion,
+      keyVersion: prismaWallet.keyVersion ?? 1,
       network: prismaWallet.network as WalletNetwork,
       status: prismaWallet.status as WalletStatus,
       statusReason: prismaWallet.statusReason,

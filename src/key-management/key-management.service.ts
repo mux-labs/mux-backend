@@ -101,6 +101,7 @@ export class KeyManagementService {
       return {
         encryptedData,
         encryptionVersion: 1,
+        keyVersion: 1,
         keyType: request.keyType,
         publicKey: keyPair.publicKey,
       };
@@ -199,6 +200,7 @@ export class KeyManagementService {
   async reEncryptKey(
     encryptedKeyMaterial: string,
     keyType: KeyType,
+    currentKeyVersion: number = 1,
   ): Promise<EncryptedKeyMaterial> {
     try {
       // Decrypt with old encryption
@@ -209,15 +211,12 @@ export class KeyManagementService {
       const newEncryptedData =
         this.encryptionService.encryptAndSerialize(privateKeyMaterial);
 
-      // Derive public key for result
-      const provider = this.getProvider(keyType);
-      const keyPair = await provider.generateKeyPair(keyType); // Temp for structure
-
       this.logger.log('Successfully re-encrypted key material');
 
       return {
         encryptedData: newEncryptedData,
-        encryptionVersion: 2, // Increment version
+        encryptionVersion: 2, // Increment encryption envelope version
+        keyVersion: currentKeyVersion, // Key algorithm version is unchanged on re-encryption
         keyType,
         publicKey: '', // Would derive from private key in production
       };
