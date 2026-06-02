@@ -53,6 +53,18 @@ describe('UsersController', () => {
     expect(mockUsersService.create).toHaveBeenCalledWith(dto);
   });
 
+  it('should return paginated users', async () => {
+    const users = [{ id: 'user-123' }];
+    mockUsersService.findAll.mockResolvedValue(users);
+
+    await expect(controller.findAll('2', '10', 'ACTIVE')).resolves.toEqual(users);
+    expect(mockUsersService.findAll).toHaveBeenCalledWith({
+      page: 2,
+      limit: 10,
+      status: 'ACTIVE',
+    });
+  });
+
   it('should return a user by id', async () => {
     mockUsersService.findOne.mockResolvedValue({ id: 'user-123' });
 

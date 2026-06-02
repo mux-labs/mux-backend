@@ -8,8 +8,14 @@ async function bootstrap() {
   // Attach request logging middleware early in the pipeline
   app.use(requestLogger as any);
 
-  // Set global API prefix for versioning
-  app.setGlobalPrefix('v1');
+  // Validate incoming requests for DTOs globally
+  app.useGlobalPipes(
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
+    }),
+  );
 
   await app.listen(process.env.PORT ?? 3000);
 }

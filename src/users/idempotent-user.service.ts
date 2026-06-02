@@ -5,6 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { UserStatus } from './entities/user.entity';
 
 export interface FindOrCreateUserRequest {
   authId: string;
@@ -18,7 +19,7 @@ export interface User {
   authId: string;
   email?: string;
   displayName?: string;
-  status: string;
+  status?: UserStatus;
   authProvider: string;
   lastLoginAt?: Date;
   createdAt: Date;
@@ -231,14 +232,14 @@ export class IdempotentUserService {
    * Throws error if user is in an invalid/stale state (e.g., SUSPENDED, DISABLED)
    */
   private validateUserState(user: any): void {
-    const validStatuses = ['ACTIVE', 'PENDING'];
+    const status = (user.status || UserStatus.ACTIVE) as UserStatus;
 
-    if (!validStatuses.includes(user.status)) {
+    if (status !== UserStatus.ACTIVE) {
       this.logger.error(
-        `User ${user.id} with authId ${user.authId} is in invalid state: ${user.status}`,
+        `User ${user.id} with authId ${user.authId} is in invalid state: ${status}`,
       );
       throw new BadRequestException(
-        `User account is in an invalid state (${user.status}). Please contact support.`,
+        `User account is in an invalid state (${status}). Please contact support.`,
       );
     }
   }

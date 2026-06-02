@@ -57,14 +57,18 @@ export class RateLimitService {
   async checkRateLimit(
     apiKeyId: string,
     endpoint: string,
+    projectRateLimitRpm?: number,
     isSensitive: boolean = false,
   ): Promise<RateLimitResult> {
-    const config = isSensitive ? this.sensitiveConfig : this.defaultConfig;
+    const windowMs = isSensitive ? this.sensitiveConfig.windowMs : this.defaultConfig.windowMs;
+    const maxRequests =
+      projectRateLimitRpm ??
+      (isSensitive ? this.sensitiveConfig.maxRequests : this.defaultConfig.maxRequests);
     const now = new Date();
 
     // Calculate window start by rounding down to the nearest window boundary
     const windowStart = new Date(
-      Math.floor(now.getTime() / config.windowMs) * config.windowMs,
+      Math.floor(now.getTime() / windowMs) * windowMs,
     );
 
     try {
@@ -102,22 +106,18 @@ export class RateLimitService {
 
         return {
           allowed: true,
-          remaining: config.maxRequests - 1,
-          resetTime: new Date(windowStart.getTime() + config.windowMs),
-          limit: config.maxRequests,
+          remaining: maxRequests - 1,
+          resetTime: new Date(windowStart.getTime() + windowMs),
+          limit: maxRequests,
         };
       }
 
-      // Check if limit exceeded
-      if (record.requestCount >= config.maxRequests) {
-        const resetTime = new Date(
-          record.windowStart.getTime() + config.windowMs,
-        );
+      if (record.requestCount >= maxRequests) {
+        const resetTime = new Date(record.windowStart.getTime() + windowMs);
 
-        // Log the rejected request
         this.logRejectedRequest(apiKeyId, endpoint, isSensitive, {
           current: record.requestCount,
-          limit: config.maxRequests,
+          limit: maxRequests,
           resetTime,
         });
 
@@ -125,11 +125,10 @@ export class RateLimitService {
           allowed: false,
           remaining: 0,
           resetTime,
-          limit: config.maxRequests,
+          limit: maxRequests,
         };
       }
 
-      // Increment request count
       const updated = await this.prisma.rateLimitRecord.update({
         where: { id: record.id },
         data: {
@@ -140,9 +139,9 @@ export class RateLimitService {
 
       return {
         allowed: true,
-        remaining: config.maxRequests - updated.requestCount,
-        resetTime: new Date(record.windowStart.getTime() + config.windowMs),
-        limit: config.maxRequests,
+        remaining: maxRequests - updated.requestCount,
+        resetTime: new Date(record.windowStart.getTime() + windowMs),
+        limit: maxRequests,
       };
     } catch (error) {
       this.logger.error(
@@ -152,9 +151,9 @@ export class RateLimitService {
       // On error, allow the request (fail open) but log the error
       return {
         allowed: true,
-        remaining: config.maxRequests,
-        resetTime: new Date(now.getTime() + config.windowMs),
-        limit: config.maxRequests,
+        remaining: maxRequests,
+        resetTime: new Date(now.getTime() + windowMs),
+        limit: maxRequests,
       };
     }
   }
