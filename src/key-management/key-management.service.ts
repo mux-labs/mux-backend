@@ -2,10 +2,8 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
-import {
-  EncryptionService,
-  DecryptionError,
-} from '../encryption/encryption.service';
+import { EncryptionService } from '../encryption/encryption.service';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -13,7 +11,13 @@ import {
   EncryptedKeyMaterial,
   KeyOperationAudit,
 } from './domain/key-types';
-import { KeyDecryptionException } from './exceptions/key-decryption.exception';
+import {
+  KeyStatistics,
+  KeyStatisticsQuery,
+  DetailedKeyStatistics,
+  KeyOperationMetrics,
+} from './domain/key-statistics';
+import { KeyRotationAuditService } from './key-rotation-audit.service';
 
 export interface GenerateKeyRequest {
   keyType: KeyType;
@@ -24,6 +28,15 @@ export interface SignRequest {
   encryptedKeyMaterial: string;
   dataToSign: Buffer | string;
   publicKey: string; // For audit trail
+}
+
+export interface RotateKeyResult {
+  /** The newly created successor wallet ID */
+  successorWalletId: string;
+  /** The new wallet's public key */
+  successorPublicKey: string;
+  /** The predecessor wallet ID (now marked ROTATING with successorId set) */
+  predecessorWalletId: string;
 }
 
 /**
@@ -52,6 +65,7 @@ export class KeyManagementService {
   constructor(
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -278,10 +292,284 @@ export class KeyManagementService {
   }
 
   /**
+   * Rotates the key for a wallet by creating a successor wallet and linking it.
+   *
+   * Steps:
+   * 1. Verify the predecessor wallet exists and is ACTIVE or ROTATING.
+   * 2. Generate a new keypair and encrypt it.
+   * 3. Create the successor wallet record (ACTIVE) with rotatedFromId set.
+   * 4. Set successorId on the predecessor and transition it to ROTATING.
+   *
+   * All DB writes are wrapped in a transaction to prevent partial state.
+   */
+  async rotateKey(predecessorWalletId: string): Promise<RotateKeyResult> {
+    const predecessor = await this.prisma.wallet.findUnique({
+      where: { id: predecessorWalletId },
+    });
+
+    if (!predecessor) {
+      throw new NotFoundException(
+        `Wallet ${predecessorWalletId} not found`,
+      );
+    }
+
+    if (!['ACTIVE', 'ROTATING'].includes(predecessor.status)) {
+      throw new Error(
+        `Cannot rotate wallet in status: ${predecessor.status}`,
+      );
+    }
+
+    if (predecessor.successorId) {
+      throw new Error(
+        `Wallet ${predecessorWalletId} already has a successor: ${predecessor.successorId}`,
+      );
+    }
+
+    // Generate new keypair
+    const keyMaterial = await this.generateKey({
+      keyType: KeyType.STELLAR_ED25519,
+      metadata: { rotatedFromId: predecessorWalletId },
+    });
+
+    const [successor] = await this.prisma.$transaction(async (tx) => {
+      // Create successor wallet
+      const newWallet = await tx.wallet.create({
+        data: {
+          userId: predecessor.userId,
+          publicKey: keyMaterial.publicKey,
+          encryptedSecret: keyMaterial.encryptedData,
+          encryptionVersion: keyMaterial.encryptionVersion,
+          secretVersion: predecessor.secretVersion + 1,
+          network: predecessor.network,
+          status: 'ACTIVE',
+          rotatedFromId: predecessorWalletId,
+        },
+      });
+
+      // Link successor on predecessor and mark it ROTATING
+      await tx.wallet.update({
+        where: { id: predecessorWalletId },
+        data: {
+          successorId: newWallet.id,
+          status: 'ROTATING',
+          statusReason: 'Key rotation initiated',
+          statusChangedAt: new Date(),
+        },
+      });
+
+      return [newWallet];
+    });
+
+    this.auditKeyOperation({
+      operation: 'ROTATE',
+      keyId: predecessorWalletId,
+      publicKey: keyMaterial.publicKey,
+      timestamp: new Date(),
+      success: true,
+      metadata: { successorWalletId: successor.id },
+    });
+
+    this.logger.log(
+      `Rotated key for wallet ${predecessorWalletId} -> successor ${successor.id}`,
+    );
+
+    return {
+      successorWalletId: successor.id,
+      successorPublicKey: successor.publicKey,
+      predecessorWalletId,
+    };
+  }
+
+  /**
    * Returns audit log (for security monitoring)
    */
   getAuditLog(limit: number = 100): KeyOperationAudit[] {
     return this.auditLog.slice(-limit);
+  }
+
+  /**
+   * Returns key generation and usage statistics
+   */
+  getStatistics(query?: KeyStatisticsQuery): KeyStatistics {
+    const startDate = query?.startDate || new Date(0);
+    const endDate = query?.endDate || new Date();
+
+    // Filter audit log by date range and query parameters
+    const filteredLogs = this.auditLog.filter((log) => {
+      const inDateRange =
+        log.timestamp >= startDate && log.timestamp <= endDate;
+      const matchesOperation = query?.operation
+        ? log.operation === query.operation
+        : true;
+
+      return inDateRange && matchesOperation;
+    });
+
+    // Calculate statistics
+    const totalKeysGenerated = filteredLogs.filter(
+      (log) => log.operation === 'GENERATE',
+    ).length;
+    const totalSigningOperations = filteredLogs.filter(
+      (log) => log.operation === 'SIGN',
+    ).length;
+    const totalValidations = filteredLogs.filter(
+      (log) => log.operation === 'ACCESS',
+    ).length;
+    const totalFailures = filteredLogs.filter((log) => !log.success).length;
+
+    // Count keys by type (from metadata)
+    const keysByType: Record<string, number> = {};
+    filteredLogs
+      .filter((log) => log.operation === 'GENERATE')
+      .forEach((log) => {
+        const keyType = log.metadata?.keyType || 'unknown';
+        keysByType[keyType] = (keysByType[keyType] || 0) + 1;
+      });
+
+    // Count operations by type
+    const operationsByType: Record<string, number> = {};
+    filteredLogs.forEach((log) => {
+      operationsByType[log.operation] =
+        (operationsByType[log.operation] || 0) + 1;
+    });
+
+    // Calculate success rate
+    const totalOperations = filteredLogs.length;
+    const successRate =
+      totalOperations > 0
+        ? ((totalOperations - totalFailures) / totalOperations) * 100
+        : 100;
+
+    // Find last operation
+    const lastOperation =
+      filteredLogs.length > 0
+        ? filteredLogs[filteredLogs.length - 1].timestamp
+        : undefined;
+
+    return {
+      totalKeysGenerated,
+      totalSigningOperations,
+      totalValidations,
+      totalFailures,
+      keysByType,
+      operationsByType,
+      successRate,
+      lastOperation,
+      periodStart: startDate,
+      periodEnd: endDate,
+    };
+  }
+
+  /**
+   * Returns detailed statistics with operation metrics and time series
+   */
+  getDetailedStatistics(query?: KeyStatisticsQuery): DetailedKeyStatistics {
+    const basicStats = this.getStatistics(query);
+    const startDate = query?.startDate || new Date(0);
+    const endDate = query?.endDate || new Date();
+
+    // Filter logs for detailed analysis
+    const filteredLogs = this.auditLog.filter((log) => {
+      return log.timestamp >= startDate && log.timestamp <= endDate;
+    });
+
+    // Calculate operation metrics
+    const operationTypes = new Set(filteredLogs.map((log) => log.operation));
+    const operationMetrics: KeyOperationMetrics[] = [];
+
+    operationTypes.forEach((operation) => {
+      const logs = filteredLogs.filter((log) => log.operation === operation);
+      const successCount = logs.filter((log) => log.success).length;
+      const failureCount = logs.filter((log) => !log.success).length;
+      const count = logs.length;
+
+      operationMetrics.push({
+        operation,
+        count,
+        successCount,
+        failureCount,
+        successRate: count > 0 ? (successCount / count) * 100 : 100,
+      });
+    });
+
+    // Get recent operations (last 10)
+    const recentOperations = filteredLogs
+      .slice(-10)
+      .reverse()
+      .map((log) => ({
+        operation: log.operation,
+        timestamp: log.timestamp,
+        success: log.success,
+        keyType: log.metadata?.keyType as string | undefined,
+      }));
+
+    const result: DetailedKeyStatistics = {
+      ...basicStats,
+      operationMetrics,
+      recentOperations,
+    };
+
+    // Add time series if requested
+    if (query?.includeTimeSeries) {
+      result.timeSeries = this.generateTimeSeries(filteredLogs, startDate, endDate);
+    }
+
+    return result;
+  }
+
+  /**
+   * Generates time series data from audit logs
+   */
+  private generateTimeSeries(
+    logs: KeyOperationAudit[],
+    startDate: Date,
+    endDate: Date,
+  ) {
+    // Group by hour for the time range
+    const hourlyData = new Map<string, Map<string, number>>();
+
+    logs.forEach((log) => {
+      const hourKey = new Date(log.timestamp).toISOString().substring(0, 13); // YYYY-MM-DDTHH
+      
+      if (!hourlyData.has(hourKey)) {
+        hourlyData.set(hourKey, new Map());
+      }
+
+      const operationCount = hourlyData.get(hourKey)!;
+      operationCount.set(
+        log.operation,
+        (operationCount.get(log.operation) || 0) + 1,
+      );
+    });
+
+    // Convert to array format
+    const timeSeries: Array<{
+      timestamp: Date;
+      count: number;
+      operation: string;
+    }> = [];
+
+    hourlyData.forEach((operations, hourKey) => {
+      operations.forEach((count, operation) => {
+        timeSeries.push({
+          timestamp: new Date(hourKey + ':00:00.000Z'),
+          count,
+          operation,
+        });
+      });
+    });
+
+    return timeSeries.sort(
+      (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
+    );
+  }
+
+  /**
+   * Resets statistics (for testing or manual reset)
+   */
+  resetStatistics(): void {
+    this.auditLog.length = 0;
+    this.logger.warn('Key management statistics have been reset');
   }
 
   /**
@@ -304,6 +592,18 @@ export class KeyManagementService {
    */
   private auditKeyOperation(audit: KeyOperationAudit): void {
     this.auditLog.push(audit);
+
+    // Persist to database for compliance and long-term retention
+    this.auditService
+      .persistAuditLog(
+        this.auditService.convertToPersistentFormat(audit, {
+          retentionDays: 365, // Keep audit logs for 1 year
+        }),
+      )
+      .catch((error) => {
+        // Already logged in service, just ensure it doesn't break the main flow
+        this.logger.error('Audit persistence failed (non-blocking):', error.message);
+      });
 
     // In production, send to external audit system
     this.logger.log(

@@ -8,26 +8,12 @@ export interface EncryptionResult {
   tag: string;
 }
 
-export type DecryptionErrorCode =
-  | 'DECRYPTION_FAILED'
-  | 'INVALID_KEY'
-  | 'INVALID_DATA';
-
-/**
- * Typed error thrown by EncryptionService when decryption fails.
- *
- * Consumers can safely use `instanceof DecryptionError` and inspect `.code`
- * to distinguish corruption, wrong-key, and malformed-data scenarios.
- */
 export class DecryptionError extends Error {
-  readonly code: DecryptionErrorCode;
-
-  constructor(message: string, code: DecryptionErrorCode) {
+  code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA';
+  constructor(message: string, code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA') {
     super(message);
     this.name = 'DecryptionError';
     this.code = code;
-    // Restore prototype chain broken by ES5 transpilation
-    Object.setPrototypeOf(this, new.target.prototype);
   }
 }
 
@@ -121,28 +107,18 @@ export class EncryptionService {
 
       return decrypted;
     } catch (error) {
-      // Re-throw DecryptionError instances directly (avoid double-wrapping)
-      if (error instanceof DecryptionError) {
-        throw error;
-      }
-
-      let code: DecryptionErrorCode;
-      if (
-        error.message?.includes('bad decrypt') ||
-        error.message?.includes('Unsupported state or unable to authenticate data')
-      ) {
+      let code: DecryptionError['code'];
+      if (error.message.includes('bad decrypt')) {
         code = 'DECRYPTION_FAILED';
-      } else if (error.message?.includes('wrong key')) {
+      } else if (error.message.includes('wrong key')) {
         code = 'INVALID_KEY';
       } else {
         code = 'INVALID_DATA';
       }
 
-      this.logger.error('Decryption failed:', {
-        error: error.message,
-        code,
-      });
-      throw new DecryptionError('Decryption failed', code);
+      const decryptionError = new DecryptionError('Decryption failed', code);
+      this.logger.error('Decryption failed:', { error: error.message, code });
+      throw decryptionError;
     }
   }
 

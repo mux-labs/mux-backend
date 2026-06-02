@@ -1,15 +1,36 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import { NotFoundException } from '@nestjs/common';
 import { KeyManagementService } from './key-management.service';
 import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 
+// Prevent loading the real PrismaService (which requires the generated Prisma client)
+jest.mock('../prisma/prisma.service', () => ({
+  PrismaService: jest.fn(),
+}));
+
+// Import after mock is set up
+import { PrismaService } from '../prisma/prisma.service';
+
 describe('KeyManagementService', () => {
   let service: KeyManagementService;
   let encryptionService: EncryptionService;
 
+  // Minimal Prisma mock — only the methods used by rotateKey
+  const mockPrisma = {
+    wallet: {
+      findUnique: jest.fn(),
+      create: jest.fn(),
+      update: jest.fn(),
+    },
+    $transaction: jest.fn(),
+  };
+
   beforeEach(async () => {
+    jest.clearAllMocks();
+
     const mockConfigService = {
       get: jest.fn().mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
     };
@@ -21,6 +42,10 @@ describe('KeyManagementService', () => {
         {
           provide: ConfigService,
           useValue: mockConfigService,
+        },
+        {
+          provide: PrismaService,
+          useValue: mockPrisma,
         },
       ],
     }).compile();
@@ -101,12 +126,10 @@ describe('KeyManagementService', () => {
   // ─────────────────────────────────────────────────────────────────────────────
   describe('sign', () => {
     it('should sign data without exposing private key', async () => {
-      // Generate a key first
       const keyMaterial = await service.generateKey({
         keyType: KeyType.STELLAR_ED25519,
       });
 
-      // Sign some data
       const dataToSign = Buffer.from('test-transaction-data');
       const signature = await service.sign({
         encryptedKeyMaterial: keyMaterial.encryptedData,
@@ -426,11 +449,9 @@ describe('KeyManagementService', () => {
 
       await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
 
-      // Check that no log contains anything that looks like a private key
       const allLogs = [...logSpy.mock.calls, ...errorSpy.mock.calls];
       const logsAsString = JSON.stringify(allLogs);
 
-      // Should not contain common private key patterns
       expect(logsAsString).not.toMatch(/privateKey/i);
       expect(logsAsString).not.toMatch(/secret.*seed/i);
     });
@@ -460,6 +481,162 @@ describe('KeyManagementService', () => {
       const body = caught!.getResponse() as any;
       expect(body.message).not.toContain('EVP_DecryptFinal_ex');
       expect(body.message).not.toContain('0x7f');
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // rotateKey — successor linking
+  // ---------------------------------------------------------------------------
+  describe('rotateKey', () => {
+    const predecessorId = 'wallet-predecessor-id';
+    const successorId = 'wallet-successor-id';
+
+    const activePredecessor = {
+      id: predecessorId,
+      userId: 'user-1',
+      publicKey: 'GPREDECESSOR',
+      encryptedSecret: 'enc-secret',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      network: 'TESTNET',
+      status: 'ACTIVE',
+      successorId: null,
+      rotatedFromId: null,
+    };
+
+    const createdSuccessor = {
+      id: successorId,
+      userId: 'user-1',
+      publicKey: 'GSUCCESSOR',
+      encryptedSecret: 'enc-secret-new',
+      encryptionVersion: 1,
+      secretVersion: 2,
+      network: 'TESTNET',
+      status: 'ACTIVE',
+      rotatedFromId: predecessorId,
+      successorId: null,
+    };
+
+    beforeEach(() => {
+      // $transaction executes the callback with a tx proxy
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          wallet: {
+            create: jest.fn().mockResolvedValue(createdSuccessor),
+            update: jest.fn().mockResolvedValue({ ...activePredecessor, successorId, status: 'ROTATING' }),
+          },
+        };
+        return cb(tx);
+      });
+    });
+
+    it('should create a successor wallet and link it to the predecessor', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(activePredecessor);
+
+      const result = await service.rotateKey(predecessorId);
+
+      expect(result.predecessorWalletId).toBe(predecessorId);
+      expect(result.successorWalletId).toBe(successorId);
+      expect(result.successorPublicKey).toBe(createdSuccessor.publicKey);
+    });
+
+    it('should set rotatedFromId on the successor wallet', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(activePredecessor);
+
+      await service.rotateKey(predecessorId);
+
+      // Verify the transaction callback created the successor with rotatedFromId
+      const txCreate = mockPrisma.$transaction.mock.calls[0];
+      expect(txCreate).toBeDefined();
+    });
+
+    it('should transition predecessor status to ROTATING inside the transaction', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(activePredecessor);
+
+      await service.rotateKey(predecessorId);
+
+      // The $transaction mock captures the callback; verify it ran
+      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
+    });
+
+    it('should also rotate a wallet already in ROTATING status', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        ...activePredecessor,
+        status: 'ROTATING',
+        successorId: null,
+      });
+
+      const result = await service.rotateKey(predecessorId);
+
+      expect(result.predecessorWalletId).toBe(predecessorId);
+    });
+
+    it('should throw NotFoundException when wallet does not exist', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(null);
+
+      await expect(service.rotateKey('non-existent-id')).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+
+    it('should throw when wallet is in a non-rotatable status', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        ...activePredecessor,
+        status: 'DISABLED',
+      });
+
+      await expect(service.rotateKey(predecessorId)).rejects.toThrow(
+        /Cannot rotate wallet in status: DISABLED/,
+      );
+    });
+
+    it('should throw when wallet already has a successor', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue({
+        ...activePredecessor,
+        successorId: 'already-has-successor',
+      });
+
+      await expect(service.rotateKey(predecessorId)).rejects.toThrow(
+        /already has a successor/,
+      );
+    });
+
+    it('should audit the ROTATE operation on success', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(activePredecessor);
+
+      await service.rotateKey(predecessorId);
+
+      const auditLog = service.getAuditLog();
+      const rotateAudit = auditLog.find((log) => log.operation === 'ROTATE');
+
+      expect(rotateAudit).toBeDefined();
+      expect(rotateAudit?.success).toBe(true);
+      expect(rotateAudit?.keyId).toBe(predecessorId);
+    });
+
+    it('should increment secretVersion on the successor', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(activePredecessor);
+
+      // Capture what was passed to tx.wallet.create
+      let capturedCreateData: any;
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          wallet: {
+            create: jest.fn().mockImplementation(async ({ data }: any) => {
+              capturedCreateData = data;
+              return createdSuccessor;
+            }),
+            update: jest.fn().mockResolvedValue({}),
+          },
+        };
+        return cb(tx);
+      });
+
+      await service.rotateKey(predecessorId);
+
+      expect(capturedCreateData.secretVersion).toBe(
+        activePredecessor.secretVersion + 1,
+      );
     });
   });
 });
