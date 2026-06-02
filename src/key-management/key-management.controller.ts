@@ -6,14 +6,18 @@ import {
   Query,
   HttpCode,
   HttpStatus,
+  Param,
 } from '@nestjs/common';
 import {
   KeyManagementService,
   GenerateKeyRequest,
   SignRequest,
+  RotateKeyRequest,
 } from './key-management.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
+import { KeyRotationAuditService, QueryAuditLogsRequest } from './key-rotation-audit.service';
+import { KeyOperation } from '@prisma/client';
 
 /**
  * Internal controller for key management operations
@@ -22,7 +26,10 @@ import { KeyStatisticsQuery } from './domain/key-statistics';
  */
 @Controller('internal/key-management')
 export class KeyManagementController {
-  constructor(private readonly keyManagementService: KeyManagementService) {}
+  constructor(
+    private readonly keyManagementService: KeyManagementService,
+    private readonly auditService: KeyRotationAuditService,
+  ) {}
 
   /**
    * Generates a new key (internal use only)
@@ -150,6 +157,112 @@ export class KeyManagementController {
     return {
       success: true,
       data: statistics,
+    };
+  }
+
+  /**
+   * Rotates a key (generates new keypair, marks old as rotated)
+   * 
+   * POST /internal/key-management/rotate
+   * Body: { keyId, encryptedKeyMaterial, keyType, reason?, metadata? }
+   */
+  @Post('rotate')
+  @HttpCode(HttpStatus.OK)
+  async rotateKey(@Body() request: RotateKeyRequest) {
+    const result = await this.keyManagementService.rotateKey(request);
+
+    return {
+      success: true,
+      newPublicKey: result.newKey.publicKey,
+      newEncryptedData: result.newKey.encryptedData,
+      encryptionVersion: result.newKey.encryptionVersion,
+      previousKeyId: result.previousKeyId,
+      rotatedAt: new Date(),
+    };
+  }
+
+  /**
+   * Queries persistent audit logs with filtering
+   * 
+   * Query parameters:
+   * - operation: Filter by operation type (GENERATE, SIGN, ROTATE, etc.)
+   * - keyId: Filter by key ID
+   * - publicKey: Filter by public key
+   * - startDate: Start of date range (ISO string)
+   * - endDate: End of date range (ISO string)
+   * - success: Filter by success status (true/false)
+   * - limit: Max results to return (default: 100)
+   * - offset: Pagination offset (default: 0)
+   * 
+   * Example: GET /internal/key-management/audit/persistent?operation=ROTATE&limit=50
+   */
+  @Get('audit/persistent')
+  async getPersistentAuditLogs(
+    @Query('operation') operation?: string,
+    @Query('keyId') keyId?: string,
+    @Query('publicKey') publicKey?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('success') success?: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    const query: QueryAuditLogsRequest = {
+      operation: operation as KeyOperation | undefined,
+      keyId,
+      publicKey,
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+      success: success !== undefined ? success === 'true' : undefined,
+      limit: limit ? parseInt(limit, 10) : 100,
+      offset: offset ? parseInt(offset, 10) : 0,
+    };
+
+    const result = await this.auditService.queryAuditLogs(query);
+
+    return {
+      success: true,
+      ...result,
+    };
+  }
+
+  /**
+   * Gets complete rotation history for a specific key
+   * 
+   * GET /internal/key-management/audit/rotation-history/:keyId
+   */
+  @Get('audit/rotation-history/:keyId')
+  async getRotationHistory(@Param('keyId') keyId: string) {
+    const result = await this.auditService.getRotationHistory(keyId);
+
+    return {
+      success: true,
+      ...result,
+    };
+  }
+
+  /**
+   * Gets audit log statistics
+   * 
+   * Query parameters:
+   * - startDate: Start of date range (ISO string)
+   * - endDate: End of date range (ISO string)
+   * 
+   * Example: GET /internal/key-management/audit/statistics?startDate=2024-01-01
+   */
+  @Get('audit/statistics')
+  async getAuditStatistics(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+  ) {
+    const stats = await this.auditService.getAuditStatistics(
+      startDate ? new Date(startDate) : undefined,
+      endDate ? new Date(endDate) : undefined,
+    );
+
+    return {
+      success: true,
+      data: stats,
     };
   }
 }

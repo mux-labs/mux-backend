@@ -16,6 +16,7 @@ import {
   DetailedKeyStatistics,
   KeyOperationMetrics,
 } from './domain/key-statistics';
+import { KeyRotationAuditService } from './key-rotation-audit.service';
 
 export interface GenerateKeyRequest {
   keyType: KeyType;
@@ -26,6 +27,14 @@ export interface SignRequest {
   encryptedKeyMaterial: string;
   dataToSign: Buffer | string;
   publicKey: string; // For audit trail
+}
+
+export interface RotateKeyRequest {
+  keyId: string;
+  encryptedKeyMaterial: string;
+  keyType: KeyType;
+  reason?: string; // Optional reason for rotation
+  metadata?: Record<string, any>;
 }
 
 /**
@@ -54,6 +63,7 @@ export class KeyManagementService {
   constructor(
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
+    private readonly auditService: KeyRotationAuditService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -230,6 +240,97 @@ export class KeyManagementService {
     } catch (error) {
       this.logger.error('Key re-encryption failed:', error);
       throw new Error('Key re-encryption failed');
+    }
+  }
+
+  /**
+   * Rotates a key by generating a new keypair
+   * 
+   * This creates a completely new key and marks the old one as rotated.
+   * The rotation is audited with full context including the reason.
+   * 
+   * IMPORTANT: This generates a NEW keypair, not just re-encrypting the old one.
+   * For re-encryption of the same key, use reEncryptKey().
+   */
+  async rotateKey(request: RotateKeyRequest): Promise<{
+    newKey: EncryptedKeyMaterial;
+    previousKeyId: string;
+  }> {
+    const startTime = Date.now();
+
+    try {
+      // Validate the old key exists and is valid
+      const provider = this.getProvider(request.keyType);
+      const oldKeyValid = await provider.validateKeyPair(
+        request.keyId,
+        request.encryptedKeyMaterial,
+      );
+
+      if (!oldKeyValid) {
+        throw new Error('Invalid key material provided for rotation');
+      }
+
+      // Generate new keypair
+      const newKeyPair = await provider.generateKeyPair(request.keyType);
+
+      // Encrypt immediately
+      const encryptedData = this.encryptionService.encryptAndSerialize(
+        newKeyPair.privateKeyMaterial,
+      );
+
+      const newKeyMaterial: EncryptedKeyMaterial = {
+        encryptedData,
+        encryptionVersion: 1,
+        keyType: request.keyType,
+        publicKey: newKeyPair.publicKey,
+      };
+
+      // Audit the rotation with full context
+      this.auditKeyOperation({
+        operation: 'ROTATE',
+        keyId: request.keyId,
+        publicKey: newKeyPair.publicKey,
+        timestamp: new Date(),
+        success: true,
+        metadata: {
+          ...request.metadata,
+          reason: request.reason,
+          previousKeyId: request.keyId,
+          newPublicKey: newKeyPair.publicKey,
+          keyType: request.keyType,
+        },
+      });
+
+      const duration = Date.now() - startTime;
+      this.logger.log(
+        `Rotated key ${request.keyId.substring(0, 12)}... in ${duration}ms ` +
+          `(reason: ${request.reason || 'not specified'})`,
+      );
+
+      return {
+        newKey: newKeyMaterial,
+        previousKeyId: request.keyId,
+      };
+    } catch (error) {
+      // Audit the failed rotation
+      this.auditKeyOperation({
+        operation: 'ROTATE',
+        keyId: request.keyId,
+        publicKey: 'failed',
+        timestamp: new Date(),
+        success: false,
+        errorMessage: error.message,
+        metadata: {
+          reason: request.reason,
+          keyType: request.keyType,
+        },
+      });
+
+      this.logger.error(
+        `Key rotation failed for ${request.keyId}:`,
+        error,
+      );
+      throw new Error('Key rotation failed');
     }
   }
 
@@ -445,6 +546,18 @@ export class KeyManagementService {
    */
   private auditKeyOperation(audit: KeyOperationAudit): void {
     this.auditLog.push(audit);
+
+    // Persist to database for compliance and long-term retention
+    this.auditService
+      .persistAuditLog(
+        this.auditService.convertToPersistentFormat(audit, {
+          retentionDays: 365, // Keep audit logs for 1 year
+        }),
+      )
+      .catch((error) => {
+        // Already logged in service, just ensure it doesn't break the main flow
+        this.logger.error('Audit persistence failed (non-blocking):', error.message);
+      });
 
     // In production, send to external audit system
     this.logger.log(

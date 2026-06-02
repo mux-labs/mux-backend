@@ -576,6 +576,71 @@ model IdempotencyRecord {
   @@index([key, endpoint])
 }
 
+/// Key operation types for audit logging
+enum KeyOperation {
+  GENERATE
+  SIGN
+  ROTATE
+  REVOKE
+  ACCESS
+}
+
+/// Persistent audit log for key management operations
+/// Used for security monitoring, compliance, and forensics
+model KeyRotationAuditLog {
+  id String @id @default(uuid())
+
+  /// Operation type
+  operation KeyOperation
+
+  /// Key identifier (wallet ID, key ID, or "new" for generation)
+  keyId String
+
+  /// Public key involved in the operation (never store private keys)
+  publicKey String
+
+  /// Operation timestamp
+  timestamp DateTime @default(now())
+
+  /// Operation result
+  success Boolean @default(true)
+
+  /// Error message if operation failed
+  errorMessage String?
+
+  /// Additional context (JSON for flexibility)
+  /// May include: keyType, userId, rotationReason, previousKeyId, etc.
+  metadata Json?
+
+  /// IP address of request origin (if applicable)
+  ipAddress String?
+
+  /// User agent of request (if applicable)
+  userAgent String?
+
+  /// Key type involved (e.g., STELLAR_ED25519)
+  keyType String?
+
+  /// For ROTATE operations: reference to previous key
+  previousKeyId String?
+
+  /// For ROTATE operations: reference to new key
+  newKeyId String?
+
+  /// Retention metadata
+  /// TTL - when this record can be archived/deleted (compliance requirement)
+  expiresAt DateTime?
+
+  @@index([operation])
+  @@index([keyId])
+  @@index([publicKey])
+  @@index([timestamp])
+  @@index([success])
+  @@index([operation, timestamp])
+  @@index([keyId, operation])
+  @@index([expiresAt])
+}
+
 /// Transaction lifecycle states
 enum TransactionStatus {
   PENDING    // Transaction created but not yet submitted to network
