@@ -12,6 +12,7 @@ import {
   BalanceIndexerService,
   SyncBalancesRequest,
 } from './balance-indexer.service';
+
 import { Asset, AssetType } from './domain/balance.model';
 
 @Controller('balances')
@@ -91,5 +92,38 @@ export class BalanceIndexerController {
   @HttpCode(HttpStatus.OK)
   async reconcileAllBalances() {
     return await this.balanceIndexerService.reconcileAllBalances();
+  }
+
+  /**
+   * Syncs balances with retry backoff
+   */
+  @Post('wallet/:walletId/sync-with-retry')
+  @HttpCode(HttpStatus.OK)
+  async syncWithRetry(
+    @Param('walletId') walletId: string,
+    @Body() body: { forceRefresh?: boolean } = {},
+  ) {
+    return this.balanceIndexerService.syncWalletBalancesWithRetry({
+      walletId,
+      forceRefresh: body.forceRefresh || false,
+    });
+  }
+
+  /**
+   * Detects stale balances for a wallet
+   */
+  @Get('wallet/:walletId/stale')
+  async detectStaleBalances(@Param('walletId') walletId: string) {
+    return this.balanceIndexerService.detectStaleBalances(walletId);
+  }
+
+  /**
+   * Triggers the scheduled sync manually
+   */
+  @Post('sync-all')
+  @HttpCode(HttpStatus.OK)
+  async syncAll() {
+    await this.balanceIndexerService.runScheduledSync();
+    return { status: 'scheduled sync triggered' };
   }
 }
