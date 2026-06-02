@@ -5,6 +5,7 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { PrismaClient } from '../generated/prisma/client';
 import {
   WalletNetwork,
@@ -62,10 +63,17 @@ export interface User {
   updatedAt: Date;
 }
 
-export interface CreateWalletOrchestratorRequest {
+export class CreateWalletOrchestratorRequest {
+  @IsString()
+  @MinLength(1)
   userId: string;
+
+  @IsEnum(WalletNetwork)
   network: WalletNetwork;
-  idempotencyKey?: string; // Optional idempotency key
+
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
 }
 
 /**

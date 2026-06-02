@@ -9,7 +9,7 @@ import { WebhookModule } from '../webhooks/webhook.module';
 @Module({
   imports: [EncryptionModule, WalletsModule, UsersModule, WebhookModule],
   controllers: [WalletCreationOrchestratorController],
-  providers: [WalletCreationOrchestrator],
+  providers: [WalletCreationOrchestrator, IdempotencyService],
   exports: [WalletCreationOrchestrator],
 })
 export class WalletCreationOrchestratorModule {}
