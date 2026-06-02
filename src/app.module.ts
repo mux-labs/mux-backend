@@ -5,7 +5,9 @@ import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from './prisma/prisma.module';
 import { AppService } from './app.service';
 import { UsersModule } from './users/users.module';
+import { IdempotentUserModule } from './users/idempotent-user.module';
 import { WalletsModule } from './wallets/wallets.module';
+import { WalletCreationOrchestratorModule } from './wallets/wallet-creation-orchestrator.module';
 import { PaymentsModule } from './payments/payments.module';
 import { LimitsModule } from './limits/limits.module';
 import { RecoveryModule } from './recovery/recovery.module';
@@ -32,7 +34,9 @@ import { HealthModule } from './health/health.module';
     AuthModule,
     RateLimitModule,
     UsersModule,
+    IdempotentUserModule,
     WalletsModule,
+    WalletCreationOrchestratorModule,
     PaymentsModule,
     LimitsModule,
     RecoveryModule,
@@ -44,7 +48,6 @@ import { HealthModule } from './health/health.module';
     DevelopersModule,
     ProjectsModule,
     HealthModule,
-    IdempotentUserModule,
   ],
   controllers: [AppController],
   providers: [

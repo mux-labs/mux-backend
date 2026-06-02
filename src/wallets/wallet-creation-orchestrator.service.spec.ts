@@ -7,6 +7,8 @@ import {
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { PrismaClient } from '../generated/prisma/client';
+import { IdempotentUserService } from '../users/idempotent-user.service';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -33,6 +35,24 @@ const mockConfigService = {
   get: jest.fn(),
 };
 
+// Mock IdempotentUserService
+const mockIdempotentUserService = {
+  findUserById: jest.fn().mockResolvedValue({
+    id: 'user-123',
+    authId: 'auth-123',
+    status: 'ACTIVE',
+    authProvider: 'GOOGLE',
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  }),
+};
+
+// Mock IdempotencyService
+const mockIdempotencyService = {
+  getCachedResponse: jest.fn().mockResolvedValue(null),
+  cacheResponse: jest.fn().mockResolvedValue(undefined),
+};
+
 describe('WalletCreationOrchestrator', () => {
   let orchestrator: WalletCreationOrchestrator;
   let prismaClient: jest.Mocked<PrismaClient>;
@@ -55,6 +75,14 @@ describe('WalletCreationOrchestrator', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: IdempotentUserService,
+          useValue: mockIdempotentUserService,
+        },
+        {
+          provide: IdempotencyService,
+          useValue: mockIdempotencyService,
+        },
       ],
     }).compile();
 
@@ -73,6 +101,16 @@ describe('WalletCreationOrchestrator', () => {
     mockEncryptionService.encryptAndSerialize.mockReturnValue(
       'encrypted-private-key',
     );
+    mockIdempotentUserService.findUserById.mockResolvedValue({
+      id: 'user-123',
+      authId: 'auth-123',
+      status: 'ACTIVE',
+      authProvider: 'GOOGLE',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    mockIdempotencyService.getCachedResponse.mockResolvedValue(null);
+    mockIdempotencyService.cacheResponse.mockResolvedValue(undefined);
   });
 
   describe('createWallet', () => {

@@ -5,10 +5,12 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { PrismaClient } from '../generated/prisma/client';
 import { WalletNetwork, WalletStatus, Wallet } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 import * as crypto from 'crypto';
 
 export interface User {
@@ -23,10 +25,17 @@ export interface User {
   updatedAt: Date;
 }
 
-export interface CreateWalletOrchestratorRequest {
+export class CreateWalletOrchestratorRequest {
+  @IsString()
+  @MinLength(1)
   userId: string;
+
+  @IsEnum(WalletNetwork)
   network: WalletNetwork;
-  idempotencyKey?: string; // Optional idempotency key
+
+  @IsOptional()
+  @IsString()
+  idempotencyKey?: string;
 }
 
 export interface WalletOrchestrationResult {
@@ -60,6 +69,7 @@ export class WalletCreationOrchestrator {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
     private idempotentUserService: IdempotentUserService,
+    private idempotencyService: IdempotencyService,
   ) {
     this.prisma = new PrismaClient({} as any);
   }
@@ -264,11 +274,10 @@ export class WalletCreationOrchestrator {
    */
   private async checkIdempotency(
     idempotencyKey: string,
-    tx: any, // Use any for transaction client to avoid type issues
+    _tx: any,
   ): Promise<WalletOrchestrationResult | null> {
-    // In a real implementation, this would query an idempotency table
-    // For now, we'll skip this as we don't have the table structure
-    return null;
+    const cached = await this.idempotencyService.getCachedResponse(idempotencyKey);
+    return cached ?? null;
   }
 
   /**
@@ -277,12 +286,13 @@ export class WalletCreationOrchestrator {
   private async storeIdempotencyRecord(
     idempotencyKey: string,
     result: WalletOrchestrationResult,
-    tx: any, // Use any for transaction client to avoid type issues
+    _tx: any,
   ): Promise<void> {
-    // In a real implementation, this would store in an idempotency table
-    // For now, we'll skip this as we don't have the table structure
-    this.logger.log(
-      `Idempotency record would be stored for key: ${idempotencyKey}`,
+    await this.idempotencyService.cacheResponse(
+      idempotencyKey,
+      result,
+      'POST',
+      '/wallets/orchestration/create',
     );
   }
 
