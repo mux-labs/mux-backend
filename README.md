@@ -194,6 +194,10 @@ pnpm prisma:migrate:prod
 
 # Seed the database with demo users and wallets (dev only)
 pnpm prisma:seed
+
+This seed also creates an onboarding developer account and a starter project for developer flows.
+
+A new developer API route is available: `GET /developers/:id/projects` returns the projects belonging to a developer.
 ```
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.

@@ -3,34 +3,7 @@ import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
-import { WalletsService } from '../wallets/wallets.service';
-import { WalletStatus } from '../wallets/domain/wallet.model';
-
-const ACTIVE_WALLET = {
-  id: 'wallet-uuid-1',
-  userId: 'user-uuid-1',
-  status: WalletStatus.ACTIVE,
-  publicKey: 'pub-key',
-  encryptedSecret: 'enc',
-  encryptionVersion: 1,
-  secretVersion: 1,
-  network: 'TESTNET',
-  statusChangedAt: new Date(),
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
-
-const RECEIVER_WALLET = { ...ACTIVE_WALLET, id: 'wallet-uuid-2', userId: 'user-uuid-2' };
-
-const BASE_DTO = {
-  walletId: 'wallet-uuid-1',
-  receiverWalletId: 'wallet-uuid-2',
-  fromId: 1,
-  toId: 2,
-  amount: 100,
-  currency: 'USD',
-  description: 'Test payment',
-};
+import { PaymentStatus } from './entities/payment.entity';
 
 describe('PaymentsService', () => {
   let service: PaymentsService;
@@ -44,6 +17,7 @@ describe('PaymentsService', () => {
         create: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
+        update: jest.fn(),
       },
     };
     limitsService = { checkLimits: jest.fn() };
@@ -161,6 +135,96 @@ describe('PaymentsService', () => {
       await expect(service.create(BASE_DTO as any)).rejects.toThrow(
         `Sender wallet is not active (status: ${WalletStatus.COMPROMISED})`,
       );
+    });
+  });
+
+  describe('update', () => {
+    const pendingPayment = {
+      id: 1,
+      status: PaymentStatus.PENDING,
+      amount: 100,
+      currency: 'USD',
+    };
+
+    it('should update status from PENDING to CONFIRMED', async () => {
+      prisma.payment.findUnique.mockResolvedValue(pendingPayment);
+      const updated = { ...pendingPayment, status: PaymentStatus.CONFIRMED };
+      prisma.payment.update.mockResolvedValue(updated);
+
+      const result = await service.update(1, { status: PaymentStatus.CONFIRMED });
+
+      expect(prisma.payment.findUnique).toHaveBeenCalledWith({ where: { id: 1 } });
+      expect(prisma.payment.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { status: PaymentStatus.CONFIRMED },
+      });
+      expect(result.status).toBe(PaymentStatus.CONFIRMED);
+    });
+
+    it('should update status from PENDING to FAILED', async () => {
+      prisma.payment.findUnique.mockResolvedValue(pendingPayment);
+      const updated = { ...pendingPayment, status: PaymentStatus.FAILED };
+      prisma.payment.update.mockResolvedValue(updated);
+
+      const result = await service.update(1, { status: PaymentStatus.FAILED });
+
+      expect(result.status).toBe(PaymentStatus.FAILED);
+    });
+
+    it('should update description without status change', async () => {
+      prisma.payment.findUnique.mockResolvedValue(pendingPayment);
+      const updated = { ...pendingPayment, description: 'new desc' };
+      prisma.payment.update.mockResolvedValue(updated);
+
+      const result = await service.update(1, { description: 'new desc' });
+
+      expect(prisma.payment.update).toHaveBeenCalledWith({
+        where: { id: 1 },
+        data: { description: 'new desc' },
+      });
+      expect(result.description).toBe('new desc');
+    });
+
+    it('should throw NotFoundException when payment does not exist', async () => {
+      prisma.payment.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.update(99, { status: PaymentStatus.CONFIRMED }),
+      ).rejects.toThrow(NotFoundException);
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when transitioning from CONFIRMED', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        ...pendingPayment,
+        status: PaymentStatus.CONFIRMED,
+      });
+
+      await expect(
+        service.update(1, { status: PaymentStatus.FAILED }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when transitioning from FAILED', async () => {
+      prisma.payment.findUnique.mockResolvedValue({
+        ...pendingPayment,
+        status: PaymentStatus.FAILED,
+      });
+
+      await expect(
+        service.update(1, { status: PaymentStatus.CONFIRMED }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.payment.update).not.toHaveBeenCalled();
+    });
+
+    it('should throw BadRequestException when transitioning PENDING to PENDING', async () => {
+      prisma.payment.findUnique.mockResolvedValue(pendingPayment);
+
+      await expect(
+        service.update(1, { status: PaymentStatus.PENDING }),
+      ).rejects.toThrow(BadRequestException);
+      expect(prisma.payment.update).not.toHaveBeenCalled();
     });
   });
 });
