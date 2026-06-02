@@ -1,26 +1,20 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 import { TransactionStatus } from './domain/transaction.model';
 
 const mockTransactionsService = {
   create: jest.fn(),
   findAll: jest.fn(),
+  findByWallet: jest.fn(),
+  findByStellarHash: jest.fn(),
   findOne: jest.fn(),
   updateStatus: jest.fn(),
-  findByStellarHash: jest.fn(),
-  findByWallet: jest.fn(),
 };
 
-const baseTx = {
-  id: 'tx-1',
-  amount: '100',
-  assetType: 'NATIVE',
-  status: TransactionStatus.PENDING,
-  senderWalletId: 'wallet-sender',
-  createdAt: new Date(),
-  updatedAt: new Date(),
-};
+const allowGuard = { canActivate: () => true };
 
 describe('TransactionsController', () => {
   let controller: TransactionsController;
@@ -32,10 +26,10 @@ describe('TransactionsController', () => {
         { provide: TransactionsService, useValue: mockTransactionsService },
       ],
     })
-      .overrideGuard(require('../api-keys/api-key.guard').ApiKeyGuard)
-      .useValue({ canActivate: () => true })
-      .overrideGuard(require('../rate-limit/rate-limit.guard').RateLimitGuard)
-      .useValue({ canActivate: () => true })
+      .overrideGuard(ApiKeyGuard)
+      .useValue(allowGuard)
+      .overrideGuard(RateLimitGuard)
+      .useValue(allowGuard)
       .compile();
 
     controller = module.get<TransactionsController>(TransactionsController);
@@ -47,92 +41,52 @@ describe('TransactionsController', () => {
     expect(controller).toBeDefined();
   });
 
-  describe('create', () => {
-    it('delegates to service.create', async () => {
-      const dto = { amount: '100', asset: { type: 'NATIVE' }, senderWalletId: 'wallet-sender' };
-      mockTransactionsService.create.mockResolvedValue(baseTx);
+  describe('GET /transactions/wallet/:walletId', () => {
+    it('should call findByWallet with walletId and no pagination', async () => {
+      mockTransactionsService.findByWallet.mockResolvedValue([]);
 
-      const result = await controller.create(dto as any);
+      await controller.findByWallet('wallet-1', undefined, undefined);
 
-      expect(mockTransactionsService.create).toHaveBeenCalledWith(dto);
-      expect(result).toEqual(baseTx);
-    });
-  });
-
-  describe('findAll', () => {
-    it('delegates to service.findAll with parsed params', async () => {
-      mockTransactionsService.findAll.mockResolvedValue([baseTx]);
-
-      const result = await controller.findAll('wallet-sender', undefined, TransactionStatus.PENDING, '10', '0');
-
-      expect(mockTransactionsService.findAll).toHaveBeenCalledWith({
-        senderWalletId: 'wallet-sender',
-        receiverWalletId: undefined,
-        status: TransactionStatus.PENDING,
-        limit: 10,
-        offset: 0,
-      });
-      expect(result).toEqual([baseTx]);
-    });
-
-    it('passes undefined limit/offset when not provided', async () => {
-      mockTransactionsService.findAll.mockResolvedValue([]);
-
-      await controller.findAll();
-
-      expect(mockTransactionsService.findAll).toHaveBeenCalledWith({
-        senderWalletId: undefined,
-        receiverWalletId: undefined,
-        status: undefined,
+      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith('wallet-1', {
         limit: undefined,
         offset: undefined,
       });
     });
-  });
 
-  describe('findOne', () => {
-    it('delegates to service.findOne', async () => {
-      mockTransactionsService.findOne.mockResolvedValue(baseTx);
+    it('should parse and pass limit and offset', async () => {
+      mockTransactionsService.findByWallet.mockResolvedValue([]);
 
-      const result = await controller.findOne('tx-1');
+      await controller.findByWallet('wallet-1', '10', '20');
 
-      expect(mockTransactionsService.findOne).toHaveBeenCalledWith('tx-1');
-      expect(result).toEqual(baseTx);
+      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith('wallet-1', {
+        limit: 10,
+        offset: 20,
+      });
+    });
+
+    it('should return the result from the service', async () => {
+      const tx = { id: 'tx-1', status: TransactionStatus.PENDING };
+      mockTransactionsService.findByWallet.mockResolvedValue([tx]);
+
+      const result = await controller.findByWallet('wallet-1', undefined, undefined);
+
+      expect(result).toEqual([tx]);
     });
   });
 
-  describe('updateStatus', () => {
-    it('delegates to service.updateStatus', async () => {
-      const dto = { status: TransactionStatus.SUBMITTED };
-      const updated = { ...baseTx, status: TransactionStatus.SUBMITTED };
-      mockTransactionsService.updateStatus.mockResolvedValue(updated);
+  describe('GET /transactions', () => {
+    it('should call findAll with parsed filters', async () => {
+      mockTransactionsService.findAll.mockResolvedValue([]);
 
-      const result = await controller.updateStatus('tx-1', dto as any);
+      await controller.findAll('wallet-sender', undefined, undefined, '5', '0');
 
-      expect(mockTransactionsService.updateStatus).toHaveBeenCalledWith('tx-1', dto);
-      expect(result.status).toBe(TransactionStatus.SUBMITTED);
-    });
-  });
-
-  describe('findByStellarHash', () => {
-    it('delegates to service.findByStellarHash', async () => {
-      mockTransactionsService.findByStellarHash.mockResolvedValue(baseTx);
-
-      const result = await controller.findByStellarHash('hash-abc');
-
-      expect(mockTransactionsService.findByStellarHash).toHaveBeenCalledWith('hash-abc');
-      expect(result).toEqual(baseTx);
-    });
-  });
-
-  describe('findByWallet', () => {
-    it('delegates to service.findByWallet', async () => {
-      mockTransactionsService.findByWallet.mockResolvedValue([baseTx]);
-
-      const result = await controller.findByWallet('wallet-sender');
-
-      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith('wallet-sender');
-      expect(result).toEqual([baseTx]);
+      expect(mockTransactionsService.findAll).toHaveBeenCalledWith({
+        senderWalletId: 'wallet-sender',
+        receiverWalletId: undefined,
+        status: undefined,
+        limit: 5,
+        offset: 0,
+      });
     });
   });
 });

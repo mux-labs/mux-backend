@@ -6,7 +6,7 @@ import {
 } from './wallet-creation-orchestrator.service';
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
-import { PrismaClient } from '../generated/prisma/client';
+import { IdempotentUserService } from '../users/idempotent-user.service';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -21,6 +21,14 @@ const mockPrisma = {
   $transaction: jest.fn(),
 };
 
+// Mock PrismaClient module
+jest.mock('../generated/prisma/client', () => ({
+  PrismaClient: jest.fn(() => mockPrisma),
+}));
+
+// Need to import for TypeScript type (jest.mock hoists the import)
+import { PrismaClient } from '../generated/prisma/client';
+
 // Mock Encryption Service
 const mockEncryptionService = {
   encryptAndSerialize: jest.fn(),
@@ -32,6 +40,16 @@ const mockEncryptionService = {
 const mockConfigService = {
   get: jest.fn(),
 };
+
+// Mock IdempotentUserService
+const mockIdempotentUserService = {
+  findUserById: jest.fn(),
+  findOrCreateUser: jest.fn(),
+};
+
+// Global mock for fetch (Friendbot calls)
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
 
 describe('WalletCreationOrchestrator', () => {
   let orchestrator: WalletCreationOrchestrator;
@@ -55,6 +73,10 @@ describe('WalletCreationOrchestrator', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: IdempotentUserService,
+          useValue: mockIdempotentUserService,
+        },
       ],
     }).compile();
 
@@ -73,6 +95,29 @@ describe('WalletCreationOrchestrator', () => {
     mockEncryptionService.encryptAndSerialize.mockReturnValue(
       'encrypted-private-key',
     );
+
+    // Mock fetch to succeed by default (Friendbot)
+    mockFetch.mockResolvedValue({
+      ok: true,
+    });
+
+    // Mock config to return testnet horizon URL
+    mockConfigService.get.mockReturnValue(
+      'https://horizon-testnet.stellar.org',
+    );
+
+    // Mock IdempotentUserService
+    mockIdempotentUserService.findUserById.mockResolvedValue({
+      id: 'user-123',
+      authId: 'auth-123',
+      email: 'test@example.com',
+      displayName: 'Test User',
+      status: 'ACTIVE',
+      authProvider: 'CLERK',
+      lastLoginAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
   });
 
   describe('createWallet', () => {
@@ -82,9 +127,10 @@ describe('WalletCreationOrchestrator', () => {
       idempotencyKey: 'unique-key-123',
     };
 
-    it('should create a new wallet successfully', async () => {
+    it('should create a new wallet successfully with PROVISIONING -> ACTIVE flow', async () => {
       // Arrange
-      const mockWallet = {
+      // Wallet returned after creation (PROVISIONING status)
+      const provisioningWallet = {
         id: 'wallet-123',
         userId: 'user-123',
         publicKey: 'GABC123DEF456',
@@ -92,11 +138,20 @@ describe('WalletCreationOrchestrator', () => {
         encryptionVersion: 1,
         secretVersion: 1,
         network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
+        status: 'PROVISIONING',
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
         createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      // Wallet returned after activation (ACTIVE status)
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
         updatedAt: new Date(),
       };
 
@@ -105,7 +160,8 @@ describe('WalletCreationOrchestrator', () => {
       });
 
       mockPrisma.wallet.findFirst.mockResolvedValue(null); // No existing wallet
-      mockPrisma.wallet.create.mockResolvedValue(mockWallet);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
 
       // Act
       const result = await orchestrator.createWallet(createRequest);
@@ -124,21 +180,33 @@ describe('WalletCreationOrchestrator', () => {
         idempotencyKey: 'unique-key-123',
       });
 
-      expect(mockPrisma.wallet.findFirst).toHaveBeenCalledWith({
-        where: { userId: 'user-123', network: WalletNetwork.TESTNET },
-      });
-
+      // Wallet is created with PROVISIONING status (Issue #188)
       expect(mockPrisma.wallet.create).toHaveBeenCalledWith({
         data: {
           userId: 'user-123',
           publicKey: expect.any(String),
           encryptedSecret: 'encrypted-private-key',
           network: WalletNetwork.TESTNET,
-          status: 'ACTIVE',
+          status: 'PROVISIONING',
           encryptionVersion: 1,
           secretVersion: 1,
         },
       });
+
+      // Wallet is then transitioned to ACTIVE (Issue #188)
+      expect(mockPrisma.wallet.update).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+        data: expect.objectContaining({
+          status: 'ACTIVE',
+          statusReason: 'Wallet provisioned and activated',
+        }),
+      });
+
+      // Friendbot was called to fund the testnet account (Issue #187)
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('friendbot.stellar.org'),
+        { method: 'GET' },
+      );
 
       expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(
         expect.any(String),
@@ -238,7 +306,7 @@ describe('WalletCreationOrchestrator', () => {
         network: WalletNetwork.TESTNET,
       };
 
-      const mockWallet = {
+      const provisioningWallet = {
         id: 'wallet-123',
         userId: 'user-123',
         publicKey: 'GABC123DEF456',
@@ -246,11 +314,19 @@ describe('WalletCreationOrchestrator', () => {
         encryptionVersion: 1,
         secretVersion: 1,
         network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
+        status: 'PROVISIONING',
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
         createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
         updatedAt: new Date(),
       };
 
@@ -259,7 +335,8 @@ describe('WalletCreationOrchestrator', () => {
       });
 
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
-      mockPrisma.wallet.create.mockResolvedValue(mockWallet);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
 
       // Act
       const result = await orchestrator.createWallet(requestWithoutIdempotency);
@@ -274,6 +351,51 @@ describe('WalletCreationOrchestrator', () => {
         isNewWallet: true,
         idempotencyKey: undefined,
       });
+    });
+
+    it('should continue even if Friendbot funding fails', async () => {
+      // Arrange
+      const provisioningWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123DEF456',
+        encryptedSecret: 'encrypted-private-key',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'PROVISIONING',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrisma.$transaction.mockImplementation(async (callback) => {
+        return callback(mockPrisma as any);
+      });
+
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      // Friendbot fails with a network error
+      mockFetch.mockRejectedValue(new Error('Network error'));
+
+      // Act
+      const result = await orchestrator.createWallet(createRequest);
+
+      // Assert - wallet creation still succeeds despite Friendbot failure
+      expect(result.isNewWallet).toBe(true);
+      expect(result.wallet.status).toBe('ACTIVE');
     });
   });
 
