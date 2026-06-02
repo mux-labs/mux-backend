@@ -1,13 +1,11 @@
-import { ApiProperty } from '@nestjs/swagger';
+import { IsEnum, IsString, MinLength } from 'class-validator';
+import { WalletNetwork } from '../domain/wallet.model';
 
 export class CreateWalletDto {
-  @ApiProperty({ description: 'ID of the user who owns this wallet', example: 'usr_01abc' })
-  userId!: string;
+  @IsString()
+  @MinLength(1)
+  userId: string;
 
-  @ApiProperty({
-    description: 'Target network for the wallet',
-    enum: ['MAINNET', 'TESTNET'],
-    example: 'TESTNET',
-  })
-  network!: string;
+  @IsEnum(WalletNetwork)
+  network: WalletNetwork;
 }

@@ -8,8 +8,13 @@ export interface EncryptionResult {
   tag: string;
 }
 
-export interface DecryptionError extends Error {
+export class DecryptionError extends Error {
   code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA';
+  constructor(message: string, code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA') {
+    super(message);
+    this.name = 'DecryptionError';
+    this.code = code;
+  }
 }
 
 @Injectable()
@@ -23,38 +28,54 @@ export class EncryptionService {
 
   constructor(private configService: ConfigService) {
     const key = this.configService.get<string>('WALLET_ENCRYPTION_KEY');
-    
-    if (!key) {
+
+    if (!key || key.trim() === '') {
       throw new Error('WALLET_ENCRYPTION_KEY environment variable is required');
+    }
+
+    if (key === 'your-secret-encryption-key-min-32-chars') {
+      throw new Error(
+        'WALLET_ENCRYPTION_KEY environment variable cannot use the default placeholder value',
+      );
+    }
+
+    if (key.length < 32) {
+      throw new Error(
+        'WALLET_ENCRYPTION_KEY must be at least 32 characters long',
+      );
     }
 
     // Ensure key is exactly 32 bytes (256 bits)
     this.encryptionKey = crypto.createHash('sha256').update(key).digest();
-    
+
     this.logger.log('Encryption service initialized with secure key');
   }
 
   /**
    * Encrypts sensitive data (private keys) using AES-256-GCM
-   * 
+   *
    * @param plaintext - The sensitive data to encrypt
    * @returns Encrypted result with IV and authentication tag
    */
   encrypt(plaintext: string): EncryptionResult {
     try {
       const iv = crypto.randomBytes(this.ivLength);
-      const cipher = crypto.createCipheriv(this.algorithm, this.encryptionKey, iv);
+      const cipher = crypto.createCipheriv(
+        this.algorithm,
+        this.encryptionKey,
+        iv,
+      );
       cipher.setAAD(Buffer.from('wallet-secret', 'utf8'));
-      
+
       let encrypted = cipher.update(plaintext, 'utf8', 'hex');
       encrypted += cipher.final('hex');
-      
+
       const tag = cipher.getAuthTag();
-      
+
       return {
         encryptedData: encrypted,
         iv: iv.toString('hex'),
-        tag: tag.toString('hex')
+        tag: tag.toString('hex'),
       };
     } catch (error) {
       this.logger.error('Encryption failed:', error);
@@ -64,7 +85,7 @@ export class EncryptionService {
 
   /**
    * Decrypts encrypted data using AES-256-GCM
-   * 
+   *
    * @param encryptionResult - The encrypted data with IV and tag
    * @returns Decrypted plaintext
    * @throws DecryptionError if decryption fails
@@ -72,27 +93,31 @@ export class EncryptionService {
   decrypt(encryptionResult: EncryptionResult): string {
     try {
       const { encryptedData, iv, tag } = encryptionResult;
-      
-      const decipher = crypto.createDecipheriv(this.algorithm, this.encryptionKey, Buffer.from(iv, 'hex'));
+
+      const decipher = crypto.createDecipheriv(
+        this.algorithm,
+        this.encryptionKey,
+        Buffer.from(iv, 'hex'),
+      );
       decipher.setAAD(Buffer.from('wallet-secret', 'utf8'));
       decipher.setAuthTag(Buffer.from(tag, 'hex'));
-      
+
       let decrypted = decipher.update(encryptedData, 'hex', 'utf8');
       decrypted += decipher.final('utf8');
-      
+
       return decrypted;
     } catch (error) {
-      const decryptionError: DecryptionError = new Error('Decryption failed') as DecryptionError;
-      
+      let code: DecryptionError['code'];
       if (error.message.includes('bad decrypt')) {
-        decryptionError.code = 'DECRYPTION_FAILED';
+        code = 'DECRYPTION_FAILED';
       } else if (error.message.includes('wrong key')) {
-        decryptionError.code = 'INVALID_KEY';
+        code = 'INVALID_KEY';
       } else {
-        decryptionError.code = 'INVALID_DATA';
+        code = 'INVALID_DATA';
       }
-      
-      this.logger.error('Decryption failed:', { error: error.message, code: decryptionError.code });
+
+      const decryptionError = new DecryptionError('Decryption failed', code);
+      this.logger.error('Decryption failed:', { error: error.message, code });
       throw decryptionError;
     }
   }
@@ -109,10 +134,26 @@ export class EncryptionService {
    */
   deserializeFromStorage(storedData: string): EncryptionResult {
     try {
-      return JSON.parse(storedData) as EncryptionResult;
+      const parsed = JSON.parse(storedData) as EncryptionResult;
+
+      // Validate structure
+      if (!parsed.encryptedData || !parsed.iv || !parsed.tag) {
+        throw new DecryptionError(
+          'Invalid encrypted data format: missing required fields',
+          'INVALID_DATA',
+        );
+      }
+
+      return parsed;
     } catch (error) {
+      if (error instanceof DecryptionError) {
+        throw error;
+      }
       this.logger.error('Failed to deserialize encrypted data:', error);
-      throw new Error('Invalid encrypted data format');
+      throw new DecryptionError(
+        'Invalid encrypted data format',
+        'INVALID_DATA',
+      );
     }
   }
 
@@ -141,7 +182,7 @@ export class EncryptionService {
       const testData = 'test-validation-data';
       const encrypted = this.encryptAndSerialize(testData);
       const decrypted = this.deserializeAndDecrypt(encrypted);
-      
+
       return testData === decrypted;
     } catch (error) {
       this.logger.error('Encryption configuration validation failed:', error);

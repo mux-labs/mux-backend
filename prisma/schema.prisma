@@ -1,24 +1,118 @@
 // This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
 
 generator client {
   provider = "prisma-client"
   output   = "../src/generated/prisma"
-  
-  moduleFormat           = "cjs"
+
+  moduleFormat = "cjs"
 }
 
 datasource db {
   provider = "postgresql"
 }
 
+/// Legacy User model for payments (Int-based IDs)
+model LegacyUser {
+  id               Int        @id @default(autoincrement())
+  email            String     @unique
+  name             String?
+  sentPayments     Payment[]  @relation("SentPayments")
+  receivedPayments Payment[]  @relation("ReceivedPayments")
+  limits           UserLimit?
+  payments         Payment[]  @relation("UserPayments") // Keep legacy for compatibility or migration
+}
+
+enum PaymentStatus {
+  PENDING
+  CONFIRMED
+  FAILED
+}
+
+model Payment {
+  id          Int           @id @default(autoincrement())
+  amount      Float
+  currency    String
+  status      PaymentStatus @default(PENDING)
+  description String?
+
+  fromId Int
+  from   LegacyUser @relation("SentPayments", fields: [fromId], references: [id])
+
+  toId Int
+  to   LegacyUser @relation("ReceivedPayments", fields: [toId], references: [id])
+
+  userId Int // Legacy field
+  user   LegacyUser @relation("UserPayments", fields: [userId], references: [id])
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model UserLimit {
+  id                  Int        @id @default(autoincrement())
+  dailyLimit          Float
+  perTransactionLimit Float
+  userId              Int        @unique
+  user                LegacyUser @relation(fields: [userId], references: [id])
+}
+
+/// Spending limits scoped to a Wallet (replaces legacy UserLimit)
+model WalletLimit {
+  id                  String  @id @default(uuid())
+  walletId            String  @unique
+  wallet              Wallet  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  dailyLimit          Float
+  perTransactionLimit Float
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([walletId])
+}
+
 /// Mainnet/testnet separation for all wallets.
 enum WalletNetwork {
   MAINNET
   TESTNET
+}
+
+/// User account for authentication and wallet ownership.
+model User {
+  id String @id @default(uuid())
+
+  /// External authentication provider identifier (e.g., OAuth ID, wallet address)
+  authId String @unique
+
+  /// User's email address (optional)
+  email String?
+
+  /// User's display name (optional)
+  displayName String?
+
+  /// Account status
+  status String @default("ACTIVE")
+
+  /// Authentication provider type
+  authProvider String @default("UNKNOWN")
+
+  /// Last login timestamp
+  lastLoginAt DateTime?
+
+  /// Operational metadata
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
+  /// Relation to user's wallets
+  wallets Wallet[]
+
+  /// Relation to user's spending limits
+  spendingLimits SpendingLimit[]
+
+  @@index([authId])
+  @@index([authProvider])
+  @@index([deletedAt])
 }
 
 /// Internal lifecycle states (wallets are not user-facing).
@@ -44,39 +138,634 @@ enum WalletStatus {
 
 /// Persistence-ready internal representation of an "invisible wallet".
 model Wallet {
-  id               String        @id @default(uuid())
+  id String @id @default(uuid())
 
-  /// Owner reference (intentionally not a relation yet to keep this model portable).
-  userId           String
+  /// Owner reference to User model
+  userId String
+  user   User   @relation(fields: [userId], references: [id])
 
   /// Chain-agnostic public identifier (address/public key).
-  publicKey        String
+  publicKey String
 
   /// Chain-agnostic encrypted secret material (envelope/serialized payload).
-  encryptedSecret  String
+  encryptedSecret String
 
   /// Supports future crypto upgrades (KMS provider, envelope format, etc.).
-  encryptionVersion Int          @default(1)
+  encryptionVersion Int @default(1)
 
   /// Supports rotation by incrementing secret material while preserving history.
-  secretVersion    Int           @default(1)
+  secretVersion Int @default(1)
 
-  network          WalletNetwork
-  status           WalletStatus  @default(PROVISIONING)
+  network WalletNetwork
+  status  WalletStatus  @default(PROVISIONING)
 
   /// Operational metadata for audits/debugging.
-  statusReason     String?
-  statusChangedAt  DateTime      @default(now())
+  statusReason    String?
+  statusChangedAt DateTime @default(now())
 
   /// Rotation history: link to the prior wallet record (if this wallet is a successor).
-  rotatedFromId    String?
-  rotatedFrom      Wallet?       @relation("WalletRotation", fields: [rotatedFromId], references: [id])
-  rotatedTo        Wallet[]      @relation("WalletRotation")
+  rotatedFromId String?
+  rotatedFrom   Wallet?  @relation("WalletRotation", fields: [rotatedFromId], references: [id])
+  rotatedTo     Wallet[] @relation("WalletRotation")
 
-  createdAt        DateTime      @default(now())
-  updatedAt        DateTime      @updatedAt
+  /// Successor linking: direct reference to the wallet that replaced this one during rotation.
+  successorId String? @unique
+  successor   Wallet?  @relation("WalletSuccessor", fields: [successorId], references: [id])
+  predecessor Wallet[] @relation("WalletSuccessor")
 
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Recovery requests for this wallet
+  recoveryRequests RecoveryRequest[]
+  balances         WalletBalance[]
+  
+  /// Spending limits for this wallet
+  walletLimit          WalletLimit?
+
+  /// Transactions sent from this wallet
+  sentTransactions     Transaction[] @relation("SentTransactions")
+  
+  /// Transactions received by this wallet
+  receivedTransactions Transaction[] @relation("ReceivedTransactions")
+
+  @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
-  @@unique([network, publicKey])
+  @@index([rotatedFromId])
+  @@index([successorId])
+}
+
+/// Recovery request lifecycle states
+enum RecoveryStatus {
+  PENDING
+  IN_REVIEW
+  APPROVED
+  REJECTED
+  COMPLETED
+  CANCELLED
+}
+
+/// Recovery request entity for account recovery
+model RecoveryRequest {
+  id        String         @id @default(uuid())
+  walletId  String
+  wallet    Wallet         @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  requester String // Identifier of who requested recovery (e.g., userId or email)
+  status    RecoveryStatus @default(PENDING)
+  metadata  Json? // Optional metadata for future recovery methods
+  createdAt DateTime       @default(now())
+  updatedAt DateTime       @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
+  @@index([walletId, status])
+  @@index([deletedAt])
+}
+
+/// API Key status lifecycle
+enum ApiKeyStatus {
+  ACTIVE
+  REVOKED
+  EXPIRED
+  SUSPENDED
+}
+
+/// Developer/Project entity for SDK usage
+model Developer {
+  id          String   @id @default(uuid())
+  email       String   @unique
+  name        String?
+  company     String?
+  
+  /// Developer status
+  status      String   @default("ACTIVE")
+  
+  /// Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
+  /// Relations
+  projects    Project[]
+
+  @@index([email])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+/// Project entity for organizing API keys and usage
+model Project {
+  id          String   @id @default(uuid())
+  name        String
+  description String?
+  
+  /// Owner reference
+  developerId String
+  developer   Developer @relation(fields: [developerId], references: [id], onDelete: Cascade)
+  
+  /// Project status
+  status      String   @default("ACTIVE")
+  
+  /// Environment (development, staging, production)
+  environment String   @default("development")
+  
+  /// Rate limiting configuration (requests per minute)
+  rateLimitRpm Int     @default(60)
+  
+  /// Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
+  /// Relations
+  apiKeys          ApiKey[]
+  apiKeyUsage      ApiKeyUsage[]
+  webhookEndpoints WebhookEndpoint[]
+
+  @@index([developerId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+/// API Key for developer authentication
+model ApiKey {
+  id              String       @id @default(uuid())
+
+  /// Human-readable key name/description
+  name            String
+
+  /// Hashed API key (never store plaintext)
+  keyHash         String       @unique
+
+  /// Key prefix for identification (e.g., "mux_live_" or "mux_test_")
+  keyPrefix       String
+
+  /// Last 4 characters of the key for identification
+  lastFour        String
+
+  /// Project reference
+  projectId       String
+  project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
+
+  /// Key status
+  status          ApiKeyStatus @default(ACTIVE)
+
+  /// Key expiration (optional)
+  expiresAt       DateTime?
+
+  /// Last used timestamp
+  lastUsedAt      DateTime?
+
+  /// Revocation info
+  revokedAt       DateTime?
+  revokedReason   String?
+
+  /// Metadata
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  /// Relations
+  usageRecords     ApiKeyUsage[]
+  rateLimitRecords RateLimitRecord[]
+
+  @@index([keyHash])
+  @@index([projectId])
+  @@index([status])
+  @@index([keyPrefix])
+}
+
+/// Sliding-window rate limit tracking per API key and endpoint
+model RateLimitRecord {
+  id           String   @id @default(uuid())
+  apiKeyId     String
+  apiKey       ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  endpoint     String
+  windowStart  DateTime
+  requestCount Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@unique([apiKeyId, endpoint, windowStart])
+  @@index([apiKeyId])
+  @@index([windowStart])
+}
+
+/// API Key usage tracking for analytics and rate limiting
+model ApiKeyUsage {
+  id          String   @id @default(uuid())
+  
+  /// API Key reference
+  apiKeyId    String
+  apiKey      ApiKey   @relation(fields: [apiKeyId], references: [id], onDelete: Cascade)
+  
+  /// Project reference (denormalized for faster queries)
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Request details
+  endpoint    String
+  method      String
+  statusCode  Int?
+  
+  /// Request metadata
+  ipAddress   String?
+  userAgent   String?
+  
+  /// Performance metrics
+  responseTime Int?   // milliseconds
+  
+  /// Timestamp (partitioned by date for analytics)
+  timestamp   DateTime @default(now())
+  
+  @@index([apiKeyId, timestamp])
+  @@index([projectId, timestamp])
+  @@index([timestamp])
+}
+/// Asset types supported on Stellar
+enum AssetType {
+  NATIVE      // XLM
+  CREDIT_ALPHANUM4   // e.g., USDC
+  CREDIT_ALPHANUM12  // e.g., EURT
+  LIQUIDITY_POOL_SHARES
+}
+
+/// Balance sync status for tracking indexer health
+enum BalanceSyncStatus {
+  SYNCED       // Balance is up-to-date with chain
+  SYNCING      // Sync in progress
+  STALE        // Balance hasn't been updated recently
+  MISMATCH     // Detected discrepancy with on-chain state
+  FAILED       // Last sync attempt failed
+}
+
+/// Indexed wallet balance for fast queries
+model WalletBalance {
+  id        String   @id @default(uuid())
+  
+  /// Wallet reference
+  walletId  String
+  wallet    Wallet   @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  
+  /// Asset information
+  assetType String   // AssetType enum as string
+  assetCode String?  // e.g., "USDC" (null for native XLM)
+  assetIssuer String? // Issuer public key (null for native XLM)
+  
+  /// Balance amount (stored as string to preserve precision)
+  balance   String   @default("0")
+  
+  /// Sync metadata
+  syncStatus BalanceSyncStatus @default(SYNCING)
+  lastSyncedAt DateTime?
+  lastSyncedLedger Int?  // Stellar ledger sequence number
+  
+  /// Reconciliation tracking
+  lastReconciledAt DateTime?
+  reconciliationAttempts Int @default(0)
+  
+  /// Chain state (for mismatch detection)
+  onChainBalance String?  // Last known on-chain balance
+  mismatchDetectedAt DateTime?
+  
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@unique([walletId, assetType, assetCode, assetIssuer])
+  @@index([walletId])
+  @@index([syncStatus])
+  @@index([lastSyncedAt])
+}
+
+/// Balance sync job tracking for reliability
+model BalanceSyncJob {
+  id        String   @id @default(uuid())
+  
+  /// Job metadata
+  jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"
+  status    String   // "PENDING", "RUNNING", "COMPLETED", "FAILED"
+  
+  /// Scope
+  walletId  String?  // Null for full system sync
+  network   WalletNetwork?
+  
+  /// Progress tracking
+  walletsProcessed Int @default(0)
+  walletsTotal Int?
+  
+  /// Results
+  balancesUpdated Int @default(0)
+  mismatchesFound Int @default(0)
+  errorsEncountered Int @default(0)
+  
+  /// Timing
+  startedAt DateTime?
+  completedAt DateTime?
+  duration Int?  // milliseconds
+  
+  /// Error tracking
+  errorMessage String?
+  errorDetails Json?
+  
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([status])
+  @@index([jobType])
+  @@index([createdAt])
+}
+/// Webhook endpoint registered by developers
+model WebhookEndpoint {
+  id          String   @id @default(uuid())
+  
+  /// Project reference (links webhook to API key owner)
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  
+  /// Endpoint configuration
+  url         String
+  description String?
+  
+  /// Secret for HMAC signature verification
+  secret      String
+  
+  /// Event types to listen for
+  events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
+  
+  /// Endpoint status
+  status      String   @default("ACTIVE") // ACTIVE, DISABLED, FAILED
+  
+  /// Failure tracking
+  consecutiveFailures Int @default(0)
+  lastFailureAt DateTime?
+  lastFailureReason String?
+  
+  /// Success tracking
+  lastSuccessAt DateTime?
+  
+  /// Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt   DateTime?
+
+  /// Relations
+  deliveries  WebhookDelivery[]
+
+  @@index([projectId])
+  @@index([status])
+  @@index([deletedAt])
+}
+
+/// Webhook delivery attempt tracking
+model WebhookDelivery {
+  id          String   @id @default(uuid())
+  
+  /// Endpoint reference
+  endpointId  String
+  endpoint    WebhookEndpoint @relation(fields: [endpointId], references: [id], onDelete: Cascade)
+  
+  /// Event details
+  eventId     String   @unique
+  eventType   String   // e.g., "wallet.created"
+  payload     Json     // Event payload
+  
+  /// Delivery status
+  status      String   // PENDING, DELIVERED, FAILED, RETRYING
+  
+  /// Attempt tracking
+  attempts    Int      @default(0)
+  maxAttempts Int      @default(5)
+  
+  /// Next retry time (for exponential backoff)
+  nextRetryAt DateTime?
+  
+  /// Response details
+  responseStatus Int?
+  responseBody String?
+  responseTime Int?   // milliseconds
+  
+  /// Delivery timestamps
+  firstAttemptAt DateTime?
+  lastAttemptAt DateTime?
+  deliveredAt DateTime?
+  
+  /// Error tracking
+  errorMessage String?
+  
+  /// Metadata
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  
+  @@index([endpointId])
+  @@index([status])
+  @@index([nextRetryAt])
+  @@index([eventType])
+  @@index([createdAt])
+}
+
+/// Spending limit period types
+enum LimitPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// Spending limit for a User (UUID-based)
+model SpendingLimit {
+  id                  String      @id @default(uuid())
+
+  /// Owner reference to User model
+  userId              String
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Maximum amount per single transaction
+  perTransactionLimit Decimal     @db.Decimal(18, 8)
+
+  /// Maximum cumulative amount within the period
+  periodLimit         Decimal     @db.Decimal(18, 8)
+
+  /// Period type for the cumulative limit
+  period              LimitPeriod @default(DAILY)
+
+  /// Asset code this limit applies to (null = all assets)
+  assetCode           String?
+
+  /// Whether this limit is currently active
+  isActive            Boolean     @default(true)
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@unique([userId, period, assetCode])
+  @@index([userId])
+  @@index([isActive])
+}
+
+/// Idempotency record for caching authentication and other operation responses
+model IdempotencyRecord {
+  id String @id @default(uuid())
+
+  /// Unique idempotency key provided by client
+  key String @unique
+
+  /// HTTP method of the original request
+  method String
+
+  /// Endpoint path of the original request
+  endpoint String
+
+  /// Cached response (serialized JSON)
+  response Json
+
+  /// Response status code
+  statusCode Int @default(200)
+
+  /// TTL - when this record expires
+  expiresAt DateTime
+
+  /// Metadata
+  createdAt DateTime @default(now())
+
+  @@index([expiresAt])
+  @@index([key, endpoint])
+}
+
+/// Key operation types for audit logging
+enum KeyOperation {
+  GENERATE
+  SIGN
+  ROTATE
+  REVOKE
+  ACCESS
+}
+
+/// Persistent audit log for key management operations
+/// Used for security monitoring, compliance, and forensics
+model KeyRotationAuditLog {
+  id String @id @default(uuid())
+
+  /// Operation type
+  operation KeyOperation
+
+  /// Key identifier (wallet ID, key ID, or "new" for generation)
+  keyId String
+
+  /// Public key involved in the operation (never store private keys)
+  publicKey String
+
+  /// Operation timestamp
+  timestamp DateTime @default(now())
+
+  /// Operation result
+  success Boolean @default(true)
+
+  /// Error message if operation failed
+  errorMessage String?
+
+  /// Additional context (JSON for flexibility)
+  /// May include: keyType, userId, rotationReason, previousKeyId, etc.
+  metadata Json?
+
+  /// IP address of request origin (if applicable)
+  ipAddress String?
+
+  /// User agent of request (if applicable)
+  userAgent String?
+
+  /// Key type involved (e.g., STELLAR_ED25519)
+  keyType String?
+
+  /// For ROTATE operations: reference to previous key
+  previousKeyId String?
+
+  /// For ROTATE operations: reference to new key
+  newKeyId String?
+
+  /// Retention metadata
+  /// TTL - when this record can be archived/deleted (compliance requirement)
+  expiresAt DateTime?
+
+  @@index([operation])
+  @@index([keyId])
+  @@index([publicKey])
+  @@index([timestamp])
+  @@index([success])
+  @@index([operation, timestamp])
+  @@index([keyId, operation])
+  @@index([expiresAt])
+}
+
+/// Transaction lifecycle states
+enum TransactionStatus {
+  PENDING    // Transaction created but not yet submitted to network
+  SUBMITTED  // Transaction submitted to Stellar network
+  CONFIRMED  // Transaction confirmed on-chain
+  FAILED     // Transaction failed (rejected, expired, or error)
+}
+
+/// Internal transaction domain model for observability, retries, and analytics
+/// Independent of Stellar network primitives but tracks network references
+model Transaction {
+  id String @id @default(uuid())
+  
+  /// Transaction amount (stored as string for precision)
+  amount String
+  
+  /// Asset information
+  assetType   String  // AssetType enum as string (NATIVE, CREDIT_ALPHANUM4, etc.)
+  assetCode   String? // e.g., "USDC" (null for native XLM)
+  assetIssuer String? // Issuer public key (null for native XLM)
+  
+  /// Wallet references
+  senderWalletId   String
+  senderWallet      Wallet  @relation("SentTransactions", fields: [senderWalletId], references: [id])
+  
+  receiverWalletId  String?
+  receiverWallet    Wallet? @relation("ReceivedTransactions", fields: [receiverWalletId], references: [id])
+  
+  /// Lifecycle state
+  status TransactionStatus @default(PENDING)
+  
+  /// Stellar network references
+  stellarHash   String? @unique // Stellar transaction hash (unique once submitted)
+  stellarLedger Int?    // Ledger sequence number where transaction was included
+  stellarFee    String? // Transaction fee paid (in stroops, stored as string)
+  
+  /// State transition tracking
+  statusChangedAt DateTime @default(now())
+  statusReason   String?   // Optional reason for status change (e.g., error message)
+  
+  /// Submission tracking
+  submittedAt DateTime? // When transaction was submitted to network
+  confirmedAt DateTime? // When transaction was confirmed on-chain
+  failedAt    DateTime? // When transaction failed
+  
+  /// Metadata for future webhooks and analytics
+  metadata Json? // Flexible JSON for additional transaction context
+
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
+  
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  
+  @@index([senderWalletId])
+  @@index([receiverWalletId])
+  @@index([senderWalletId, status])
+  @@index([receiverWalletId, status])
+  @@index([status, createdAt])
+  @@index([stellarHash])
+  @@index([stellarLedger])
+  @@index([createdAt])
+  @@index([idempotencyKey])
 }

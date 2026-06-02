@@ -52,5 +52,14 @@ else
 fi
 
 echo ""
+echo "7. Checking key validation at boot..."
+if grep -q "your-secret-encryption-key-min-32-chars" src/encryption/encryption.service.ts && \
+   grep -q "length < 32" src/encryption/encryption.service.ts; then
+    echo "✅ Key validation checks at boot are implemented"
+else
+    echo "❌ Key validation checks at boot are missing"
+fi
+
+echo ""
 echo "=========================================="
 echo "🎯 Verification Complete!"

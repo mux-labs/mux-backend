@@ -1,11 +1,14 @@
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
-import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import { AppModule } from './app.module';
+import requestLogger from './common/middleware/request-logging.middleware';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
+  // Attach request logging middleware early in the pipeline
+  app.use(requestLogger as any);
 
+  // Validate incoming requests for DTOs globally
   app.useGlobalPipes(
     new ValidationPipe({
       whitelist: true,
@@ -13,17 +16,6 @@ async function bootstrap() {
       forbidNonWhitelisted: true,
     }),
   );
-
-  if (process.env.SWAGGER_ENABLED !== 'false') {
-    const config = new DocumentBuilder()
-      .setTitle('Mux Backend API')
-      .setDescription('REST API for Mux Protocol — wallets, payments, and account management')
-      .setVersion('1.0')
-      .addApiKey({ type: 'apiKey', in: 'header', name: 'x-api-key' }, 'api-key')
-      .build();
-    const document = SwaggerModule.createDocument(app, config);
-    SwaggerModule.setup('api/docs', app, document);
-  }
 
   await app.listen(process.env.PORT ?? 3000);
 }

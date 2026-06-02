@@ -48,6 +48,9 @@ export interface Wallet {
   /** Rotation lineage (if this wallet is a successor). */
   rotatedFromId?: WalletId | null;
 
+  /** Direct link to the wallet that replaced this one during rotation. */
+  successorId?: WalletId | null;
+
   createdAt: Date;
   updatedAt: Date;
 }
@@ -56,21 +59,39 @@ export interface Wallet {
  * Explicit, audit-friendly status transition rules.
  * Keep this strict to avoid accidental reactivation after compromise/disable.
  */
-const ALLOWED_TRANSITIONS: Readonly<Record<WalletStatus, ReadonlySet<WalletStatus>>> = {
-  [WalletStatus.PROVISIONING]: new Set([WalletStatus.ACTIVE, WalletStatus.SUSPENDED, WalletStatus.DISABLED]),
+const ALLOWED_TRANSITIONS: Readonly<
+  Record<WalletStatus, ReadonlySet<WalletStatus>>
+> = {
+  [WalletStatus.PROVISIONING]: new Set([
+    WalletStatus.ACTIVE,
+    WalletStatus.SUSPENDED,
+    WalletStatus.DISABLED,
+  ]),
   [WalletStatus.ACTIVE]: new Set([
     WalletStatus.ROTATING,
     WalletStatus.SUSPENDED,
     WalletStatus.DISABLED,
     WalletStatus.COMPROMISED,
   ]),
-  [WalletStatus.ROTATING]: new Set([WalletStatus.ACTIVE, WalletStatus.SUSPENDED, WalletStatus.DISABLED, WalletStatus.COMPROMISED]),
-  [WalletStatus.SUSPENDED]: new Set([WalletStatus.ACTIVE, WalletStatus.DISABLED, WalletStatus.COMPROMISED]),
+  [WalletStatus.ROTATING]: new Set([
+    WalletStatus.ACTIVE,
+    WalletStatus.SUSPENDED,
+    WalletStatus.DISABLED,
+    WalletStatus.COMPROMISED,
+  ]),
+  [WalletStatus.SUSPENDED]: new Set([
+    WalletStatus.ACTIVE,
+    WalletStatus.DISABLED,
+    WalletStatus.COMPROMISED,
+  ]),
   [WalletStatus.DISABLED]: new Set([]),
   [WalletStatus.COMPROMISED]: new Set([]),
 };
 
-export function canTransitionWalletStatus(from: WalletStatus, to: WalletStatus): boolean {
+export function canTransitionWalletStatus(
+  from: WalletStatus,
+  to: WalletStatus,
+): boolean {
   return ALLOWED_TRANSITIONS[from].has(to);
 }
 
@@ -82,7 +103,9 @@ export function transitionWalletStatus(
 ): Wallet {
   if (wallet.status === to) return wallet;
   if (!canTransitionWalletStatus(wallet.status, to)) {
-    throw new Error(`Invalid wallet status transition: ${wallet.status} -> ${to}`);
+    throw new Error(
+      `Invalid wallet status transition: ${wallet.status} -> ${to}`,
+    );
   }
   return {
     ...wallet,
@@ -93,3 +116,16 @@ export function transitionWalletStatus(
   };
 }
 
+/**
+ * Status response DTO exposed via the status endpoint.
+ */
+export interface WalletStatusResponse {
+  id: string;
+  status: WalletStatus;
+  statusReason: string | null;
+  statusChangedAt: Date;
+  network: WalletNetwork;
+  publicKey: string;
+  userId: string;
+  updatedAt: Date;
+}

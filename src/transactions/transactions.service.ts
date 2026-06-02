@@ -1,0 +1,358 @@
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
+import { Asset } from '../balance-indexer/domain/balance.model';
+import { CreateTransactionDto } from './dto/create-transaction.dto';
+import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
+import {
+  Transaction,
+  TransactionStatus,
+  createTransaction,
+  transitionTransactionStatus,
+  canTransitionTransactionStatus,
+  TransactionAsset,
+  StellarNetworkReferences,
+} from './domain/transaction.model';
+import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+
+@Injectable()
+export class TransactionsService {
+  private readonly logger = new Logger(TransactionsService.name);
+
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly balanceIndexer: BalanceIndexerService,
+    private readonly webhookEventEmitter: WebhookEventEmitterService,
+  ) {}
+
+  /**
+   * Create a new transaction in PENDING state.
+   * If an idempotencyKey is supplied and a transaction with that key already
+   * exists, the existing transaction is returned without creating a duplicate.
+   */
+  async create(
+    createTransactionDto: CreateTransactionDto,
+  ): Promise<TransactionEntity> {
+    const {
+      amount,
+      asset,
+      senderWalletId,
+      receiverWalletId,
+      metadata,
+      idempotencyKey,
+    } = createTransactionDto;
+
+    // Idempotency check: return existing transaction if key already used
+    if (idempotencyKey) {
+      const existing = await this.prisma.transaction.findUnique({
+        where: { idempotencyKey },
+      });
+      if (existing) {
+        this.logger.log(
+          `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
+        );
+        return this.mapPrismaToEntity(existing);
+      }
+    }
+
+    // Validate wallets exist
+    const senderWallet = await this.prisma.wallet.findUnique({
+      where: { id: senderWalletId },
+    });
+
+    if (!senderWallet) {
+      throw new NotFoundException(`Sender wallet ${senderWalletId} not found`);
+    }
+
+    if (receiverWalletId) {
+      const receiverWallet = await this.prisma.wallet.findUnique({
+        where: { id: receiverWalletId },
+      });
+
+      if (!receiverWallet) {
+        throw new NotFoundException(
+          `Receiver wallet ${receiverWalletId} not found`,
+        );
+      }
+    }
+
+    // Check sender has sufficient balance
+    const balanceAsset: Asset = {
+      type: asset.type as any,
+      code: asset.code ?? undefined,
+      issuer: asset.issuer ?? undefined,
+    };
+    const walletBalance = await this.balanceIndexer.getBalance(
+      senderWalletId,
+      balanceAsset,
+    );
+    const available = walletBalance?.balance ?? '0';
+    if (parseFloat(available) < parseFloat(amount)) {
+      throw new InsufficientBalanceException(
+        senderWalletId,
+        amount,
+        available,
+        asset.code,
+      );
+    }
+
+    // Create transaction in database
+    try {
+      const created = await this.prisma.transaction.create({
+        data: {
+          amount,
+          assetType: asset.type,
+          assetCode: asset.code ?? null,
+          assetIssuer: asset.issuer ?? null,
+          senderWalletId,
+          receiverWalletId: receiverWalletId ?? null,
+          status: TransactionStatus.PENDING,
+          metadata: metadata ?? null,
+          idempotencyKey: idempotencyKey ?? null,
+        },
+      });
+
+    this.webhookEventEmitter
+      .emitTransactionCreated({
+        transactionId: created.id,
+        walletId: created.senderWalletId,
+        amount: created.amount,
+        asset: created.assetCode ?? created.assetType,
+        destination: created.receiverWalletId ?? '',
+      })
+      .catch((err) =>
+        this.logger.error(
+          `Failed to emit transaction.created webhook for ${created.id}: ${err?.message}`,
+        ),
+      );
+
+    return this.mapPrismaToEntity(created);
+  }
+
+  /**
+   * Find all transactions with optional filters
+   */
+  async findAll(filters?: {
+    senderWalletId?: string;
+    receiverWalletId?: string;
+    status?: TransactionStatus;
+    limit?: number;
+    offset?: number;
+  }): Promise<TransactionEntity[]> {
+    const where: any = {};
+
+    if (filters?.senderWalletId) {
+      where.senderWalletId = filters.senderWalletId;
+    }
+
+    if (filters?.receiverWalletId) {
+      where.receiverWalletId = filters.receiverWalletId;
+    }
+
+    if (filters?.status) {
+      where.status = filters.status;
+    }
+
+    const transactions = await this.prisma.transaction.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      take: filters?.limit,
+      skip: filters?.offset,
+    });
+
+    return transactions.map((t) => this.mapPrismaToEntity(t));
+  }
+
+  /**
+   * Find a transaction by ID
+   */
+  async findOne(id: string): Promise<TransactionEntity> {
+    const transaction = await this.prisma.transaction.findUnique({
+      where: { id },
+    });
+
+    if (!transaction) {
+      throw new NotFoundException(`Transaction ${id} not found`);
+    }
+
+    return this.mapPrismaToEntity(transaction);
+  }
+
+  /**
+   * Update transaction status with proper state transition validation
+   */
+  async updateStatus(
+    id: string,
+    updateDto: UpdateTransactionStatusDto,
+  ): Promise<TransactionEntity> {
+    const existing = await this.prisma.transaction.findUnique({
+      where: { id },
+    });
+
+    if (!existing) {
+      throw new NotFoundException(`Transaction ${id} not found`);
+    }
+
+    // Validate status transition
+    if (
+      !canTransitionTransactionStatus(
+        existing.status as TransactionStatus,
+        updateDto.status,
+      )
+    ) {
+      throw new BadRequestException(
+        `Invalid status transition: ${existing.status} -> ${updateDto.status}`,
+      );
+    }
+
+    // Build update data
+    const updateData: any = {
+      status: updateDto.status,
+      statusChangedAt: new Date(),
+      updatedAt: new Date(),
+    };
+
+    // Update status-specific timestamps
+    if (updateDto.status === TransactionStatus.SUBMITTED) {
+      updateData.submittedAt = new Date();
+    } else if (updateDto.status === TransactionStatus.CONFIRMED) {
+      updateData.confirmedAt = new Date();
+    } else if (updateDto.status === TransactionStatus.FAILED) {
+      updateData.failedAt = new Date();
+    }
+
+    // Update status reason if provided
+    if (updateDto.statusReason !== undefined) {
+      updateData.statusReason = updateDto.statusReason;
+    }
+
+    // Update Stellar network references if provided
+    if (updateDto.stellarHash !== undefined) {
+      updateData.stellarHash = updateDto.stellarHash;
+    }
+    if (updateDto.stellarLedger !== undefined) {
+      updateData.stellarLedger = updateDto.stellarLedger;
+    }
+    if (updateDto.stellarFee !== undefined) {
+      updateData.stellarFee = updateDto.stellarFee;
+    }
+
+    const updated = await this.prisma.transaction.update({
+      where: { id },
+      data: updateData,
+    });
+
+    this.logger.log(
+      `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
+    );
+
+    this.emitStatusWebhook(updated).catch((err) =>
+      this.logger.error(
+        `Failed to emit webhook for transaction ${id} status ${updateDto.status}: ${err?.message}`,
+      ),
+    );
+
+    return this.mapPrismaToEntity(updated);
+  }
+
+  /**
+   * Find transactions by Stellar hash
+   */
+  async findByStellarHash(hash: string): Promise<TransactionEntity | null> {
+    const transaction = await this.prisma.transaction.findUnique({
+      where: { stellarHash: hash },
+    });
+
+    return transaction ? this.mapPrismaToEntity(transaction) : null;
+  }
+
+  /**
+   * Find transactions by wallet ID with pagination
+   */
+  async findByWallet(
+    walletId: string,
+    pagination?: { limit?: number; offset?: number },
+  ): Promise<TransactionEntity[]> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+    });
+
+    if (!wallet) {
+      throw new NotFoundException(`Wallet ${walletId} not found`);
+    }
+
+    const transactions = await this.prisma.transaction.findMany({
+      where: {
+        OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
+      },
+      orderBy: { createdAt: 'desc' },
+      take: pagination?.limit,
+      skip: pagination?.offset,
+    });
+
+    return transactions.map((t) => this.mapPrismaToEntity(t));
+  }
+
+  /**
+   * Emit the appropriate webhook event for a transaction status
+   */
+  private async emitStatusWebhook(tx: any): Promise<void> {
+    const status = tx.status as TransactionStatus;
+    if (status === TransactionStatus.SUBMITTED) {
+      await this.webhookEventEmitter.emitTransactionPending({
+        transactionId: tx.id,
+        walletId: tx.senderWalletId,
+        txHash: tx.stellarHash ?? '',
+      });
+    } else if (status === TransactionStatus.CONFIRMED) {
+      await this.webhookEventEmitter.emitTransactionConfirmed({
+        transactionId: tx.id,
+        walletId: tx.senderWalletId,
+        txHash: tx.stellarHash ?? '',
+        ledger: tx.stellarLedger ?? 0,
+        confirmations: 1,
+      });
+    } else if (status === TransactionStatus.FAILED) {
+      await this.webhookEventEmitter.emitTransactionFailed({
+        transactionId: tx.id,
+        walletId: tx.senderWalletId,
+        reason: tx.statusReason ?? 'unknown',
+      });
+    }
+  }
+
+  /**
+   * Map Prisma model to entity
+   */
+  private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
+    return {
+      id: prismaTransaction.id,
+      amount: prismaTransaction.amount,
+      assetType: prismaTransaction.assetType,
+      assetCode: prismaTransaction.assetCode,
+      assetIssuer: prismaTransaction.assetIssuer,
+      senderWalletId: prismaTransaction.senderWalletId,
+      receiverWalletId: prismaTransaction.receiverWalletId,
+      status: prismaTransaction.status as TransactionStatus,
+      stellarHash: prismaTransaction.stellarHash,
+      stellarLedger: prismaTransaction.stellarLedger,
+      stellarFee: prismaTransaction.stellarFee,
+      statusChangedAt: prismaTransaction.statusChangedAt,
+      statusReason: prismaTransaction.statusReason,
+      submittedAt: prismaTransaction.submittedAt,
+      confirmedAt: prismaTransaction.confirmedAt,
+      failedAt: prismaTransaction.failedAt,
+      metadata: prismaTransaction.metadata,
+      idempotencyKey: prismaTransaction.idempotencyKey,
+      createdAt: prismaTransaction.createdAt,
+      updatedAt: prismaTransaction.updatedAt,
+    };
+  }
+}

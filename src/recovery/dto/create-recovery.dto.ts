@@ -1,1 +1,5 @@
-export class CreateRecoveryDto {}
+export class CreateRecoveryDto {
+  walletId: string;
+  requester: string;
+  metadata?: any;
+}
