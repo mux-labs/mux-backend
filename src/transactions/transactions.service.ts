@@ -5,6 +5,8 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
+import { Asset } from '../balance-indexer/domain/balance.model';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
 import { UpdateTransactionStatusDto } from './dto/update-transaction.dto';
 import {
@@ -17,6 +19,7 @@ import {
   StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 @Injectable()
@@ -25,6 +28,7 @@ export class TransactionsService {
 
   constructor(
     private readonly prisma: PrismaService,
+    private readonly balanceIndexer: BalanceIndexerService,
     private readonly webhookEventEmitter: WebhookEventEmitterService,
   ) {}
 
@@ -56,6 +60,26 @@ export class TransactionsService {
           `Receiver wallet ${receiverWalletId} not found`,
         );
       }
+    }
+
+    // Check sender has sufficient balance
+    const balanceAsset: Asset = {
+      type: asset.type as any,
+      code: asset.code ?? undefined,
+      issuer: asset.issuer ?? undefined,
+    };
+    const walletBalance = await this.balanceIndexer.getBalance(
+      senderWalletId,
+      balanceAsset,
+    );
+    const available = walletBalance?.balance ?? '0';
+    if (parseFloat(available) < parseFloat(amount)) {
+      throw new InsufficientBalanceException(
+        senderWalletId,
+        amount,
+        available,
+        asset.code,
+      );
     }
 
     // Create transaction in database
