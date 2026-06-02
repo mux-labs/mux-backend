@@ -51,6 +51,27 @@ describe('ProjectsService', () => {
     expect(result).toEqual({ id: 'proj-123', name: 'Test Project', developerId: 'dev-123' });
   });
 
+  it('should return projects for an existing developer', async () => {
+    prisma.developer.findUnique.mockResolvedValue({ id: 'dev-123', status: 'ACTIVE', deletedAt: null });
+    prisma.project.findMany.mockResolvedValue([
+      { id: 'proj-123', name: 'Test Project', developerId: 'dev-123' },
+    ]);
+
+    const result = await service.findByDeveloper('dev-123');
+
+    expect(prisma.developer.findUnique).toHaveBeenCalledWith({ where: { id: 'dev-123' } });
+    expect(prisma.project.findMany).toHaveBeenCalledWith({ where: { developerId: 'dev-123' } });
+    expect(result).toEqual([
+      { id: 'proj-123', name: 'Test Project', developerId: 'dev-123' },
+    ]);
+  });
+
+  it('should throw NotFoundException when listing projects for missing developer', async () => {
+    prisma.developer.findUnique.mockResolvedValue(null);
+
+    await expect(service.findByDeveloper('missing-dev')).rejects.toThrow(NotFoundException);
+  });
+
   it('should throw NotFoundException when creating a project for missing developer', async () => {
     prisma.developer.findUnique.mockResolvedValue(null);
 

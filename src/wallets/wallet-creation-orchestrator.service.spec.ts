@@ -4,8 +4,9 @@ import {
   OrchestratorMetrics,
   CreateWalletOrchestratorRequest,
 } from './wallet-creation-orchestrator.service';
-import { WalletNetwork, WalletStatus } from './domain/wallet.model';
-import { NotFoundException, ConflictException } from '@nestjs/common';
+import { WalletNetwork } from './domain/wallet.model';
+import { EncryptionService } from '../encryption/encryption.service';
+import { IdempotentUserService } from '../users/idempotent-user.service';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -20,6 +21,14 @@ const mockPrisma = {
   },
   $transaction: jest.fn(),
 };
+
+// Mock PrismaClient module
+jest.mock('../generated/prisma/client', () => ({
+  PrismaClient: jest.fn(() => mockPrisma),
+}));
+
+// Need to import for TypeScript type (jest.mock hoists the import)
+import { PrismaClient } from '../generated/prisma/client';
 
 // Mock Encryption Service
 const mockEncryptionService = {
@@ -36,12 +45,48 @@ const mockConfigService = {
 // Mock IdempotentUserService
 const mockIdempotentUserService = {
   findUserById: jest.fn(),
-  findUserByAuthId: jest.fn(),
   findOrCreateUser: jest.fn(),
 };
 
+// Global mock for fetch (Friendbot calls)
+const mockFetch = jest.fn();
+global.fetch = mockFetch;
+
 describe('WalletCreationOrchestrator', () => {
   let orchestrator: WalletCreationOrchestrator;
+  let prismaClient: jest.Mocked<PrismaClient>;
+  let encryptionService: jest.Mocked<EncryptionService>;
+  let configService: jest.Mocked<ConfigService>;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        WalletCreationOrchestrator,
+        {
+          provide: PrismaClient,
+          useValue: mockPrisma,
+        },
+        {
+          provide: EncryptionService,
+          useValue: mockEncryptionService,
+        },
+        {
+          provide: ConfigService,
+          useValue: mockConfigService,
+        },
+        {
+          provide: IdempotentUserService,
+          useValue: mockIdempotentUserService,
+        },
+      ],
+    }).compile();
+
+    orchestrator = module.get<WalletCreationOrchestrator>(
+      WalletCreationOrchestrator,
+    );
+    prismaClient = module.get(PrismaClient);
+    encryptionService = module.get(EncryptionService);
+    configService = module.get(ConfigService);
 
   beforeEach(() => {
     jest.clearAllMocks();
@@ -59,12 +104,26 @@ describe('WalletCreationOrchestrator', () => {
     mockEncryptionService.encryptAndSerialize.mockReturnValue(
       'encrypted-private-key',
     );
+
+    // Mock fetch to succeed by default (Friendbot)
+    mockFetch.mockResolvedValue({
+      ok: true,
+    });
+
+    // Mock config to return testnet horizon URL
+    mockConfigService.get.mockReturnValue(
+      'https://horizon-testnet.stellar.org',
+    );
+
+    // Mock IdempotentUserService
     mockIdempotentUserService.findUserById.mockResolvedValue({
       id: 'user-123',
       authId: 'auth-123',
       email: 'test@example.com',
+      displayName: 'Test User',
       status: 'ACTIVE',
       authProvider: 'CLERK',
+      lastLoginAt: new Date(),
       createdAt: new Date(),
       updatedAt: new Date(),
     });
@@ -77,8 +136,9 @@ describe('WalletCreationOrchestrator', () => {
       idempotencyKey: 'unique-key-123',
     };
 
-    it('should create a new wallet successfully', async () => {
+    it('should create a new wallet successfully with PROVISIONING -> ACTIVE flow', async () => {
       // Arrange
+      // Wallet returned after creation (PROVISIONING status)
       const provisioningWallet = {
         id: 'wallet-123',
         userId: 'user-123',
@@ -87,7 +147,7 @@ describe('WalletCreationOrchestrator', () => {
         encryptionVersion: 1,
         secretVersion: 1,
         network: WalletNetwork.TESTNET,
-        status: WalletStatus.PROVISIONING,
+        status: 'PROVISIONING',
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
@@ -96,11 +156,20 @@ describe('WalletCreationOrchestrator', () => {
       };
       const activeWallet = { ...provisioningWallet, status: WalletStatus.ACTIVE };
 
+      // Wallet returned after activation (ACTIVE status)
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
+        updatedAt: new Date(),
+      };
+
       mockPrisma.$transaction.mockImplementation(async (callback) => {
         return callback(mockPrisma as any);
       });
 
-      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.findFirst.mockResolvedValue(null); // No existing wallet
       mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
       mockPrisma.wallet.update.mockResolvedValue(activeWallet);
 
@@ -121,21 +190,35 @@ describe('WalletCreationOrchestrator', () => {
         idempotencyKey: 'unique-key-123',
       });
 
-      // Wallet must be created in PROVISIONING first
+      // Wallet is created with PROVISIONING status (Issue #188)
       expect(mockPrisma.wallet.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userId: 'user-123',
-          status: WalletStatus.PROVISIONING,
+          publicKey: expect.any(String),
+          encryptedSecret: 'encrypted-private-key',
+          network: WalletNetwork.TESTNET,
+          status: 'PROVISIONING',
+          encryptionVersion: 1,
+          secretVersion: 1,
+        },
+      });
+
+      // Wallet is then transitioned to ACTIVE (Issue #188)
+      expect(mockPrisma.wallet.update).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+        data: expect.objectContaining({
+          status: 'ACTIVE',
+          statusReason: 'Wallet provisioned and activated',
         }),
       });
 
-      // Then activated to ACTIVE in the same transaction
-      expect(mockPrisma.wallet.update).toHaveBeenCalledWith({
-        where: { id: 'wallet-123' },
-        data: expect.objectContaining({ status: WalletStatus.ACTIVE }),
-      });
+      // Friendbot was called to fund the testnet account (Issue #187)
+      expect(mockFetch).toHaveBeenCalledWith(
+        expect.stringContaining('friendbot.stellar.org'),
+        { method: 'GET' },
+      );
 
-      expect(mockEncryptionService.encryptAndSerialize).toHaveBeenCalledWith(
+      expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(
         expect.any(String),
       );
     });
@@ -241,7 +324,7 @@ describe('WalletCreationOrchestrator', () => {
         encryptionVersion: 1,
         secretVersion: 1,
         network: WalletNetwork.TESTNET,
-        status: WalletStatus.PROVISIONING,
+        status: 'PROVISIONING',
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
@@ -249,6 +332,14 @@ describe('WalletCreationOrchestrator', () => {
         updatedAt: new Date(),
       };
       const activeWallet = { ...provisioningWallet, status: WalletStatus.ACTIVE };
+
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
+        updatedAt: new Date(),
+      };
 
       mockPrisma.$transaction.mockImplementation(async (callback) => {
         return callback(mockPrisma as any);
@@ -271,6 +362,51 @@ describe('WalletCreationOrchestrator', () => {
         isNewWallet: true,
         idempotencyKey: undefined,
       });
+    });
+
+    it('should continue even if Friendbot funding fails', async () => {
+      // Arrange
+      const provisioningWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123DEF456',
+        encryptedSecret: 'encrypted-private-key',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'PROVISIONING',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrisma.$transaction.mockImplementation(async (callback) => {
+        return callback(mockPrisma as any);
+      });
+
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+      mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
+      mockPrisma.wallet.update.mockResolvedValue(activeWallet);
+
+      // Friendbot fails with a network error
+      mockFetch.mockRejectedValue(new Error('Network error'));
+
+      // Act
+      const result = await orchestrator.createWallet(createRequest);
+
+      // Assert - wallet creation still succeeds despite Friendbot failure
+      expect(result.isNewWallet).toBe(true);
+      expect(result.wallet.status).toBe('ACTIVE');
     });
   });
 
