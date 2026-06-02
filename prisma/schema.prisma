@@ -107,6 +107,9 @@ model User {
   /// Relation to user's wallets
   wallets Wallet[]
 
+  /// Relation to user's spending limits
+  spendingLimits SpendingLimit[]
+
   @@index([authId])
   @@index([authProvider])
   @@index([deletedAt])
@@ -567,6 +570,44 @@ model WebhookDelivery {
   @@index([nextRetryAt])
   @@index([eventType])
   @@index([createdAt])
+}
+
+/// Spending limit period types
+enum LimitPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// Spending limit for a User (UUID-based)
+model SpendingLimit {
+  id                  String      @id @default(uuid())
+
+  /// Owner reference to User model
+  userId              String
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Maximum amount per single transaction
+  perTransactionLimit Decimal     @db.Decimal(18, 8)
+
+  /// Maximum cumulative amount within the period
+  periodLimit         Decimal     @db.Decimal(18, 8)
+
+  /// Period type for the cumulative limit
+  period              LimitPeriod @default(DAILY)
+
+  /// Asset code this limit applies to (null = all assets)
+  assetCode           String?
+
+  /// Whether this limit is currently active
+  isActive            Boolean     @default(true)
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@unique([userId, period, assetCode])
+  @@index([userId])
+  @@index([isActive])
 }
 
 /// Idempotency record for caching authentication and other operation responses

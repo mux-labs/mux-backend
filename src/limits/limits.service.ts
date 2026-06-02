@@ -1,5 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
+import { UpdateLimitDto } from './dto/update-limit.dto';
 
 @Injectable()
 export class LimitsService {

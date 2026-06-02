@@ -1,6 +1,21 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { NotFoundException } from '@nestjs/common';
 import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { LimitPeriod } from './dto/create-limit.dto';
+
+const mockLimit = {
+  id: 'uuid-limit-1',
+  userId: 'uuid-user-1',
+  perTransactionLimit: 100,
+  periodLimit: 500,
+  period: LimitPeriod.DAILY,
+  assetCode: null,
+  isActive: true,
+  createdAt: new Date(),
+  updatedAt: new Date(),
+};
 
 describe('LimitsController', () => {
   let controller: LimitsController;
@@ -21,6 +36,7 @@ describe('LimitsController', () => {
     }).compile();
 
     controller = module.get<LimitsController>(LimitsController);
+    service = module.get(LimitsService);
   });
 
   it('should be defined', () => {
