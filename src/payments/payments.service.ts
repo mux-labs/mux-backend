@@ -21,11 +21,25 @@ export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
+    private readonly walletsService: WalletsService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
-    const { fromId, toId, amount, currency, description } = createPaymentDto;
+    const { walletId, receiverWalletId, fromId, toId, amount, currency, description } =
+      createPaymentDto;
 
+    // Validate sender wallet exists and is ACTIVE
+    const senderWallet = await this.walletsService.findWalletById(walletId);
+    if (senderWallet.status !== WalletStatus.ACTIVE) {
+      throw new BadRequestException(
+        `Sender wallet is not active (status: ${senderWallet.status})`,
+      );
+    }
+
+    // Validate receiver wallet exists (status not enforced for receiver)
+    await this.walletsService.findWalletById(receiverWalletId);
+
+    // Scope limits check to the wallet owner (legacy userId)
     await this.limitsService.checkLimits(fromId, amount);
 
     return this.prisma.payment.create({
@@ -35,7 +49,7 @@ export class PaymentsService {
         amount,
         currency,
         description,
-        userId: fromId, // Legacy support: default to sender
+        userId: fromId,
         status: 'PENDING',
       },
     });
