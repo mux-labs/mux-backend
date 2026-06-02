@@ -7,6 +7,7 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   BalanceIndexerService,
@@ -24,9 +25,20 @@ export class BalanceIndexerController {
    * Pass assetType query param for a single asset, or omit for all balances.
    */
   @Get('wallet/:walletId')
-  async getWalletBalance(
+  async getWalletBalances(@Param('walletId') walletId: string) {
+    const balances = await this.balanceIndexerService.getAllBalances(walletId);
+    return { walletId, balances };
+  }
+
+  /**
+   * GET /balances/wallet/:walletId/asset
+   * Returns a specific asset balance for a wallet.
+   * Query params: assetType (required), assetCode, assetIssuer
+   */
+  @Get('wallet/:walletId/asset')
+  async getWalletAssetBalance(
     @Param('walletId') walletId: string,
-    @Query('assetType') assetType?: string,
+    @Query('assetType') assetType: string,
     @Query('assetCode') assetCode?: string,
     @Query('assetIssuer') assetIssuer?: string,
   ) {
@@ -40,7 +52,6 @@ export class BalanceIndexerController {
         walletId,
         asset,
       );
-      return balance || { balance: '0', assetType, assetCode, assetIssuer };
     }
 
     const balances = await this.balanceIndexerService.getAllBalances(walletId);
