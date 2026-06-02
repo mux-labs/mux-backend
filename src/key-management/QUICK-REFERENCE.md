@@ -6,6 +6,7 @@
 ```typescript
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
+import { StrKeyHelper } from '../key-management/utils/strkey.helper';
 ```
 
 ### Inject
@@ -264,6 +265,11 @@ const valid = await kms.validateKey(publicKey, encryptedMaterial, KeyType.STELLA
 
 // Get audit log
 const logs = kms.getAuditLog(100);
+
+// StrKey utilities
+const isValid = StrKeyHelper.isValidEd25519PublicKey(publicKey);
+const masked = StrKeyHelper.maskKey(publicKey);
+const keyType = StrKeyHelper.getStrKeyType(value);
 ```
 
 ---

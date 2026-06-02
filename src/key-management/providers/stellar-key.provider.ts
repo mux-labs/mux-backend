@@ -6,8 +6,8 @@ import {
   KeyType,
 } from '../domain/key-types';
 import { EncryptionService } from '../../encryption/encryption.service';
-import * as crypto from 'crypto';
 import { Keypair } from 'stellar-sdk';
+import { StrKeyHelper } from '../utils/strkey.helper';
 
 
 /**
@@ -59,16 +59,20 @@ export class StellarKeyProvider implements IKeyProvider {
       const privateKeyMaterial =
         this.encryptionService.deserializeAndDecrypt(encryptedKeyMaterial);
 
-      // Parse the private key
-      const privateKey = this.parseStellarPrivateKey(privateKeyMaterial);
+      // Validate it's a proper secret seed
+      if (!StrKeyHelper.isValidEd25519SecretSeed(privateKeyMaterial)) {
+        throw new Error('Invalid Ed25519 secret seed format');
+      }
 
       // Sign the data
-      const keypair = Keypair.fromSecret(this.parseStellarPrivateKey(privateKeyMaterial));
+      const keypair = Keypair.fromSecret(privateKeyMaterial);
       const signature = keypair.sign(dataToSign);
 
       const publicKey = keypair.publicKey();
 
-      this.logger.log('Successfully signed data with Stellar key');
+      this.logger.log(
+        `Successfully signed data with Stellar key (${StrKeyHelper.maskKey(publicKey)})`,
+      );
 
       return {
         signature: signature.toString('base64'),
@@ -87,6 +91,12 @@ export class StellarKeyProvider implements IKeyProvider {
     encryptedKeyMaterial: string,
   ): Promise<boolean> {
     try {
+      // Validate public key format first
+      if (!StrKeyHelper.isValidEd25519PublicKey(publicKey)) {
+        this.logger.warn('Invalid Ed25519 public key format');
+        return false;
+      }
+
       // Test data for validation
       const testData = Buffer.from('validation-test-data');
 
@@ -103,31 +113,5 @@ export class StellarKeyProvider implements IKeyProvider {
 
   getProviderName(): string {
     return 'StellarKeyProvider';
-  }
-
-  /**
-   * Formats public key in Stellar format (G... address)
-   * In production, use stellar-sdk's encoding
-   */
-  private formatStellarPublicKey(publicKeyDer: Buffer): string {
-    // Simplified format - in production use stellar-sdk's StrKey.encodeEd25519PublicKey
-    const hash = crypto.createHash('sha256').update(publicKeyDer).digest();
-    return `G${hash.toString('hex').substring(0, 54).toUpperCase()}`;
-  }
-
-  /**
-   * Formats private key in Stellar format (S... secret)
-   * In production, use stellar-sdk's encoding
-   */
-  private formatStellarPrivateKey(privateKeyDer: Buffer): string {
-    // Simplified format - in production use stellar-sdk's StrKey.encodeEd25519SecretSeed
-    return privateKeyDer.toString('hex');
-  }
-
-  /**
-   * Parses Stellar private key back to usable format
-   */
-  private parseStellarPrivateKey(privateKeyMaterial: string): string {
-    return privateKeyMaterial;
   }
 }

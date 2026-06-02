@@ -31,6 +31,23 @@ The Key Management Module provides a secure, centralized service for cryptograph
 
 ## Key Components
 
+### StrKeyHelper
+
+Utility class for encoding and decoding Stellar keys using the StrKey format.
+
+**Methods:**
+- `encodeEd25519PublicKey(buffer)` - Encodes raw public key to G... format
+- `encodeEd25519SecretSeed(buffer)` - Encodes raw secret seed to S... format
+- `decodeEd25519PublicKey(encoded)` - Decodes G... format to raw bytes
+- `decodeEd25519SecretSeed(encoded)` - Decodes S... format to raw bytes
+- `isValidEd25519PublicKey(key)` - Validates public key format
+- `isValidEd25519SecretSeed(seed)` - Validates secret seed format
+- `getStrKeyType(value)` - Identifies key type (publicKey, secretSeed, etc.)
+- `maskKey(key)` - Masks key for safe logging
+- `looksLikeSecretSeed(value)` - Quick secret seed detection
+
+See [utils/README.md](./utils/README.md) for detailed documentation.
+
 ### KeyManagementService
 
 Main service that coordinates all key operations.
