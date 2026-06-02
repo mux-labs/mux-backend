@@ -3,53 +3,44 @@ import {
   Get,
   Post,
   Body,
-  Patch,
   Param,
   Delete,
-  ParseUUIDPipe,
-  UseGuards,
-  ValidationPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { LimitsService } from './limits.service';
-import { CreateLimitDto } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
-import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { IsNumber, IsPositive } from 'class-validator';
 
-@Controller('limits')
-@UseGuards(ApiKeyGuard)
+class SetLimitsDto {
+  @IsNumber()
+  @IsPositive()
+  dailyLimit: number;
+
+  @IsNumber()
+  @IsPositive()
+  perTransactionLimit: number;
+}
+
+@Controller('wallets/:walletId/limits')
 export class LimitsController {
   constructor(private readonly limitsService: LimitsService) {}
 
   @Post()
-  create(@Body(new ValidationPipe({ whitelist: true })) dto: CreateLimitDto) {
-    return this.limitsService.create(dto);
+  setLimits(
+    @Param('walletId') walletId: string,
+    @Body() dto: SetLimitsDto,
+  ) {
+    return this.limitsService.setLimits(walletId, dto.dailyLimit, dto.perTransactionLimit);
   }
 
   @Get()
-  findAll() {
-    return this.limitsService.findAll();
+  getLimits(@Param('walletId') walletId: string) {
+    return this.limitsService.getLimits(walletId);
   }
 
-  @Get('user/:userId')
-  findByUser(@Param('userId', ParseUUIDPipe) userId: string) {
-    return this.limitsService.findByUser(userId);
-  }
-
-  @Get(':id')
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.limitsService.findOne(id);
-  }
-
-  @Patch(':id')
-  update(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Body(new ValidationPipe({ whitelist: true })) dto: UpdateLimitDto,
-  ) {
-    return this.limitsService.update(id, dto);
-  }
-
-  @Delete(':id')
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.limitsService.remove(id);
+  @Delete()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeLimits(@Param('walletId') walletId: string) {
+    return this.limitsService.removeLimits(walletId);
   }
 }
