@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
 import * as crypto from 'crypto';
 
@@ -19,15 +19,20 @@ export interface UpdateWebhookEndpointRequest {
 
 /**
  * Webhook Management Service
+ *
+ * Manages webhook endpoint CRUD:
+ *   POST   /webhooks/endpoints              – register endpoint
+ *   GET    /webhooks/endpoints/project/:id  – list endpoints
+ *   GET    /webhooks/endpoints/:id          – get endpoint
+ *   PUT    /webhooks/endpoints/:id          – update endpoint
+ *   DELETE /webhooks/endpoints/:id          – delete endpoint
+ *   POST   /webhooks/endpoints/:id/rotate-secret
  */
 @Injectable()
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
-  private prisma: PrismaClient;
 
-  constructor() {
-    this.prisma = new PrismaClient({} as any);
-  }
+  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Creates a new webhook endpoint

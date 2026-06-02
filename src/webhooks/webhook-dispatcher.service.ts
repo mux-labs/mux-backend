@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '@nestjs/config';
 import { WebhookSignerService } from './webhook-signer.service';
 import {
@@ -28,7 +28,6 @@ export interface DispatchEventRequest {
 @Injectable()
 export class WebhookDispatcherService {
   private readonly logger = new Logger(WebhookDispatcherService.name);
-  private prisma: PrismaClient;
 
   private readonly maxRetries: number;
   private readonly retryBackoffMs: number;
@@ -36,11 +35,10 @@ export class WebhookDispatcherService {
   private readonly maxConsecutiveFailures: number;
 
   constructor(
+    private readonly prisma: PrismaService,
     private readonly webhookSigner: WebhookSignerService,
     private readonly configService: ConfigService,
   ) {
-    this.prisma = new PrismaClient({} as any);
-
     this.maxRetries = this.configService.get<number>('WEBHOOK_MAX_RETRIES', 5);
     this.retryBackoffMs = this.configService.get<number>(
       'WEBHOOK_RETRY_BACKOFF_MS',
