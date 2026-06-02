@@ -114,6 +114,20 @@ export class WebhookEventEmitterService {
   }
 
   /**
+   * Emits a balance.mismatch event
+   */
+  async emitBalanceMismatch(data: {
+    walletId: string;
+    asset: string;
+    indexedBalance: string;
+    onChainBalance: string;
+    difference: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.BALANCE_MISMATCH, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
    * Emits a balance.updated event
    */
   async emitBalanceUpdated(data: {

@@ -57,11 +57,16 @@ export class WebhookSignerService {
     // Compute expected signature
     const expectedSignature = this.signPayload(payload, secret, timestamp);
 
+    const a = Buffer.from(signature);
+    const b = Buffer.from(expectedSignature);
+
+    // timingSafeEqual requires equal lengths; mismatched length = invalid
+    if (a.length !== b.length) {
+      return false;
+    }
+
     // Constant-time comparison to prevent timing attacks
-    return crypto.timingSafeEqual(
-      Buffer.from(signature),
-      Buffer.from(expectedSignature),
-    );
+    return crypto.timingSafeEqual(a, b);
   }
 
   /**
