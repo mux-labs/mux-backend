@@ -7,6 +7,7 @@ import {
   Param,
   Delete,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
@@ -17,16 +18,20 @@ import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
+@ApiTags('wallets')
+@ApiSecurity('api-key')
 @Controller('wallets')
 @UseGuards(ApiKeyGuard, RateLimitGuard)
 export class WalletsController {
   constructor(private readonly walletsService: WalletsService) {}
 
+  @ApiOperation({ summary: 'Create a new wallet' })
   @Post()
   create(@Body() createWalletDto: CreateWalletDto) {
     return this.walletsService.create(createWalletDto);
   }
 
+  @ApiOperation({ summary: 'List all wallets' })
   @Get()
   findAll() {
     return this.walletsService.findAll();
@@ -43,16 +48,38 @@ export class WalletsController {
     };
   }
 
+  // #185: Expose wallet status endpoint
+  @Get(':id/status')
+  async getWalletStatus(@Param('id') id: string) {
+    return this.walletsService.getWalletStatus(id);
+  }
+
+  // #188: Activate wallet (PROVISIONING -> ACTIVE)
+  @Patch(':id/activate')
+  async activateWallet(@Param('id') id: string) {
+    return this.walletsService.activateWallet(id);
+  }
+
+  // #189: List wallets by userId
+  @Get('user/:userId')
+  async findByUserId(@Param('userId') userId: string) {
+    return this.walletsService.findWalletsByUserId(userId);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.walletsService.findOne(id);
   }
 
+  @ApiOperation({ summary: 'Update a wallet' })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateWalletDto: UpdateWalletDto) {
     return this.walletsService.update(id, updateWalletDto);
   }
 
+  @ApiOperation({ summary: 'Delete a wallet' })
+  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.walletsService.remove(id);

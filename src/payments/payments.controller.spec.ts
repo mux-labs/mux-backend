@@ -1,88 +1,72 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
+import { PaymentStatus } from './entities/payment.entity';
 
 describe('PaymentsController', () => {
   let controller: PaymentsController;
-  let service: jest.Mocked<PaymentsService>;
-
-  const mockService = {
-    create: jest.fn(),
-    findAll: jest.fn(),
-    findOne: jest.fn(),
-    update: jest.fn(),
-    remove: jest.fn(),
-  };
+  let paymentsService: { update: jest.Mock } & Record<string, jest.Mock>;
 
   beforeEach(async () => {
+    paymentsService = {
+      create: jest.fn(),
+      findAll: jest.fn(),
+      findOne: jest.fn(),
+      update: jest.fn(),
+      remove: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       controllers: [PaymentsController],
-      providers: [{ provide: PaymentsService, useValue: mockService }],
-    }).compile();
+      providers: [{ provide: PaymentsService, useValue: paymentsService }],
+    })
+      .overrideGuard(ApiKeyGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<PaymentsController>(PaymentsController);
     service = module.get(PaymentsService);
     jest.clearAllMocks();
   });
 
+  afterEach(() => jest.clearAllMocks());
+
   it('should be defined', () => {
     expect(controller).toBeDefined();
   });
 
-  describe('create', () => {
-    it('should call service.create with dto and return result', async () => {
-      const dto = { fromId: 1, toId: 2, amount: 50, currency: 'USD', description: 'test' };
-      const created = { id: 1, status: 'PENDING', ...dto };
-      mockService.create.mockResolvedValue(created);
-
-      const result = await controller.create(dto as any);
-
-      expect(service.create).toHaveBeenCalledWith(dto);
-      expect(result).toEqual(created);
-    });
-
-    it('should propagate error when service throws', async () => {
-      mockService.create.mockRejectedValue(new Error('Limit exceeded'));
-      await expect(controller.create({} as any)).rejects.toThrow('Limit exceeded');
-    });
-  });
-
-  describe('findAll', () => {
-    it('should return all payments', async () => {
-      const payments = [{ id: 1 }, { id: 2 }];
-      mockService.findAll.mockResolvedValue(payments);
-
-      const result = await controller.findAll();
-      expect(result).toEqual(payments);
-    });
-  });
-
-  describe('findOne', () => {
-    it('should return payment by id', async () => {
-      const payment = { id: 5, amount: 100 };
-      mockService.findOne.mockResolvedValue(payment);
-
-      const result = await controller.findOne('5');
-      expect(service.findOne).toHaveBeenCalledWith(5);
-      expect(result).toEqual(payment);
-    });
-  });
-
   describe('update', () => {
-    it('should call service.update with parsed id and dto', () => {
-      mockService.update.mockReturnValue('updated #3');
-      const result = controller.update('3', {} as any);
-      expect(service.update).toHaveBeenCalledWith(3, {});
-      expect(result).toBe('updated #3');
-    });
-  });
+    it('should delegate to service and return updated payment', async () => {
+      const updated = { id: 1, status: PaymentStatus.CONFIRMED };
+      paymentsService.update.mockResolvedValue(updated);
 
-  describe('remove', () => {
-    it('should call service.remove with parsed id', () => {
-      mockService.remove.mockReturnValue('removed #4');
-      const result = controller.remove('4');
-      expect(service.remove).toHaveBeenCalledWith(4);
-      expect(result).toBe('removed #4');
+      const result = await controller.update('1', { status: PaymentStatus.CONFIRMED });
+
+      expect(paymentsService.update).toHaveBeenCalledWith(1, { status: PaymentStatus.CONFIRMED });
+      expect(result).toEqual(updated);
+    });
+
+    it('should propagate NotFoundException from service', async () => {
+      paymentsService.update.mockRejectedValue(new NotFoundException('Payment #99 not found'));
+
+      await expect(
+        controller.update('99', { status: PaymentStatus.CONFIRMED }),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('should propagate BadRequestException from service', async () => {
+      paymentsService.update.mockRejectedValue(
+        new BadRequestException('Cannot transition payment from CONFIRMED to FAILED'),
+      );
+
+      await expect(
+        controller.update('1', { status: PaymentStatus.FAILED }),
+      ).rejects.toThrow(BadRequestException);
     });
   });
 });

@@ -20,7 +20,8 @@ export class BalanceIndexerController {
   constructor(private readonly balanceIndexerService: BalanceIndexerService) {}
 
   /**
-   * Gets balance for a specific wallet and asset
+   * Gets balance for a specific wallet and asset.
+   * Pass assetType query param for a single asset, or omit for all balances.
    */
   @Get('wallet/:walletId')
   async getWalletBalance(
@@ -30,13 +31,11 @@ export class BalanceIndexerController {
     @Query('assetIssuer') assetIssuer?: string,
   ) {
     if (assetType) {
-      // Get specific asset balance
       const asset: Asset = {
         type: (assetType as AssetType) || AssetType.NATIVE,
         code: assetCode,
         issuer: assetIssuer,
       };
-
       const balance = await this.balanceIndexerService.getBalance(
         walletId,
         asset,
@@ -44,13 +43,13 @@ export class BalanceIndexerController {
       return balance || { balance: '0', assetType, assetCode, assetIssuer };
     }
 
-    // Get all balances
     const balances = await this.balanceIndexerService.getAllBalances(walletId);
     return { walletId, balances };
   }
 
   /**
-   * Syncs balances from Stellar Horizon
+   * Manually triggers a balance sync for a single wallet from Stellar Horizon.
+   * Useful when a wallet owner reports stale balance data.
    */
   @Post('wallet/:walletId/sync')
   @HttpCode(HttpStatus.OK)
@@ -62,12 +61,21 @@ export class BalanceIndexerController {
       walletId,
       forceRefresh: body.forceRefresh || false,
     };
-
     return await this.balanceIndexerService.syncWalletBalances(request);
   }
 
   /**
-   * Reconciles a wallet's balance with on-chain state
+   * Manually triggers a full balance sync across all active wallets.
+   * Admin-only operation. Tracked via BalanceSyncJob records.
+   */
+  @Post('sync-all')
+  @HttpCode(HttpStatus.OK)
+  async syncAllWallets() {
+    return await this.balanceIndexerService.syncAllWallets();
+  }
+
+  /**
+   * Reconciles a wallet's indexed balance with on-chain state.
    */
   @Post('wallet/:walletId/reconcile')
   @HttpCode(HttpStatus.OK)
@@ -81,12 +89,12 @@ export class BalanceIndexerController {
       code: body.assetCode,
       issuer: body.assetIssuer,
     };
-
     return await this.balanceIndexerService.reconcileBalance(walletId, asset);
   }
 
   /**
-   * Reconciles all balances (admin only)
+   * Reconciles all balances for all active wallets.
+   * Admin-only maintenance operation.
    */
   @Post('reconcile-all')
   @HttpCode(HttpStatus.OK)
