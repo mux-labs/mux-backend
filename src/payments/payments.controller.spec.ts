@@ -30,6 +30,8 @@ describe('PaymentsController', () => {
       .compile();
 
     controller = module.get<PaymentsController>(PaymentsController);
+    service = module.get(PaymentsService);
+    jest.clearAllMocks();
   });
 
   afterEach(() => jest.clearAllMocks());

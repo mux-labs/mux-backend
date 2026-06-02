@@ -87,6 +87,10 @@ describe('BalanceIndexerService', () => {
     mockPrisma.balanceSyncJob.update.mockResolvedValue({});
   });
 
+  afterEach(() => {
+    service.onModuleDestroy();
+  });
+
   it('should be defined', () => {
     expect(service).toBeDefined();
   });
