@@ -1,8 +1,20 @@
-import { Injectable } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
 import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
+import { PaymentStatus } from './entities/payment.entity';
+
+// Only PENDING payments can be transitioned; terminal states are immutable.
+const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
+  [PaymentStatus.PENDING]: [PaymentStatus.CONFIRMED, PaymentStatus.FAILED],
+  [PaymentStatus.CONFIRMED]: [],
+  [PaymentStatus.FAILED]: [],
+};
 
 @Injectable()
 export class PaymentsService {
@@ -37,8 +49,25 @@ export class PaymentsService {
     return this.prisma.payment.findUnique({ where: { id } });
   }
 
-  update(id: number, updatePaymentDto: UpdatePaymentDto) {
-    return `This action updates a #${id} payment`;
+  async update(id: number, updatePaymentDto: UpdatePaymentDto) {
+    const payment = await this.prisma.payment.findUnique({ where: { id } });
+    if (!payment) {
+      throw new NotFoundException(`Payment #${id} not found`);
+    }
+
+    if (updatePaymentDto.status !== undefined) {
+      const allowed = ALLOWED_TRANSITIONS[payment.status] ?? [];
+      if (!allowed.includes(updatePaymentDto.status)) {
+        throw new BadRequestException(
+          `Cannot transition payment from ${payment.status} to ${updatePaymentDto.status}`,
+        );
+      }
+    }
+
+    return this.prisma.payment.update({
+      where: { id },
+      data: updatePaymentDto,
+    });
   }
 
   remove(id: number) {
