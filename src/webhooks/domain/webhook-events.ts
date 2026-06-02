@@ -18,6 +18,7 @@ export enum WebhookEventType {
   // Balance events
   BALANCE_UPDATED = 'balance.updated',
   BALANCE_LOW = 'balance.low',
+  BALANCE_MISMATCH = 'balance.mismatch',
 
   // User events
   USER_CREATED = 'user.created',

@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
 import { EncryptionService } from '../encryption/encryption.service';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -29,12 +30,13 @@ export interface SignRequest {
   publicKey: string; // For audit trail
 }
 
-export interface RotateKeyRequest {
-  keyId: string;
-  encryptedKeyMaterial: string;
-  keyType: KeyType;
-  reason?: string; // Optional reason for rotation
-  metadata?: Record<string, any>;
+export interface RotateKeyResult {
+  /** The newly created successor wallet ID */
+  successorWalletId: string;
+  /** The new wallet's public key */
+  successorPublicKey: string;
+  /** The predecessor wallet ID (now marked ROTATING with successorId set) */
+  predecessorWalletId: string;
 }
 
 /**
@@ -63,7 +65,7 @@ export class KeyManagementService {
   constructor(
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
-    private readonly auditService: KeyRotationAuditService,
+    private readonly prisma: PrismaService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -244,94 +246,92 @@ export class KeyManagementService {
   }
 
   /**
-   * Rotates a key by generating a new keypair
-   * 
-   * This creates a completely new key and marks the old one as rotated.
-   * The rotation is audited with full context including the reason.
-   * 
-   * IMPORTANT: This generates a NEW keypair, not just re-encrypting the old one.
-   * For re-encryption of the same key, use reEncryptKey().
+   * Rotates the key for a wallet by creating a successor wallet and linking it.
+   *
+   * Steps:
+   * 1. Verify the predecessor wallet exists and is ACTIVE or ROTATING.
+   * 2. Generate a new keypair and encrypt it.
+   * 3. Create the successor wallet record (ACTIVE) with rotatedFromId set.
+   * 4. Set successorId on the predecessor and transition it to ROTATING.
+   *
+   * All DB writes are wrapped in a transaction to prevent partial state.
    */
-  async rotateKey(request: RotateKeyRequest): Promise<{
-    newKey: EncryptedKeyMaterial;
-    previousKeyId: string;
-  }> {
-    const startTime = Date.now();
+  async rotateKey(predecessorWalletId: string): Promise<RotateKeyResult> {
+    const predecessor = await this.prisma.wallet.findUnique({
+      where: { id: predecessorWalletId },
+    });
 
-    try {
-      // Validate the old key exists and is valid
-      const provider = this.getProvider(request.keyType);
-      const oldKeyValid = await provider.validateKeyPair(
-        request.keyId,
-        request.encryptedKeyMaterial,
+    if (!predecessor) {
+      throw new NotFoundException(
+        `Wallet ${predecessorWalletId} not found`,
       );
-
-      if (!oldKeyValid) {
-        throw new Error('Invalid key material provided for rotation');
-      }
-
-      // Generate new keypair
-      const newKeyPair = await provider.generateKeyPair(request.keyType);
-
-      // Encrypt immediately
-      const encryptedData = this.encryptionService.encryptAndSerialize(
-        newKeyPair.privateKeyMaterial,
-      );
-
-      const newKeyMaterial: EncryptedKeyMaterial = {
-        encryptedData,
-        encryptionVersion: 1,
-        keyType: request.keyType,
-        publicKey: newKeyPair.publicKey,
-      };
-
-      // Audit the rotation with full context
-      this.auditKeyOperation({
-        operation: 'ROTATE',
-        keyId: request.keyId,
-        publicKey: newKeyPair.publicKey,
-        timestamp: new Date(),
-        success: true,
-        metadata: {
-          ...request.metadata,
-          reason: request.reason,
-          previousKeyId: request.keyId,
-          newPublicKey: newKeyPair.publicKey,
-          keyType: request.keyType,
-        },
-      });
-
-      const duration = Date.now() - startTime;
-      this.logger.log(
-        `Rotated key ${request.keyId.substring(0, 12)}... in ${duration}ms ` +
-          `(reason: ${request.reason || 'not specified'})`,
-      );
-
-      return {
-        newKey: newKeyMaterial,
-        previousKeyId: request.keyId,
-      };
-    } catch (error) {
-      // Audit the failed rotation
-      this.auditKeyOperation({
-        operation: 'ROTATE',
-        keyId: request.keyId,
-        publicKey: 'failed',
-        timestamp: new Date(),
-        success: false,
-        errorMessage: error.message,
-        metadata: {
-          reason: request.reason,
-          keyType: request.keyType,
-        },
-      });
-
-      this.logger.error(
-        `Key rotation failed for ${request.keyId}:`,
-        error,
-      );
-      throw new Error('Key rotation failed');
     }
+
+    if (!['ACTIVE', 'ROTATING'].includes(predecessor.status)) {
+      throw new Error(
+        `Cannot rotate wallet in status: ${predecessor.status}`,
+      );
+    }
+
+    if (predecessor.successorId) {
+      throw new Error(
+        `Wallet ${predecessorWalletId} already has a successor: ${predecessor.successorId}`,
+      );
+    }
+
+    // Generate new keypair
+    const keyMaterial = await this.generateKey({
+      keyType: KeyType.STELLAR_ED25519,
+      metadata: { rotatedFromId: predecessorWalletId },
+    });
+
+    const [successor] = await this.prisma.$transaction(async (tx) => {
+      // Create successor wallet
+      const newWallet = await tx.wallet.create({
+        data: {
+          userId: predecessor.userId,
+          publicKey: keyMaterial.publicKey,
+          encryptedSecret: keyMaterial.encryptedData,
+          encryptionVersion: keyMaterial.encryptionVersion,
+          secretVersion: predecessor.secretVersion + 1,
+          network: predecessor.network,
+          status: 'ACTIVE',
+          rotatedFromId: predecessorWalletId,
+        },
+      });
+
+      // Link successor on predecessor and mark it ROTATING
+      await tx.wallet.update({
+        where: { id: predecessorWalletId },
+        data: {
+          successorId: newWallet.id,
+          status: 'ROTATING',
+          statusReason: 'Key rotation initiated',
+          statusChangedAt: new Date(),
+        },
+      });
+
+      return [newWallet];
+    });
+
+    this.auditKeyOperation({
+      operation: 'ROTATE',
+      keyId: predecessorWalletId,
+      publicKey: keyMaterial.publicKey,
+      timestamp: new Date(),
+      success: true,
+      metadata: { successorWalletId: successor.id },
+    });
+
+    this.logger.log(
+      `Rotated key for wallet ${predecessorWalletId} -> successor ${successor.id}`,
+    );
+
+    return {
+      successorWalletId: successor.id,
+      successorPublicKey: successor.publicKey,
+      predecessorWalletId,
+    };
   }
 
   /**
