@@ -41,6 +41,8 @@ Main service that coordinates all key operations.
 - `validateKey(...)` - Validates encrypted key material
 - `reEncryptKey(...)` - Re-encrypts keys (for rotation or version upgrade)
 - `getAuditLog(limit)` - Returns audit trail of key operations
+- `getStatistics(query)` - Returns key usage statistics
+- `getDetailedStatistics(query)` - Returns detailed statistics with metrics and time series
 
 ### IKeyProvider Interface
 

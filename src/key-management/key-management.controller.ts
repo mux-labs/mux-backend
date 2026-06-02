@@ -13,6 +13,7 @@ import {
   SignRequest,
 } from './key-management.service';
 import { KeyType } from './domain/key-types';
+import { KeyStatisticsQuery } from './domain/key-statistics';
 
 /**
  * Internal controller for key management operations
@@ -87,5 +88,68 @@ export class KeyManagementController {
     const logs = this.keyManagementService.getAuditLog(auditLimit);
 
     return { logs };
+  }
+
+  /**
+   * Gets key management statistics
+   * 
+   * Query parameters:
+   * - startDate: ISO date string (optional)
+   * - endDate: ISO date string (optional)
+   * - operation: Filter by operation type (optional)
+   * 
+   * Example: GET /internal/key-management/statistics?startDate=2024-01-01&endDate=2024-12-31
+   */
+  @Get('statistics')
+  async getStatistics(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('operation') operation?: string,
+  ) {
+    const query: KeyStatisticsQuery = {
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+      operation,
+    };
+
+    const statistics = this.keyManagementService.getStatistics(query);
+
+    return {
+      success: true,
+      data: statistics,
+    };
+  }
+
+  /**
+   * Gets detailed key management statistics with metrics and time series
+   * 
+   * Query parameters:
+   * - startDate: ISO date string (optional)
+   * - endDate: ISO date string (optional)
+   * - operation: Filter by operation type (optional)
+   * - includeTimeSeries: Include hourly time series data (optional, default: false)
+   * 
+   * Example: GET /internal/key-management/statistics/detailed?includeTimeSeries=true
+   */
+  @Get('statistics/detailed')
+  async getDetailedStatistics(
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @Query('operation') operation?: string,
+    @Query('includeTimeSeries') includeTimeSeries?: string,
+  ) {
+    const query: KeyStatisticsQuery = {
+      startDate: startDate ? new Date(startDate) : undefined,
+      endDate: endDate ? new Date(endDate) : undefined,
+      operation,
+      includeTimeSeries: includeTimeSeries === 'true',
+    };
+
+    const statistics = this.keyManagementService.getDetailedStatistics(query);
+
+    return {
+      success: true,
+      data: statistics,
+    };
   }
 }
