@@ -1,28 +1,46 @@
-import { Controller, Get, Post, Body, Patch, Param } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Post,
+  Body,
+  Param,
+  Delete,
+  HttpCode,
+  HttpStatus,
+} from '@nestjs/common';
 import { LimitsService } from './limits.service';
-import { CreateLimitDto } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
+import { IsNumber, IsPositive } from 'class-validator';
 
-@Controller('limits')
+class SetLimitsDto {
+  @IsNumber()
+  @IsPositive()
+  dailyLimit: number;
+
+  @IsNumber()
+  @IsPositive()
+  perTransactionLimit: number;
+}
+
+@Controller('wallets/:walletId/limits')
 export class LimitsController {
   constructor(private readonly limitsService: LimitsService) {}
 
-  @Post(':userId')
-  setLimits(@Param('userId') userId: string, @Body() dto: CreateLimitDto) {
-    return this.limitsService.setLimits(+userId, dto.dailyLimit, dto.perTransactionLimit);
+  @Post()
+  setLimits(
+    @Param('walletId') walletId: string,
+    @Body() dto: SetLimitsDto,
+  ) {
+    return this.limitsService.setLimits(walletId, dto.dailyLimit, dto.perTransactionLimit);
   }
 
-  @Get(':userId')
-  getLimits(@Param('userId') userId: string) {
-    return this.limitsService.getLimits(+userId);
+  @Get()
+  getLimits(@Param('walletId') walletId: string) {
+    return this.limitsService.getLimits(walletId);
   }
 
-  @Patch(':userId')
-  updateLimits(@Param('userId') userId: string, @Body() dto: UpdateLimitDto) {
-    return this.limitsService.setLimits(
-      +userId,
-      dto.dailyLimit!,
-      dto.perTransactionLimit!,
-    );
+  @Delete()
+  @HttpCode(HttpStatus.NO_CONTENT)
+  removeLimits(@Param('walletId') walletId: string) {
+    return this.limitsService.removeLimits(walletId);
   }
 }

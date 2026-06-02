@@ -8,8 +8,13 @@ export interface EncryptionResult {
   tag: string;
 }
 
-export interface DecryptionError extends Error {
+export class DecryptionError extends Error {
   code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA';
+  constructor(message: string, code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA') {
+    super(message);
+    this.name = 'DecryptionError';
+    this.code = code;
+  }
 }
 
 @Injectable()
@@ -90,22 +95,17 @@ export class EncryptionService {
 
       return decrypted;
     } catch (error) {
-      const decryptionError: DecryptionError = new Error(
-        'Decryption failed',
-      ) as DecryptionError;
-
+      let code: DecryptionError['code'];
       if (error.message.includes('bad decrypt')) {
-        decryptionError.code = 'DECRYPTION_FAILED';
+        code = 'DECRYPTION_FAILED';
       } else if (error.message.includes('wrong key')) {
-        decryptionError.code = 'INVALID_KEY';
+        code = 'INVALID_KEY';
       } else {
-        decryptionError.code = 'INVALID_DATA';
+        code = 'INVALID_DATA';
       }
 
-      this.logger.error('Decryption failed:', {
-        error: error.message,
-        code: decryptionError.code,
-      });
+      const decryptionError = new DecryptionError('Decryption failed', code);
+      this.logger.error('Decryption failed:', { error: error.message, code });
       throw decryptionError;
     }
   }
