@@ -55,7 +55,7 @@ export class StellarKeyProvider implements IKeyProvider {
     dataToSign: Buffer,
   ): Promise<SignatureResult> {
     try {
-      // Decrypt the private key material
+      // Decrypt the private key material (may throw DecryptionError)
       const privateKeyMaterial =
         this.encryptionService.deserializeAndDecrypt(encryptedKeyMaterial);
 
@@ -81,6 +81,16 @@ export class StellarKeyProvider implements IKeyProvider {
         timestamp: new Date(),
       };
     } catch (error) {
+      // Propagate DecryptionError directly to preserve error context
+      if (error instanceof DecryptionError) {
+        this.logger.error('Key decryption failed during signing:', {
+          code: error.code,
+          message: error.message,
+        });
+        throw error;
+      }
+
+      // Handle other signing errors (e.g., invalid key format, stellar-sdk failures)
       this.logger.error('Signing operation failed:', error);
       throw new Error('Signing failed');
     }
@@ -106,6 +116,11 @@ export class StellarKeyProvider implements IKeyProvider {
       // Verify the signature matches the public key
       return signatureResult.publicKey === publicKey;
     } catch (error) {
+      // Propagate DecryptionError so callers can distinguish corrupt key material
+      if (error instanceof DecryptionError) {
+        throw error;
+      }
+
       this.logger.error('Keypair validation failed:', error);
       return false;
     }

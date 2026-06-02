@@ -171,16 +171,14 @@ export class WalletsService {
       );
       return privateKey;
     } catch (error) {
-      if (
-        error &&
-        error.code &&
-        ['DECRYPTION_FAILED', 'INVALID_KEY', 'INVALID_DATA'].includes(
+      if (error instanceof DecryptionError) {
+        this.logger.error(`Decryption failed for wallet ${walletId}:`, {
+          code: error.code,
+        });
+        throw new KeyDecryptionException(
+          walletId,
           error.code,
-        )
-      ) {
-        this.logger.error(`Decryption failed for wallet ${walletId}:`, error);
-        throw new Error(
-          'Wallet key decryption failed - possible data corruption',
+          `Wallet key decryption failed — the key material may be corrupted or the encryption key may have changed`,
         );
       }
       this.logger.error(

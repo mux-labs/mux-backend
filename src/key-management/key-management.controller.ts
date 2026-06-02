@@ -22,7 +22,9 @@ import { KeyOperation } from '@prisma/client';
 /**
  * Internal controller for key management operations
  *
- * WARNING: This should be internal-only and NOT exposed to public APIs
+ * WARNING: This should be internal-only and NOT exposed to public APIs.
+ * All endpoints should be protected by network policy or a separate internal
+ * API key guard before reaching production.
  */
 @Controller('internal/key-management')
 export class KeyManagementController {
@@ -50,10 +52,14 @@ export class KeyManagementController {
 
   /**
    * Signs data without exposing private key (internal use only)
+   *
+   * Returns 422 if the encrypted key material cannot be decrypted.
    */
   @Post('sign')
   @HttpCode(HttpStatus.OK)
   async sign(@Body() request: SignRequest) {
+    // KeyDecryptionException (422) propagates automatically through
+    // NestJS HttpException handling — no try/catch needed here.
     const signature = await this.keyManagementService.sign(request);
 
     return {
@@ -66,6 +72,8 @@ export class KeyManagementController {
 
   /**
    * Validates a keypair (internal use only)
+   *
+   * Returns 422 if the encrypted key material cannot be decrypted.
    */
   @Post('validate')
   @HttpCode(HttpStatus.OK)
