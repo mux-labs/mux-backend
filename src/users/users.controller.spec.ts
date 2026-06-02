@@ -1,8 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import { IdempotentUserService } from './idempotent-user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
+
+// Mock the generated Prisma client (not generated in test env)
+jest.mock('../generated/prisma/client', () => ({ PrismaClient: jest.fn() }), { virtual: true });
+jest.mock('../prisma/prisma.service', () => ({ PrismaService: jest.fn() }), { virtual: true });
 
 const mockUsersService = {
   create: jest.fn(),
@@ -12,6 +17,10 @@ const mockUsersService = {
   remove: jest.fn(),
 };
 
+const mockIdempotentUserService = {
+  findOrCreateUser: jest.fn(),
+};
+
 describe('UsersController', () => {
   let controller: UsersController;
 
@@ -19,10 +28,8 @@ describe('UsersController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
       providers: [
-        {
-          provide: UsersService,
-          useValue: mockUsersService,
-        },
+        { provide: UsersService, useValue: mockUsersService },
+        { provide: IdempotentUserService, useValue: mockIdempotentUserService },
       ],
     }).compile();
 
@@ -51,6 +58,42 @@ describe('UsersController', () => {
       authId: dto.authId,
     });
     expect(mockUsersService.create).toHaveBeenCalledWith(dto);
+  });
+
+  describe('findOrCreate', () => {
+    it('should return existing user with isNewUser=false when user already exists', async () => {
+      const request = { authId: 'auth-123', email: 'user@example.com' };
+      const serviceResult = {
+        user: { id: 'user-123', authId: 'auth-123' },
+        isNewUser: false,
+      };
+
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue(serviceResult);
+
+      await expect(controller.findOrCreate(request)).resolves.toEqual(serviceResult);
+      expect(mockIdempotentUserService.findOrCreateUser).toHaveBeenCalledWith(request);
+    });
+
+    it('should return new user with isNewUser=true when user does not exist', async () => {
+      const request = { authId: 'new-auth', email: 'new@example.com' };
+      const serviceResult = {
+        user: { id: 'new-user-123', authId: 'new-auth' },
+        isNewUser: true,
+      };
+
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue(serviceResult);
+
+      await expect(controller.findOrCreate(request)).resolves.toEqual(serviceResult);
+    });
+
+    it('should propagate errors from IdempotentUserService', async () => {
+      const request = { authId: 'auth-bad' };
+      mockIdempotentUserService.findOrCreateUser.mockRejectedValue(
+        new Error('User creation failed'),
+      );
+
+      await expect(controller.findOrCreate(request)).rejects.toThrow('User creation failed');
+    });
   });
 
   it('should return paginated users', async () => {

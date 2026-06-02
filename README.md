@@ -205,6 +205,10 @@ pnpm prisma:migrate:prod
 
 # Seed the database with demo users and wallets (dev only)
 pnpm prisma:seed
+
+This seed also creates an onboarding developer account and a starter project for developer flows.
+
+A new developer API route is available: `GET /developers/:id/projects` returns the projects belonging to a developer.
 ```
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
@@ -214,10 +218,28 @@ pnpm prisma:seed
 ## Security Model (MVP)
 
 * Private keys are never exposed to clients
-* Keys are encrypted at rest
+* Keys are encrypted at rest using AES-256-GCM
 * All blockchain transactions are signed server-side
 * Fees are sponsored by the platform
 * Auth provider is the source of truth for identity
+* **Centralized key management** via KeyManagementService for consistent security
+
+### Key Management Architecture
+
+Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key operations:
+
+**Key Features:**
+- ✅ Single source of truth for key generation
+- ✅ Provider abstraction (Stellar, future HSM/KMS support)
+- ✅ Automatic audit logging of all key operations
+- ✅ Private keys NEVER exposed outside the service boundary
+- ✅ Immediate encryption after generation
+- ✅ Graceful handling of invalid/disconnected states
+
+**Documentation:**
+- [Key Management Module README](src/key-management/README.md)
+- [Key Management Consolidation Guide](docs/key-management-consolidation.md)
+- [Migration Guide](docs/MIGRATION-KEY-MANAGEMENT.md)
 
 > ⚠️ This MVP uses a custodial model. Progressive decentralization is planned.
 
@@ -369,18 +391,119 @@ The middleware is registered in `src/main.ts` and runs for all incoming requests
 
 ---
 
+## Balance Indexer
+
+The balance indexer provides fast, cached balance reads without hitting Stellar Horizon on every request.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                  BalanceIndexerService                  │
+│                                                         │
+│  getBalance()          → cached read from DB            │
+│  getAllBalances()       → cached reads from DB           │
+│  syncWalletBalances()  → fetch Horizon → upsert DB      │
+│  reconcileBalance()    → compare DB vs Horizon          │
+│  reconcileAllBalances()→ full sweep across active wallets│
+│  syncAllWallets()      → manual full sync trigger       │
+└──────────┬──────────────────────┬───────────────────────┘
+           │                      │
+  ┌────────▼────────┐   ┌────────▼──────────────┐
+  │  PrismaService  │   │  StellarHorizonService │
+  │  (PostgreSQL)   │   │  (Horizon REST API)    │
+  └─────────────────┘   └────────────────────────┘
+```
+
+### Stale Detection
+
+Balances older than `BALANCE_STALE_THRESHOLD_MS` (default 5 minutes) trigger an async background refresh on the next read. The stale value is still returned immediately so callers are never blocked.
+
+### Mismatch Handling
+
+On reconciliation, if the indexed balance differs from the on-chain balance, the indexed value is corrected and `mismatchDetectedAt` / `reconciliationAttempts` are updated for observability.
+
+### Sync Job Tracking
+
+All sync and reconciliation operations create a `BalanceSyncJob` record for audit and observability.
+
+### API Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/balances/wallet/:walletId` | Get cached balances (add `?assetType=NATIVE` for single asset) |
+| `POST` | `/balances/wallet/:walletId/sync` | Manually trigger sync for a single wallet |
+| `POST` | `/balances/sync-all` | Manually trigger full sync for all active wallets (admin) |
+| `POST` | `/balances/wallet/:walletId/reconcile` | Reconcile wallet balance with on-chain state |
+| `POST` | `/balances/reconcile-all` | Reconcile all balances (admin) |
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BALANCE_STALE_THRESHOLD_MS` | `300000` | Age (ms) after which a balance is considered stale |
+| `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon API URL |
+
+---
+
+## Webhooks
+
+Webhooks allow your application to receive real-time notifications when events occur in Mux Protocol.
+
+### Endpoint CRUD
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/webhooks/endpoints` | Register a new webhook endpoint |
+| `GET` | `/webhooks/endpoints/project/:projectId` | List endpoints for a project |
+| `GET` | `/webhooks/endpoints/:id` | Get a specific endpoint |
+| `PUT` | `/webhooks/endpoints/:id` | Update an endpoint |
+| `DELETE` | `/webhooks/endpoints/:id` | Delete an endpoint |
+| `POST` | `/webhooks/endpoints/:id/rotate-secret` | Rotate signing secret |
+| `GET` | `/webhooks/endpoints/:id/deliveries` | Get delivery history |
+| `POST` | `/webhooks/process-deliveries` | Manually process pending deliveries (admin) |
+
+### Payload Signing
+
+All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
+
+### Supported Events
+
+`wallet.created`, `wallet.activated`, `wallet.suspended`, `wallet.rotated`, `transaction.created`, `transaction.pending`, `transaction.confirmed`, `transaction.failed`, `balance.updated`, `balance.low`, `user.created`, `user.updated`
+
+---
+
 ## Wallets API
 
 - `POST /wallets` - create wallet
-- `GET /wallets` - list wallets
-- `GET /wallets/:id` - get wallet
+- `GET /wallets` - list all wallets
+- `GET /wallets/user/:userId` - list wallets by userId (#189)
+- `GET /wallets/:id` - get wallet by id
+- `GET /wallets/:id/status` - get wallet status (#185)
 - `PATCH /wallets/:id` - update wallet status
+- `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
+
+### Orchestration Endpoints
+
+- `POST /wallets/orchestration/create` - creates wallet with PROVISIONING -> ACTIVE flow, funds testnet account on TESTNET (#187, #188)
+- `GET /wallets/orchestration/user/:userId/:network` - get wallet by user and network
+- `GET /wallets/orchestration/validate/:userId/:network` - validate user can create wallet
 
 Protected endpoint:
 
 - `GET /wallets/protected` - requires a valid API key. Supply API key in `Authorization` header as `ApiKey <key>` or `Bearer <key>`.
 - When a valid key is provided, the route returns a JSON object with `message`, `developer`, and `project` fields.
+
+### Wallet Creation Flow (#187, #188)
+
+When a wallet is created via the orchestration endpoint:
+
+1. Wallet is created with `PROVISIONING` status
+2. If the network is `TESTNET`, the account is automatically funded via Stellar Friendbot (non-blocking on failure)
+3. Wallet status transitions to `ACTIVE`
+
+The individual `GET /wallets/:id/status` endpoint provides a lightweight status check without exposing encrypted secrets.
 
 Authentication and error behavior
 

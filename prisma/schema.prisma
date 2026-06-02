@@ -56,6 +56,19 @@ model UserLimit {
   user                LegacyUser @relation(fields: [userId], references: [id])
 }
 
+/// Spending limits scoped to a Wallet (replaces legacy UserLimit)
+model WalletLimit {
+  id                  String  @id @default(uuid())
+  walletId            String  @unique
+  wallet              Wallet  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  dailyLimit          Float
+  perTransactionLimit Float
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([walletId])
+}
+
 /// Mainnet/testnet separation for all wallets.
 enum WalletNetwork {
   MAINNET
@@ -93,6 +106,9 @@ model User {
 
   /// Relation to user's wallets
   wallets Wallet[]
+
+  /// Relation to user's spending limits
+  spendingLimits SpendingLimit[]
 
   @@index([authId])
   @@index([authProvider])
@@ -157,6 +173,11 @@ model Wallet {
   rotatedFrom   Wallet?  @relation("WalletRotation", fields: [rotatedFromId], references: [id])
   rotatedTo     Wallet[] @relation("WalletRotation")
 
+  /// Successor linking: direct reference to the wallet that replaced this one during rotation.
+  successorId String? @unique
+  successor   Wallet?  @relation("WalletSuccessor", fields: [successorId], references: [id])
+  predecessor Wallet[] @relation("WalletSuccessor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -164,6 +185,9 @@ model Wallet {
   recoveryRequests RecoveryRequest[]
   balances         WalletBalance[]
   
+  /// Spending limits for this wallet
+  walletLimit          WalletLimit?
+
   /// Transactions sent from this wallet
   sentTransactions     Transaction[] @relation("SentTransactions")
   
@@ -174,6 +198,7 @@ model Wallet {
   @@index([userId, network])
   @@index([status, network])
   @@index([rotatedFromId])
+  @@index([successorId])
 }
 
 /// Recovery request lifecycle states
@@ -552,6 +577,44 @@ model WebhookDelivery {
   @@index([createdAt])
 }
 
+/// Spending limit period types
+enum LimitPeriod {
+  DAILY
+  WEEKLY
+  MONTHLY
+}
+
+/// Spending limit for a User (UUID-based)
+model SpendingLimit {
+  id                  String      @id @default(uuid())
+
+  /// Owner reference to User model
+  userId              String
+  user                User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Maximum amount per single transaction
+  perTransactionLimit Decimal     @db.Decimal(18, 8)
+
+  /// Maximum cumulative amount within the period
+  periodLimit         Decimal     @db.Decimal(18, 8)
+
+  /// Period type for the cumulative limit
+  period              LimitPeriod @default(DAILY)
+
+  /// Asset code this limit applies to (null = all assets)
+  assetCode           String?
+
+  /// Whether this limit is currently active
+  isActive            Boolean     @default(true)
+
+  createdAt           DateTime    @default(now())
+  updatedAt           DateTime    @updatedAt
+
+  @@unique([userId, period, assetCode])
+  @@index([userId])
+  @@index([isActive])
+}
+
 /// Idempotency record for caching authentication and other operation responses
 model IdempotencyRecord {
   id String @id @default(uuid())
@@ -579,6 +642,71 @@ model IdempotencyRecord {
 
   @@index([expiresAt])
   @@index([key, endpoint])
+}
+
+/// Key operation types for audit logging
+enum KeyOperation {
+  GENERATE
+  SIGN
+  ROTATE
+  REVOKE
+  ACCESS
+}
+
+/// Persistent audit log for key management operations
+/// Used for security monitoring, compliance, and forensics
+model KeyRotationAuditLog {
+  id String @id @default(uuid())
+
+  /// Operation type
+  operation KeyOperation
+
+  /// Key identifier (wallet ID, key ID, or "new" for generation)
+  keyId String
+
+  /// Public key involved in the operation (never store private keys)
+  publicKey String
+
+  /// Operation timestamp
+  timestamp DateTime @default(now())
+
+  /// Operation result
+  success Boolean @default(true)
+
+  /// Error message if operation failed
+  errorMessage String?
+
+  /// Additional context (JSON for flexibility)
+  /// May include: keyType, userId, rotationReason, previousKeyId, etc.
+  metadata Json?
+
+  /// IP address of request origin (if applicable)
+  ipAddress String?
+
+  /// User agent of request (if applicable)
+  userAgent String?
+
+  /// Key type involved (e.g., STELLAR_ED25519)
+  keyType String?
+
+  /// For ROTATE operations: reference to previous key
+  previousKeyId String?
+
+  /// For ROTATE operations: reference to new key
+  newKeyId String?
+
+  /// Retention metadata
+  /// TTL - when this record can be archived/deleted (compliance requirement)
+  expiresAt DateTime?
+
+  @@index([operation])
+  @@index([keyId])
+  @@index([publicKey])
+  @@index([timestamp])
+  @@index([success])
+  @@index([operation, timestamp])
+  @@index([keyId, operation])
+  @@index([expiresAt])
 }
 
 /// Transaction lifecycle states
@@ -628,6 +756,9 @@ model Transaction {
   
   /// Metadata for future webhooks and analytics
   metadata Json? // Flexible JSON for additional transaction context
+
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
   
   /// Operational metadata
   createdAt DateTime @default(now())
@@ -641,4 +772,5 @@ model Transaction {
   @@index([stellarHash])
   @@index([stellarLedger])
   @@index([createdAt])
+  @@index([idempotencyKey])
 }

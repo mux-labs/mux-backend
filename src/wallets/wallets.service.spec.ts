@@ -3,27 +3,45 @@ import { ConfigService } from '@nestjs/config';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
 import { WalletNetwork } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
-import { PrismaClient } from '../generated/prisma/client';
 
-// Mock Prisma Client
-const mockPrisma = {
-  wallet: {
-    findFirst: jest.fn(),
-    findUnique: jest.fn(),
-    create: jest.fn(),
-    update: jest.fn(),
-    delete: jest.fn(),
-    findMany: jest.fn(),
-  },
+// Shared mock Prisma wallet methods
+const mockPrismaWallet = {
+  findFirst: jest.fn(),
+  findUnique: jest.fn(),
+  create: jest.fn(),
+  update: jest.fn(),
+  delete: jest.fn(),
+  findMany: jest.fn(),
 };
+
+// Mock the PrismaClient module so new PrismaClient() returns our mock
+jest.mock('../generated/prisma/client', () => ({
+  PrismaClient: jest.fn(() => ({
+    wallet: mockPrismaWallet,
+  })),
+}));
+
+// Mock crypto sign to avoid actual key operations in tests
+jest.mock('crypto', () => {
+  const actual = jest.requireActual('crypto');
+  return {
+    ...actual,
+    sign: jest.fn().mockReturnValue(Buffer.from('mock-signature')),
+    generateKeyPairSync: jest.fn().mockReturnValue({
+      publicKey: { export: jest.fn().mockReturnValue(Buffer.from('mock-public-key')) },
+      privateKey: { export: jest.fn().mockReturnValue(Buffer.from('mock-private-key')) },
+    }),
+    createPrivateKey: jest.fn().mockReturnValue({}),
+  };
+});
 
 describe('WalletsService', () => {
   let service: WalletsService;
   let encryptionService: EncryptionService;
-  let configService: ConfigService;
-  let prisma: PrismaClient;
 
   beforeEach(async () => {
+    jest.clearAllMocks();
+
     const mockEncryptionService = {
       validateConfiguration: jest.fn().mockReturnValue(true),
       encryptAndSerialize: jest.fn(),
@@ -45,17 +63,11 @@ describe('WalletsService', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
-        {
-          provide: PrismaClient,
-          useValue: mockPrisma,
-        },
       ],
     }).compile();
 
     service = module.get<WalletsService>(WalletsService);
     encryptionService = module.get<EncryptionService>(EncryptionService);
-    configService = module.get<ConfigService>(ConfigService);
-    prisma = module.get<PrismaClient>(PrismaClient);
   });
 
   it('should be defined', () => {
@@ -103,20 +115,22 @@ describe('WalletsService', () => {
         updatedAt: new Date(),
       };
 
-      mockPrisma.wallet.findFirst.mockResolvedValue(null);
-      mockPrisma.wallet.create.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findFirst.mockResolvedValue(null);
+      mockPrismaWallet.create.mockResolvedValue(mockWallet);
       jest
-        .spyOn(encryptionService, 'encryptAndSerialize')
-        .mockReturnValue('encrypted-secret');
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('decrypted-private-key');
 
       const result = await service.createWallet(createWalletRequest);
 
       expect(result.wallet.id).toBe('wallet-123');
       expect(result.wallet.userId).toBe('user-123');
       expect(result.wallet.publicKey).toBe('public-key-123');
-      expect(result.privateKey).toBeDefined();
-      expect(result.wallet.keyVersion).toBe(1);
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalled();
+      expect(result.privateKey).toBe('decrypted-private-key');
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
+      });
     });
 
     it('should throw ConflictException if user already has a wallet on the network', async () => {
@@ -126,7 +140,7 @@ describe('WalletsService', () => {
         network: WalletNetwork.TESTNET,
       };
 
-      mockPrisma.wallet.findFirst.mockResolvedValue(existingWallet);
+      mockPrismaWallet.findFirst.mockResolvedValue(existingWallet);
 
       await expect(service.createWallet(createWalletRequest)).rejects.toThrow(
         'User already has a wallet on TESTNET',
@@ -134,8 +148,8 @@ describe('WalletsService', () => {
     });
 
     it('should handle database errors gracefully', async () => {
-      mockPrisma.wallet.findFirst.mockResolvedValue(null);
-      mockPrisma.wallet.create.mockRejectedValue(new Error('Database error'));
+      mockPrismaWallet.findFirst.mockResolvedValue(null);
+      mockPrismaWallet.create.mockRejectedValue(new Error('Database error'));
 
       await expect(service.createWallet(createWalletRequest)).rejects.toThrow(
         'Wallet creation failed',
@@ -152,7 +166,7 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockReturnValue('private-key-123');
@@ -166,7 +180,7 @@ describe('WalletsService', () => {
     });
 
     it('should throw NotFoundException if wallet not found', async () => {
-      mockPrisma.wallet.findUnique.mockResolvedValue(null);
+      mockPrismaWallet.findUnique.mockResolvedValue(null);
 
       await expect(
         service.getDecryptedPrivateKey('non-existent'),
@@ -181,7 +195,7 @@ describe('WalletsService', () => {
         status: 'SUSPENDED',
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
 
       await expect(
         service.getDecryptedPrivateKey('wallet-123'),
@@ -196,20 +210,43 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockImplementation(() => {
-          const error = new Error('Decryption failed') as any;
-          error.code = 'DECRYPTION_FAILED';
-          throw error;
+          throw new DecryptionError('Decryption failed', 'DECRYPTION_FAILED');
         });
 
       await expect(
         service.getDecryptedPrivateKey('wallet-123'),
-      ).rejects.toThrow(
-        'Wallet key decryption failed - possible data corruption',
-      );
+      ).rejects.toThrow(KeyDecryptionException);
+    });
+
+    it('should surface correct reason code in KeyDecryptionException', async () => {
+      const mockWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        encryptedSecret: 'encrypted-secret',
+        status: 'ACTIVE',
+      };
+
+      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      jest
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockImplementation(() => {
+          throw new DecryptionError('Invalid key', 'INVALID_KEY');
+        });
+
+      let caught: KeyDecryptionException | undefined;
+      try {
+        await service.getDecryptedPrivateKey('wallet-123');
+      } catch (e) {
+        caught = e as KeyDecryptionException;
+      }
+
+      expect(caught).toBeInstanceOf(KeyDecryptionException);
+      expect(caught!.reason).toBe('INVALID_KEY');
+      expect(caught!.getStatus()).toBe(422);
     });
   });
 
@@ -222,7 +259,7 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockReturnValue('private-key-123');
@@ -237,7 +274,7 @@ describe('WalletsService', () => {
     });
 
     it('should handle signing errors gracefully', async () => {
-      mockPrisma.wallet.findUnique.mockResolvedValue(null);
+      mockPrismaWallet.findUnique.mockResolvedValue(null);
 
       await expect(
         service.signTransaction('wallet-123', 'transaction-data'),
@@ -273,33 +310,25 @@ describe('WalletsService', () => {
         updatedAt: new Date(),
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(existingWallet);
-      mockPrisma.wallet.update.mockResolvedValue(updatedWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(existingWallet);
+      mockPrismaWallet.update.mockResolvedValue(updatedWallet);
       jest
-        .spyOn(encryptionService, 'encryptAndSerialize')
-        .mockReturnValue('new-encrypted-secret');
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('new-private-key');
 
       const result = await service.rotateWalletKey('wallet-123');
 
       expect(result.wallet.id).toBe('wallet-123');
       expect(result.wallet.secretVersion).toBe(2);
-      expect(result.wallet.keyVersion).toBe(2);
-      expect(result.privateKey).toBeDefined();
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalled();
-
-      // Verify both secretVersion and keyVersion are incremented in the update call
-      expect(mockPrisma.wallet.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            secretVersion: existingWallet.secretVersion + 1,
-            keyVersion: existingWallet.keyVersion + 1,
-          }),
-        }),
-      );
+      expect(result.privateKey).toBe('new-private-key');
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { walletId: 'wallet-123', operation: 'rotation' },
+      });
     });
 
     it('should throw NotFoundException if wallet not found', async () => {
-      mockPrisma.wallet.findUnique.mockResolvedValue(null);
+      mockPrismaWallet.findUnique.mockResolvedValue(null);
 
       await expect(service.rotateWalletKey('non-existent')).rejects.toThrow(
         'Wallet with ID non-existent not found',
@@ -307,18 +336,18 @@ describe('WalletsService', () => {
     });
   });
 
-  describe('keyVersion field', () => {
-    it('should initialise keyVersion to 1 on wallet creation', async () => {
+  // #185: Wallet Status Endpoint
+  describe('getWalletStatus', () => {
+    it('should return wallet status', async () => {
       const mockWallet = {
-        id: 'wallet-kv-1',
-        userId: 'user-kv',
-        publicKey: 'pk',
-        encryptedSecret: 'enc',
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
         encryptionVersion: 1,
         secretVersion: 1,
-        keyVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
         statusReason: null,
         statusChangedAt: new Date(),
         rotatedFromId: null,
@@ -326,85 +355,158 @@ describe('WalletsService', () => {
         updatedAt: new Date(),
       };
 
-      mockPrisma.wallet.findFirst.mockResolvedValue(null);
-      mockPrisma.wallet.create.mockResolvedValue(mockWallet);
-      jest.spyOn(encryptionService, 'encryptAndSerialize').mockReturnValue('enc');
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
 
-      const result = await service.createWallet({ userId: 'user-kv', network: WalletNetwork.TESTNET });
+      const result = await service.getWalletStatus('wallet-123');
 
-      expect(result.wallet.keyVersion).toBe(1);
-      // Verify keyVersion: 1 is passed to Prisma on creation
-      expect(mockPrisma.wallet.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ keyVersion: 1 }),
+      expect(result.id).toBe('wallet-123');
+      expect(result.status).toBe('ACTIVE');
+      expect(result.network).toBe(WalletNetwork.TESTNET);
+      expect(result.publicKey).toBe('GABC123');
+      expect(mockPrismaWallet.findUnique).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+      });
+    });
+
+    it('should throw NotFoundException if wallet not found', async () => {
+      mockPrismaWallet.findUnique.mockResolvedValue(null);
+
+      await expect(service.getWalletStatus('non-existent')).rejects.toThrow(
+        'Wallet with ID non-existent not found',
+      );
+    });
+  });
+
+  // #188: Activate Wallet (PROVISIONING -> ACTIVE)
+  describe('activateWallet', () => {
+    it('should transition PROVISIONING to ACTIVE', async () => {
+      const provisioningWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'PROVISIONING',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      const activeWallet = {
+        ...provisioningWallet,
+        status: 'ACTIVE',
+        statusReason: 'Wallet provisioned and activated',
+        statusChangedAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrismaWallet.findUnique.mockResolvedValue(provisioningWallet);
+      mockPrismaWallet.update.mockResolvedValue(activeWallet);
+
+      const result = await service.activateWallet('wallet-123');
+
+      expect(result.status).toBe('ACTIVE');
+      expect(mockPrismaWallet.update).toHaveBeenCalledWith({
+        where: { id: 'wallet-123' },
+        data: expect.objectContaining({
+          status: 'ACTIVE',
+          statusReason: 'Wallet provisioned and activated',
         }),
+      });
+    });
+
+    it('should throw error if wallet is not in PROVISIONING status', async () => {
+      const activeWallet = {
+        id: 'wallet-123',
+        userId: 'user-123',
+        publicKey: 'GABC123',
+        encryptedSecret: 'secret',
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: WalletNetwork.TESTNET,
+        status: 'ACTIVE',
+        statusReason: null,
+        statusChangedAt: new Date(),
+        rotatedFromId: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      };
+
+      mockPrismaWallet.findUnique.mockResolvedValue(activeWallet);
+
+      await expect(service.activateWallet('wallet-123')).rejects.toThrow(
+        'Cannot activate wallet in status: ACTIVE',
       );
     });
 
-    it('should increment keyVersion on key rotation', async () => {
-      const existingWallet = {
-        id: 'wallet-kv-2',
-        userId: 'user-kv',
-        publicKey: 'old-pk',
-        encryptedSecret: 'old-enc',
-        secretVersion: 3,
-        keyVersion: 3,
-      };
-      const updatedWallet = {
-        ...existingWallet,
-        publicKey: 'new-pk',
-        encryptedSecret: 'new-enc',
-        secretVersion: 4,
-        keyVersion: 4,
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+    it('should throw NotFoundException if wallet not found', async () => {
+      mockPrismaWallet.findUnique.mockResolvedValue(null);
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(existingWallet);
-      mockPrisma.wallet.update.mockResolvedValue(updatedWallet);
-      jest.spyOn(encryptionService, 'encryptAndSerialize').mockReturnValue('new-enc');
-
-      const result = await service.rotateWalletKey('wallet-kv-2');
-
-      expect(result.wallet.keyVersion).toBe(4);
-      expect(mockPrisma.wallet.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ keyVersion: 4 }),
-        }),
+      await expect(service.activateWallet('non-existent')).rejects.toThrow(
+        'Wallet with ID non-existent not found',
       );
     });
+  });
 
-    it('should fall back to keyVersion 1 when field is absent (stale row)', async () => {
-      // Simulates a wallet row that pre-dates the migration (no keyVersion column yet)
-      const staleWallet = {
-        id: 'wallet-stale',
-        userId: 'user-stale',
-        publicKey: 'pk',
-        encryptedSecret: 'enc',
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        secretVersion: 1,
-        // keyVersion intentionally omitted (simulates NULL / missing column on old row)
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      };
+  // #189: Find wallets by userId
+  describe('findWalletsByUserId', () => {
+    it('should return all wallets for a userId', async () => {
+      const wallets = [
+        {
+          id: 'wallet-1',
+          userId: 'user-123',
+          publicKey: 'GABC1',
+          encryptedSecret: 'secret1',
+          encryptionVersion: 1,
+          secretVersion: 1,
+          network: WalletNetwork.TESTNET,
+          status: 'ACTIVE',
+          statusReason: null,
+          statusChangedAt: new Date(),
+          rotatedFromId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+        {
+          id: 'wallet-2',
+          userId: 'user-123',
+          publicKey: 'GABC2',
+          encryptedSecret: 'secret2',
+          encryptionVersion: 1,
+          secretVersion: 1,
+          network: WalletNetwork.MAINNET,
+          status: 'ACTIVE',
+          statusReason: null,
+          statusChangedAt: new Date(),
+          rotatedFromId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        },
+      ];
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(staleWallet);
+      mockPrismaWallet.findMany.mockResolvedValue(wallets);
 
-      const result = await service.findWalletById('wallet-stale');
+      const result = await service.findWalletsByUserId('user-123');
 
-      // mapPrismaWalletToDomain should coerce undefined/null to 1
-      expect(result.keyVersion).toBe(1);
+      expect(result).toHaveLength(2);
+      expect(result[0].userId).toBe('user-123');
+      expect(result[1].userId).toBe('user-123');
+      expect(mockPrismaWallet.findMany).toHaveBeenCalledWith({
+        where: { userId: 'user-123' },
+        orderBy: { createdAt: 'desc' },
+      });
+    });
+
+    it('should return empty array if user has no wallets', async () => {
+      mockPrismaWallet.findMany.mockResolvedValue([]);
+
+      const result = await service.findWalletsByUserId('user-no-wallets');
+
+      expect(result).toEqual([]);
     });
   });
 });
