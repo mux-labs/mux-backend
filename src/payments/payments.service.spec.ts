@@ -11,9 +11,12 @@ describe('PaymentsService', () => {
   let limitsService: any;
   let walletsService: any;
 
+  const fromWalletId = 'wallet-uuid-sender';
+  const toWalletId = 'wallet-uuid-receiver';
+
   beforeEach(async () => {
     prisma = {
-      payment: {
+      transaction: {
         create: jest.fn(),
         findMany: jest.fn(),
         findUnique: jest.fn(),
@@ -50,10 +53,10 @@ describe('PaymentsService', () => {
         id: 1,
         ...BASE_DTO,
         status: 'PENDING',
-        userId: 1,
-        createdAt: paymentDate,
-        updatedAt: paymentDate,
-      });
+        createdAt: now,
+        updatedAt: now,
+      };
+      prisma.transaction.create.mockResolvedValue(txRecord);
 
       const result = await service.create(BASE_DTO as any);
 
@@ -62,12 +65,11 @@ describe('PaymentsService', () => {
       expect(limitsService.checkLimits).toHaveBeenCalledWith(1, 100);
       expect(prisma.payment.create).toHaveBeenCalledWith({
         data: {
-          fromId: 1,
-          toId: 2,
-          amount: 100,
-          currency: 'USD',
-          description: 'Test payment',
-          userId: 1,
+          senderWalletId: fromWalletId,
+          receiverWalletId: toWalletId,
+          amount: '100',
+          assetType: 'USD',
+          metadata: { description: 'Test payment' },
           status: 'PENDING',
         },
       });

@@ -4,7 +4,6 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
-import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
 import { PaymentStatus } from './entities/payment.entity';
@@ -42,7 +41,7 @@ export class PaymentsService {
     // Scope limits check to the wallet owner (legacy userId)
     await this.limitsService.checkLimits(fromId, amount);
 
-    return this.prisma.payment.create({
+    return this.prisma.transaction.create({
       data: {
         fromId,
         toId,
@@ -56,11 +55,11 @@ export class PaymentsService {
   }
 
   findAll() {
-    return this.prisma.payment.findMany();
+    return this.prisma.transaction.findMany();
   }
 
-  findOne(id: number) {
-    return this.prisma.payment.findUnique({ where: { id } });
+  findOne(id: string) {
+    return this.prisma.transaction.findUnique({ where: { id } });
   }
 
   async update(id: number, updatePaymentDto: UpdatePaymentDto) {
@@ -84,7 +83,7 @@ export class PaymentsService {
     });
   }
 
-  remove(id: number) {
-    return `This action removes a #${id} payment`;
+  remove(id: string) {
+    return `This action removes payment ${id}`;
   }
 }
