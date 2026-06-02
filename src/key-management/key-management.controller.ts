@@ -79,12 +79,19 @@ export class KeyManagementController {
   }
 
   /**
-   * Returns a machine-readable summary of the custody security model.
-   * See docs/custody-security-model.md for the full narrative.
+   * Rotates the key for a wallet, creating a successor and linking it.
+   * The predecessor wallet is transitioned to ROTATING and its successorId is set.
    */
-  @Get('security-model')
-  getSecurityModel() {
-    return this.keyManagementService.getSecurityModel();
+  @Post('rotate')
+  @HttpCode(HttpStatus.OK)
+  async rotateKey(@Body() body: { walletId: string }) {
+    const result = await this.keyManagementService.rotateKey(body.walletId);
+
+    return {
+      predecessorWalletId: result.predecessorWalletId,
+      successorWalletId: result.successorWalletId,
+      successorPublicKey: result.successorPublicKey,
+    };
   }
 
   /**

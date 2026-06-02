@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
 import { EncryptionService } from '../encryption/encryption.service';
+import { PrismaService } from '../prisma/prisma.service';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -22,31 +23,13 @@ export interface SignRequest {
   publicKey: string; // For audit trail
 }
 
-export interface SecurityModelSummary {
-  custodyModel: 'server-side-custodial';
-  encryptionAtRest: {
-    algorithm: string;
-    keyLengthBits: number;
-    ivLengthBits: number;
-    authTagLengthBits: number;
-    aad: string;
-  };
-  keyGeneration: {
-    provider: string;
-    keyType: string;
-    plaintextExposure: 'in-memory-only';
-  };
-  rotation: {
-    chainFields: string[];
-    atomicTransaction: boolean;
-    rotatableStatuses: string[];
-  };
-  auditLog: {
-    operations: string[];
-    maxInMemoryEntries: number;
-  };
-  registeredProviders: string[];
-  docsPath: string;
+export interface RotateKeyResult {
+  /** The newly created successor wallet ID */
+  successorWalletId: string;
+  /** The new wallet's public key */
+  successorPublicKey: string;
+  /** The predecessor wallet ID (now marked ROTATING with successorId set) */
+  predecessorWalletId: string;
 }
 
 /**
@@ -75,6 +58,7 @@ export class KeyManagementService {
   constructor(
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
+    private readonly prisma: PrismaService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -255,35 +239,91 @@ export class KeyManagementService {
   }
 
   /**
-   * Returns a machine-readable summary of the custody security model.
-   * Mirrors docs/custody-security-model.md.
+   * Rotates the key for a wallet by creating a successor wallet and linking it.
+   *
+   * Steps:
+   * 1. Verify the predecessor wallet exists and is ACTIVE or ROTATING.
+   * 2. Generate a new keypair and encrypt it.
+   * 3. Create the successor wallet record (ACTIVE) with rotatedFromId set.
+   * 4. Set successorId on the predecessor and transition it to ROTATING.
+   *
+   * All DB writes are wrapped in a transaction to prevent partial state.
    */
-  getSecurityModel(): SecurityModelSummary {
+  async rotateKey(predecessorWalletId: string): Promise<RotateKeyResult> {
+    const predecessor = await this.prisma.wallet.findUnique({
+      where: { id: predecessorWalletId },
+    });
+
+    if (!predecessor) {
+      throw new NotFoundException(
+        `Wallet ${predecessorWalletId} not found`,
+      );
+    }
+
+    if (!['ACTIVE', 'ROTATING'].includes(predecessor.status)) {
+      throw new Error(
+        `Cannot rotate wallet in status: ${predecessor.status}`,
+      );
+    }
+
+    if (predecessor.successorId) {
+      throw new Error(
+        `Wallet ${predecessorWalletId} already has a successor: ${predecessor.successorId}`,
+      );
+    }
+
+    // Generate new keypair
+    const keyMaterial = await this.generateKey({
+      keyType: KeyType.STELLAR_ED25519,
+      metadata: { rotatedFromId: predecessorWalletId },
+    });
+
+    const [successor] = await this.prisma.$transaction(async (tx) => {
+      // Create successor wallet
+      const newWallet = await tx.wallet.create({
+        data: {
+          userId: predecessor.userId,
+          publicKey: keyMaterial.publicKey,
+          encryptedSecret: keyMaterial.encryptedData,
+          encryptionVersion: keyMaterial.encryptionVersion,
+          secretVersion: predecessor.secretVersion + 1,
+          network: predecessor.network,
+          status: 'ACTIVE',
+          rotatedFromId: predecessorWalletId,
+        },
+      });
+
+      // Link successor on predecessor and mark it ROTATING
+      await tx.wallet.update({
+        where: { id: predecessorWalletId },
+        data: {
+          successorId: newWallet.id,
+          status: 'ROTATING',
+          statusReason: 'Key rotation initiated',
+          statusChangedAt: new Date(),
+        },
+      });
+
+      return [newWallet];
+    });
+
+    this.auditKeyOperation({
+      operation: 'ROTATE',
+      keyId: predecessorWalletId,
+      publicKey: keyMaterial.publicKey,
+      timestamp: new Date(),
+      success: true,
+      metadata: { successorWalletId: successor.id },
+    });
+
+    this.logger.log(
+      `Rotated key for wallet ${predecessorWalletId} -> successor ${successor.id}`,
+    );
+
     return {
-      custodyModel: 'server-side-custodial',
-      encryptionAtRest: {
-        algorithm: 'aes-256-gcm',
-        keyLengthBits: 256,
-        ivLengthBits: 128,
-        authTagLengthBits: 128,
-        aad: 'wallet-secret',
-      },
-      keyGeneration: {
-        provider: 'StellarKeyProvider',
-        keyType: KeyType.STELLAR_ED25519,
-        plaintextExposure: 'in-memory-only',
-      },
-      rotation: {
-        chainFields: ['rotatedFromId', 'successorId'],
-        atomicTransaction: true,
-        rotatableStatuses: ['ACTIVE', 'ROTATING'],
-      },
-      auditLog: {
-        operations: ['GENERATE', 'SIGN', 'ROTATE', 'REVOKE', 'ACCESS'],
-        maxInMemoryEntries: 1000,
-      },
-      registeredProviders: Array.from(this.providers.keys()),
-      docsPath: 'docs/custody-security-model.md',
+      successorWalletId: successor.id,
+      successorPublicKey: successor.publicKey,
+      predecessorWalletId,
     };
   }
 
