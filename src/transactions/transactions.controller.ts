@@ -62,8 +62,15 @@ export class TransactionsController {
   }
 
   @Get('wallet/:walletId')
-  findByWallet(@Param('walletId') walletId: string) {
-    return this.transactionsService.findByWallet(walletId);
+  findByWallet(
+    @Param('walletId') walletId: string,
+    @Query('limit') limit?: string,
+    @Query('offset') offset?: string,
+  ) {
+    return this.transactionsService.findByWallet(walletId, {
+      limit: limit ? parseInt(limit, 10) : undefined,
+      offset: offset ? parseInt(offset, 10) : undefined,
+    });
   }
 
   @Get('stellar/:hash')

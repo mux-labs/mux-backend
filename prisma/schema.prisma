@@ -56,6 +56,19 @@ model UserLimit {
   user                LegacyUser @relation(fields: [userId], references: [id])
 }
 
+/// Spending limits scoped to a Wallet (replaces legacy UserLimit)
+model WalletLimit {
+  id                  String  @id @default(uuid())
+  walletId            String  @unique
+  wallet              Wallet  @relation(fields: [walletId], references: [id], onDelete: Cascade)
+  dailyLimit          Float
+  perTransactionLimit Float
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  @@index([walletId])
+}
+
 /// Mainnet/testnet separation for all wallets.
 enum WalletNetwork {
   MAINNET
@@ -152,6 +165,11 @@ model Wallet {
   rotatedFrom   Wallet?  @relation("WalletRotation", fields: [rotatedFromId], references: [id])
   rotatedTo     Wallet[] @relation("WalletRotation")
 
+  /// Successor linking: direct reference to the wallet that replaced this one during rotation.
+  successorId String? @unique
+  successor   Wallet?  @relation("WalletSuccessor", fields: [successorId], references: [id])
+  predecessor Wallet[] @relation("WalletSuccessor")
+
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
@@ -159,6 +177,9 @@ model Wallet {
   recoveryRequests RecoveryRequest[]
   balances         WalletBalance[]
   
+  /// Spending limits for this wallet
+  walletLimit          WalletLimit?
+
   /// Transactions sent from this wallet
   sentTransactions     Transaction[] @relation("SentTransactions")
   
@@ -169,6 +190,7 @@ model Wallet {
   @@index([userId, network])
   @@index([status, network])
   @@index([rotatedFromId])
+  @@index([successorId])
 }
 
 /// Recovery request lifecycle states
@@ -623,6 +645,9 @@ model Transaction {
   
   /// Metadata for future webhooks and analytics
   metadata Json? // Flexible JSON for additional transaction context
+
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
   
   /// Operational metadata
   createdAt DateTime @default(now())
@@ -636,4 +661,5 @@ model Transaction {
   @@index([stellarHash])
   @@index([stellarLedger])
   @@index([createdAt])
+  @@index([idempotencyKey])
 }

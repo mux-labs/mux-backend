@@ -1,70 +1,55 @@
-# Transactions: Add Stellar Transaction Build Service
+# Key Management: Add Rotation Successor Linking
 
 ## Summary
 
-Adds `StellarTransactionBuildService` — a dedicated service that constructs unsigned Stellar payment transaction envelopes (XDR) using `stellar-sdk`. The XDR is returned to the caller for signing via `KeyManagementService`, keeping the build and sign steps cleanly separated.
+Implements forward successor linking for wallet key rotation. Previously the `Wallet` model only tracked the predecessor (`rotatedFromId`), making it impossible to follow the rotation chain forward without a table scan. This PR adds a direct `successorId` field so each wallet can point to the wallet that replaced it.
 
 ## Changes
 
-### New: `StellarTransactionBuildService`
-`src/transactions/stellar-transaction-build.service.ts`
+### Database
+- Added `successorId` (nullable, unique) to the `Wallet` table with a self-referential FK constraint.
+- Migration: `prisma/migrations/20260601000000_add_wallet_successor_id/migration.sql`
 
-- `buildPayment(dto)` — fetches the source account sequence number from Horizon, builds a `TransactionBuilder` with the correct network passphrase, adds a payment operation and optional memo, returns `{ xdr, sequence, networkPassphrase }`.
-- `buildXdr(dto)` — convenience alias that returns just the XDR string.
-- Graceful error handling:
-  - `BadRequestException` for missing issuer on non-native assets, 404 account not found, invalid destination key, or any `stellar-sdk` validation error.
-  - `ServiceUnavailableException` for Horizon network failures.
-- Supports both `TESTNET` and `MAINNET` via separate `Server` instances.
+### Domain
+- `src/wallets/domain/wallet.model.ts` — added `successorId` field to the `Wallet` interface.
+- `src/wallets/wallets.service.ts` — `mapPrismaWalletToDomain` now maps `successorId`.
 
-### New: `BuildTransactionDto` / `BuildTransactionResponseDto`
-`src/transactions/dto/build-transaction.dto.ts`
-
-Fields: `sourcePublicKey`, `destinationPublicKey`, `amount`, `assetCode`, `assetIssuer?`, `memo?`, `network`.
-
-### Updated: `TransactionsModule`
-`src/transactions/transactions.module.ts`
-
-Added `StellarTransactionBuildService` to `providers` and `exports`.
-
-### Updated: `TransactionsController`
-`src/transactions/transactions.controller.ts`
-
-Added `POST /transactions/build` endpoint (rate-limited via `@SensitiveEndpoint()`). Returns `BuildTransactionResponseDto`.
+### Key Management
+- `src/key-management/key-management.service.ts`
+  - Injected `PrismaService`.
+  - Added `rotateKey(predecessorWalletId)` method:
+    1. Validates predecessor exists and is `ACTIVE` or `ROTATING`.
+    2. Guards against double-rotation (already has a `successorId`).
+    3. Generates a new Stellar keypair via `generateKey`.
+    4. In a single DB transaction: creates the successor wallet (`ACTIVE`, `rotatedFromId` set) and updates the predecessor (`successorId` set, status → `ROTATING`).
+    5. Emits a `ROTATE` audit log entry.
+- `src/key-management/key-management.controller.ts`
+  - Added `POST /internal/key-management/rotate` endpoint accepting `{ walletId }`.
+  - Returns `{ predecessorWalletId, successorWalletId, successorPublicKey }`.
 
 ### Tests
-`src/transactions/stellar-transaction-build.service.spec.ts` — 9 unit tests:
-- XLM payment XDR generation
-- Mainnet passphrase selection
-- Non-native asset (USDC) with issuer
-- Memo inclusion
-- `BadRequestException` for missing issuer
-- `BadRequestException` for 404 account (not found on Horizon)
-- `ServiceUnavailableException` for Horizon network error
-- `BadRequestException` for invalid destination key
-- `buildXdr` alias
-
-### Bug fix
-Fixed invalid JSON in `package.json` (trailing comma after `stellar-sdk` dependency).
+- `src/key-management/key-management.service.spec.ts` — 17 unit tests covering:
+  - Happy path (successor created and linked)
+  - `rotatedFromId` set on successor
+  - Predecessor transitioned to `ROTATING`
+  - Rotation of a wallet already in `ROTATING` status
+  - `NotFoundException` for missing wallet
+  - Error for non-rotatable statuses (`DISABLED`, etc.)
+  - Error when wallet already has a successor
+  - Audit log entry on success
+  - `secretVersion` incremented on successor
 
 ## API
 
 ```
-POST /transactions/build
-Body: {
-  "sourcePublicKey": "G...",
-  "destinationPublicKey": "G...",
-  "amount": "10.0000000",
-  "assetCode": "native",          // or "USDC", etc.
-  "assetIssuer": "G...",          // required for non-native assets
-  "memo": "optional text",
-  "network": "TESTNET"            // or "MAINNET"
-}
-
-Response: {
-  "xdr": "<base64-encoded unsigned transaction envelope>",
-  "sequence": "12345678",
-  "networkPassphrase": "Test SDF Network ; September 2015"
-}
+POST /internal/key-management/rotate
+Body:    { "walletId": "<predecessor-wallet-id>" }
+Returns: { "predecessorWalletId": "...", "successorWalletId": "...", "successorPublicKey": "G..." }
 ```
 
-closes #212
+## Notes
+- The endpoint is internal-only and should not be exposed to public APIs.
+- All DB writes are atomic (wrapped in `prisma.$transaction`).
+- No private key material is ever returned or logged.
+
+closes #211

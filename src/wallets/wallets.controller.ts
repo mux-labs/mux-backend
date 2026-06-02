@@ -7,6 +7,7 @@ import {
   Param,
   Delete,
   UseGuards,
+  Query,
 } from '@nestjs/common';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
@@ -41,6 +42,24 @@ export class WalletsController {
       developer: context.developer.email,
       project: context.project.name,
     };
+  }
+
+  // #185: Expose wallet status endpoint
+  @Get(':id/status')
+  async getWalletStatus(@Param('id') id: string) {
+    return this.walletsService.getWalletStatus(id);
+  }
+
+  // #188: Activate wallet (PROVISIONING -> ACTIVE)
+  @Patch(':id/activate')
+  async activateWallet(@Param('id') id: string) {
+    return this.walletsService.activateWallet(id);
+  }
+
+  // #189: List wallets by userId
+  @Get('user/:userId')
+  async findByUserId(@Param('userId') userId: string) {
+    return this.walletsService.findWalletsByUserId(userId);
   }
 
   @Get(':id')
