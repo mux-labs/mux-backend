@@ -172,7 +172,18 @@ Copy `.env.example` to `.env` (or create `.env`) and set:
 
 ```env
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
+WALLET_ENCRYPTION_KEY="your-secure-encryption-key-min-32-chars-long"
 ```
+
+#### Boot-Time Configuration Validation
+
+To guarantee security, the application validates critical environment variables during startup:
+
+* **`WALLET_ENCRYPTION_KEY`**: Key used to encrypt Stellar wallet private keys.
+  - **Required**: Must be defined and not empty.
+  - **Length**: Must be at least **32 characters** long.
+  - **Security**: Must **not** match the default placeholder string (`your-secret-encryption-key-min-32-chars`).
+  - **Behavior**: If validation fails, the application throws an error and fails to boot.
 
 **Examples:**
 
