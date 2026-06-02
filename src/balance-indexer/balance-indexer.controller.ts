@@ -7,6 +7,7 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  NotFoundException,
 } from '@nestjs/common';
 import {
   BalanceIndexerService,
@@ -19,37 +20,45 @@ export class BalanceIndexerController {
   constructor(private readonly balanceIndexerService: BalanceIndexerService) {}
 
   /**
-   * Gets balance for a specific wallet and asset
+   * GET /balances/wallet/:walletId
+   * Returns all indexed balances for a wallet.
    */
   @Get('wallet/:walletId')
-  async getWalletBalance(
-    @Param('walletId') walletId: string,
-    @Query('assetType') assetType?: string,
-    @Query('assetCode') assetCode?: string,
-    @Query('assetIssuer') assetIssuer?: string,
-  ) {
-    if (assetType) {
-      // Get specific asset balance
-      const asset: Asset = {
-        type: (assetType as AssetType) || AssetType.NATIVE,
-        code: assetCode,
-        issuer: assetIssuer,
-      };
-
-      const balance = await this.balanceIndexerService.getBalance(
-        walletId,
-        asset,
-      );
-      return balance || { balance: '0', assetType, assetCode, assetIssuer };
-    }
-
-    // Get all balances
+  async getWalletBalances(@Param('walletId') walletId: string) {
     const balances = await this.balanceIndexerService.getAllBalances(walletId);
     return { walletId, balances };
   }
 
   /**
-   * Syncs balances from Stellar Horizon
+   * GET /balances/wallet/:walletId/asset
+   * Returns a specific asset balance for a wallet.
+   * Query params: assetType (required), assetCode, assetIssuer
+   */
+  @Get('wallet/:walletId/asset')
+  async getWalletAssetBalance(
+    @Param('walletId') walletId: string,
+    @Query('assetType') assetType: string,
+    @Query('assetCode') assetCode?: string,
+    @Query('assetIssuer') assetIssuer?: string,
+  ) {
+    const asset: Asset = {
+      type: (assetType as AssetType) || AssetType.NATIVE,
+      code: assetCode,
+      issuer: assetIssuer,
+    };
+
+    const balance = await this.balanceIndexerService.getBalance(walletId, asset);
+    if (!balance) {
+      throw new NotFoundException(
+        `No balance found for wallet ${walletId} and asset ${assetType}`,
+      );
+    }
+    return balance;
+  }
+
+  /**
+   * POST /balances/wallet/:walletId/sync
+   * Syncs balances from Stellar Horizon for a specific wallet.
    */
   @Post('wallet/:walletId/sync')
   @HttpCode(HttpStatus.OK)
@@ -66,7 +75,8 @@ export class BalanceIndexerController {
   }
 
   /**
-   * Reconciles a wallet's balance with on-chain state
+   * POST /balances/wallet/:walletId/reconcile
+   * Reconciles a wallet's balance with on-chain state.
    */
   @Post('wallet/:walletId/reconcile')
   @HttpCode(HttpStatus.OK)
@@ -85,7 +95,8 @@ export class BalanceIndexerController {
   }
 
   /**
-   * Reconciles all balances (admin only)
+   * POST /balances/reconcile-all
+   * Reconciles all balances (admin operation).
    */
   @Post('reconcile-all')
   @HttpCode(HttpStatus.OK)
