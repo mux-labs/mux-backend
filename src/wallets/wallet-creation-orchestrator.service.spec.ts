@@ -715,4 +715,111 @@ describe('WalletCreationOrchestrator', () => {
       );
     });
   });
+
+  describe('WalletOrchestrationError', () => {
+    it('should set name, message, phase, and cause', () => {
+      const cause = new Error('root cause');
+      const err = new WalletOrchestrationError('msg', 'key-generation', cause);
+      expect(err.name).toBe('WalletOrchestrationError');
+      expect(err.message).toBe('msg');
+      expect(err.phase).toBe('key-generation');
+      expect(err.cause).toBe(cause);
+    });
+
+    it('should work without cause', () => {
+      const err = new WalletOrchestrationError('msg', 'wallet-persist');
+      expect(err.cause).toBeUndefined();
+    });
+  });
+
+  describe('createWallet — user not found', () => {
+    it('should throw NotFoundException when user does not exist', async () => {
+      mockIdempotentUserService.findUserById.mockResolvedValue(null);
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+
+      await expect(
+        orchestrator.createWallet({ userId: 'missing-user', network: WalletNetwork.TESTNET }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('createWallet — exception passthrough', () => {
+    const createRequest: CreateWalletOrchestratorRequest = {
+      userId: 'user-123',
+      network: WalletNetwork.TESTNET,
+    };
+
+    it('should re-throw ConflictException without wrapping', async () => {
+      mockPrisma.$transaction.mockRejectedValue(new ConflictException('conflict'));
+
+      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(ConflictException);
+    });
+
+    it('should re-throw NotFoundException without wrapping', async () => {
+      mockPrisma.$transaction.mockRejectedValue(new NotFoundException('not found'));
+
+      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(NotFoundException);
+    });
+
+    it('should re-throw WalletOrchestrationError without double-wrapping', async () => {
+      const original = new WalletOrchestrationError('direct', 'key-generation');
+      mockPrisma.$transaction.mockRejectedValue(original);
+
+      const err = await orchestrator.createWallet(createRequest).catch((e) => e);
+      expect(err).toBe(original);
+    });
+  });
+
+  describe('createWallet — idempotent outcome', () => {
+    it('should emit outcome=idempotent when checkIdempotency returns a cached result', async () => {
+      const cachedResult = {
+        wallet: {
+          id: 'wallet-cached', userId: 'user-123', publicKey: 'GCACHED',
+          encryptedSecret: 'enc', encryptionVersion: 1, secretVersion: 1,
+          network: WalletNetwork.TESTNET, status: WalletStatus.ACTIVE,
+          statusReason: null, statusChangedAt: new Date(),
+          rotatedFromId: null, createdAt: new Date(), updatedAt: new Date(),
+        },
+        privateKey: '',
+        isNewWallet: false,
+        idempotencyKey: 'idem-key',
+      };
+
+      // Patch private checkIdempotency to return cached result
+      jest.spyOn(orchestrator as any, 'checkIdempotency').mockResolvedValue(cachedResult);
+
+      const logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
+      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+
+      const result = await orchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+        idempotencyKey: 'idem-key',
+      });
+
+      expect(result).toBe(cachedResult);
+      const metricsCall = logSpy.mock.calls.find(([msg]) =>
+        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      );
+      expect(metricsCall).toBeDefined();
+      expect(metricsCall![0]).toContain('outcome=idempotent');
+    });
+  });
+
+  describe('cleanupStaleProvisioningWallets — default cutoff', () => {
+    it('should use 5-minute default cutoff when no argument provided', async () => {
+      mockPrisma.wallet.deleteMany.mockResolvedValue({ count: 0 });
+
+      await orchestrator.cleanupStaleProvisioningWallets();
+
+      const call = mockPrisma.wallet.deleteMany.mock.calls[0][0];
+      const cutoff: Date = call.where.createdAt.lt;
+      const ageMs = Date.now() - cutoff.getTime();
+      // Should be approximately 5 minutes (within 1 second tolerance)
+      expect(ageMs).toBeGreaterThanOrEqual(4 * 60 * 1000);
+      expect(ageMs).toBeLessThan(6 * 60 * 1000);
+    });
+  });
 });
