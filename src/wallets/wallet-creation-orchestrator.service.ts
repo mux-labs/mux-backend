@@ -14,6 +14,7 @@ import {
 } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import * as crypto from 'crypto';
 
 export type OrchestrationPhase =

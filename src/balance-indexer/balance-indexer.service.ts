@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaClient } from '../generated/prisma/client';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import {
   WalletBalance,
   Asset,
@@ -42,6 +43,7 @@ export class BalanceIndexerService {
   constructor(
     private readonly stellarHorizonService: StellarHorizonService,
     private readonly configService: ConfigService,
+    private readonly webhookEventEmitter: WebhookEventEmitterService,
   ) {
     this.prisma = new PrismaClient({} as any);
 
@@ -247,6 +249,21 @@ export class BalanceIndexerService {
           reconciliationAttempts: { increment: 1 },
         },
       });
+
+      // Emit balance.mismatch webhook (fire-and-forget)
+      const assetLabel = asset.code || asset.type;
+      const difference = this.calculateDifference(indexed, onChain);
+      this.webhookEventEmitter
+        .emitBalanceMismatch({
+          walletId,
+          asset: assetLabel,
+          indexedBalance: indexed,
+          onChainBalance: onChain,
+          difference,
+        })
+        .catch((err) =>
+          this.logger.error('Failed to emit balance.mismatch webhook:', err),
+        );
     } else {
       // Clear mismatch if it was previously detected
       await this.prisma.walletBalance.updateMany({
