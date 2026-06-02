@@ -41,34 +41,34 @@ export class LimitsService {
     const limits = await this.getLimits(userId);
     if (!limits) return; // No limits set
 
-    if (amount > limits.perTransactionLimit) {
+    // Enforce per-transaction cap: a cap of 0 blocks all transactions
+    if (limits.perTransactionLimit >= 0 && amount > limits.perTransactionLimit) {
       throw new LimitExceededException(
         LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
         `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
       );
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    // Enforce daily cap only when a positive daily limit is configured
+    if (limits.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
 
-    const usage = await this.prisma.payment.aggregate({
-      where: {
-        fromId: userId,
-        createdAt: {
-          gte: startOfDay,
+      const usage = await this.prisma.payment.aggregate({
+        where: {
+          fromId: userId,
+          createdAt: { gte: startOfDay },
         },
-      },
-      _sum: {
-        amount: true,
-      },
-    });
+        _sum: { amount: true },
+      });
 
-    const currentDailyTotal = usage._sum.amount || 0;
-    if (currentDailyTotal + amount > limits.dailyLimit) {
-      throw new LimitExceededException(
-        LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
-        `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
-      );
+      const currentDailyTotal = usage._sum.amount ?? 0;
+      if (currentDailyTotal + amount > limits.dailyLimit) {
+        throw new LimitExceededException(
+          LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
+          `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+        );
+      }
     }
   }
 
