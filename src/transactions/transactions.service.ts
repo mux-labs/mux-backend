@@ -3,6 +3,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  Optional,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateTransactionDto } from './dto/create-transaction.dto';
@@ -17,12 +18,16 @@ import {
   StellarNetworkReferences,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    @Optional() private readonly webhookEmitter?: WebhookEventEmitterService,
+  ) {}
 
   /**
    * Create a new transaction in PENDING state
@@ -189,6 +194,23 @@ export class TransactionsService {
     this.logger.log(
       `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
     );
+
+    if (
+      updateDto.status === TransactionStatus.CONFIRMED &&
+      this.webhookEmitter
+    ) {
+      this.webhookEmitter
+        .emitTransactionConfirmed({
+          transactionId: updated.id,
+          walletId: updated.senderWalletId,
+          txHash: updated.stellarHash ?? '',
+          ledger: updated.stellarLedger ?? 0,
+          confirmations: 1,
+        })
+        .catch((err) =>
+          this.logger.error(`Failed to emit transaction.confirmed for ${id}`, err),
+        );
+    }
 
     return this.mapPrismaToEntity(updated);
   }
