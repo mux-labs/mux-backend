@@ -172,7 +172,18 @@ Copy `.env.example` to `.env` (or create `.env`) and set:
 
 ```env
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
+WALLET_ENCRYPTION_KEY="your-secure-encryption-key-min-32-chars-long"
 ```
+
+#### Boot-Time Configuration Validation
+
+To guarantee security, the application validates critical environment variables during startup:
+
+* **`WALLET_ENCRYPTION_KEY`**: Key used to encrypt Stellar wallet private keys.
+  - **Required**: Must be defined and not empty.
+  - **Length**: Must be at least **32 characters** long.
+  - **Security**: Must **not** match the default placeholder string (`your-secret-encryption-key-min-32-chars`).
+  - **Behavior**: If validation fails, the application throws an error and fails to boot.
 
 **Examples:**
 
@@ -194,6 +205,10 @@ pnpm prisma:migrate:prod
 
 # Seed the database with demo users and wallets (dev only)
 pnpm prisma:seed
+
+This seed also creates an onboarding developer account and a starter project for developer flows.
+
+A new developer API route is available: `GET /developers/:id/projects` returns the projects belonging to a developer.
 ```
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
@@ -203,10 +218,28 @@ pnpm prisma:seed
 ## Security Model (MVP)
 
 * Private keys are never exposed to clients
-* Keys are encrypted at rest
+* Keys are encrypted at rest using AES-256-GCM
 * All blockchain transactions are signed server-side
 * Fees are sponsored by the platform
 * Auth provider is the source of truth for identity
+* **Centralized key management** via KeyManagementService for consistent security
+
+### Key Management Architecture
+
+Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key operations:
+
+**Key Features:**
+- ✅ Single source of truth for key generation
+- ✅ Provider abstraction (Stellar, future HSM/KMS support)
+- ✅ Automatic audit logging of all key operations
+- ✅ Private keys NEVER exposed outside the service boundary
+- ✅ Immediate encryption after generation
+- ✅ Graceful handling of invalid/disconnected states
+
+**Documentation:**
+- [Key Management Module README](src/key-management/README.md)
+- [Key Management Consolidation Guide](docs/key-management-consolidation.md)
+- [Migration Guide](docs/MIGRATION-KEY-MANAGEMENT.md)
 
 > ⚠️ This MVP uses a custodial model. Progressive decentralization is planned.
 
@@ -443,15 +476,34 @@ All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` head
 ## Wallets API
 
 - `POST /wallets` - create wallet
-- `GET /wallets` - list wallets
-- `GET /wallets/:id` - get wallet
+- `GET /wallets` - list all wallets
+- `GET /wallets/user/:userId` - list wallets by userId (#189)
+- `GET /wallets/:id` - get wallet by id
+- `GET /wallets/:id/status` - get wallet status (#185)
 - `PATCH /wallets/:id` - update wallet status
+- `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
+
+### Orchestration Endpoints
+
+- `POST /wallets/orchestration/create` - creates wallet with PROVISIONING -> ACTIVE flow, funds testnet account on TESTNET (#187, #188)
+- `GET /wallets/orchestration/user/:userId/:network` - get wallet by user and network
+- `GET /wallets/orchestration/validate/:userId/:network` - validate user can create wallet
 
 Protected endpoint:
 
 - `GET /wallets/protected` - requires a valid API key. Supply API key in `Authorization` header as `ApiKey <key>` or `Bearer <key>`.
 - When a valid key is provided, the route returns a JSON object with `message`, `developer`, and `project` fields.
+
+### Wallet Creation Flow (#187, #188)
+
+When a wallet is created via the orchestration endpoint:
+
+1. Wallet is created with `PROVISIONING` status
+2. If the network is `TESTNET`, the account is automatically funded via Stellar Friendbot (non-blocking on failure)
+3. Wallet status transitions to `ACTIVE`
+
+The individual `GET /wallets/:id/status` endpoint provides a lightweight status check without exposing encrypted secrets.
 
 Authentication and error behavior
 

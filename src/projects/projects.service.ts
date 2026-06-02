@@ -33,7 +33,15 @@ export class ProjectsService {
     return this.prisma.project.findMany();
   }
 
-  findByDeveloper(developerId: string) {
+  async findByDeveloper(developerId: string) {
+    const developer = await this.prisma.developer.findUnique({
+      where: { id: developerId },
+    });
+
+    if (!developer) {
+      throw new NotFoundException(`Developer ${developerId} not found`);
+    }
+
     return this.prisma.project.findMany({ where: { developerId } });
   }
 

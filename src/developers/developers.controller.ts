@@ -25,6 +25,11 @@ export class DevelopersController {
     return this.developersService.findAll();
   }
 
+  @Get(':id/projects')
+  findProjects(@Param('id') id: string) {
+    return this.developersService.findProjects(id);
+  }
+
   @Get(':id')
   findOne(@Param('id') id: string) {
     return this.developersService.findOne(id);

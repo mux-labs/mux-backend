@@ -7,19 +7,34 @@ import {
   Param,
   Delete,
   Query,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { UsersService } from './users.service';
+import {
+  IdempotentUserService,
+  type FindOrCreateUserRequest,
+} from './idempotent-user.service';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserStatus } from './entities/user.entity';
 
 @Controller('users')
 export class UsersController {
-  constructor(private readonly usersService: UsersService) {}
+  constructor(
+    private readonly usersService: UsersService,
+    private readonly idempotentUserService: IdempotentUserService,
+  ) {}
 
   @Post()
   async create(@Body() createUserDto: CreateUserDto) {
     return this.usersService.create(createUserDto);
+  }
+
+  @Post('find-or-create')
+  @HttpCode(HttpStatus.OK)
+  async findOrCreate(@Body() request: FindOrCreateUserRequest) {
+    return this.idempotentUserService.findOrCreateUser(request);
   }
 
   @Get()
