@@ -80,6 +80,22 @@ export class KeyManagementController {
   }
 
   /**
+   * Rotates the key for a wallet, creating a successor and linking it.
+   * The predecessor wallet is transitioned to ROTATING and its successorId is set.
+   */
+  @Post('rotate')
+  @HttpCode(HttpStatus.OK)
+  async rotateKey(@Body() body: { walletId: string }) {
+    const result = await this.keyManagementService.rotateKey(body.walletId);
+
+    return {
+      predecessorWalletId: result.predecessorWalletId,
+      successorWalletId: result.successorWalletId,
+      successorPublicKey: result.successorPublicKey,
+    };
+  }
+
+  /**
    * Gets audit log (admin only)
    */
   @Get('audit')
