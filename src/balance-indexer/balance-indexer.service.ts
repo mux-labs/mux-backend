@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
 import {
@@ -36,15 +36,13 @@ export interface SyncBalancesResult {
 @Injectable()
 export class BalanceIndexerService {
   private readonly logger = new Logger(BalanceIndexerService.name);
-  private prisma: PrismaClient;
   private readonly staleThresholdMs: number;
 
   constructor(
+    private readonly prisma: PrismaService,
     private readonly stellarHorizonService: StellarHorizonService,
     private readonly configService: ConfigService,
   ) {
-    this.prisma = new PrismaClient({} as any);
-
     // Consider balances stale after 5 minutes
     this.staleThresholdMs = this.configService.get<number>(
       'BALANCE_STALE_THRESHOLD_MS',
@@ -112,6 +110,16 @@ export class BalanceIndexerService {
 
     this.logger.log(`Starting balance sync for wallet ${walletId}`);
 
+    // Create BalanceSyncJob record
+    const job = await this.prisma.balanceSyncJob.create({
+      data: {
+        jobType: 'INCREMENTAL_SYNC',
+        status: 'RUNNING',
+        walletId,
+        startedAt: new Date(),
+      },
+    });
+
     try {
       // Get wallet info
       const wallet = await this.prisma.wallet.findUnique({
@@ -131,7 +139,23 @@ export class BalanceIndexerService {
         this.logger.warn(
           `Account ${wallet.publicKey} not found on-chain, setting zero balances`,
         );
-        return await this.setZeroBalances(walletId);
+        const result = await this.setZeroBalances(walletId);
+
+        const duration = Date.now() - startTime;
+        await this.prisma.balanceSyncJob.update({
+          where: { id: job.id },
+          data: {
+            status: 'COMPLETED',
+            walletsProcessed: 1,
+            walletsTotal: 1,
+            balancesUpdated: result.balancesUpdated,
+            mismatchesFound: 0,
+            completedAt: new Date(),
+            duration,
+          },
+        });
+
+        return result;
       }
 
       // Fetch balances from Horizon
@@ -164,6 +188,19 @@ export class BalanceIndexerService {
           `(${balancesUpdated} updated, ${mismatchesFound} mismatches)`,
       );
 
+      await this.prisma.balanceSyncJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'COMPLETED',
+          walletsProcessed: 1,
+          walletsTotal: 1,
+          balancesUpdated,
+          mismatchesFound,
+          completedAt: new Date(),
+          duration,
+        },
+      });
+
       return {
         walletId,
         balancesUpdated,
@@ -176,6 +213,17 @@ export class BalanceIndexerService {
       };
     } catch (error) {
       this.logger.error(`Balance sync failed for wallet ${walletId}:`, error);
+
+      const duration = Date.now() - startTime;
+      await this.prisma.balanceSyncJob.update({
+        where: { id: job.id },
+        data: {
+          status: 'FAILED',
+          errorMessage: error.message,
+          completedAt: new Date(),
+          duration,
+        },
+      });
 
       // Mark balances as failed
       await this.prisma.walletBalance.updateMany({
