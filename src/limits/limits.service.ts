@@ -1,7 +1,23 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, HttpException, HttpStatus } from '@nestjs/common';
 import { CreateLimitDto } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 import { PrismaService } from '../prisma/prisma.service';
+
+export const LIMIT_ERROR_CODES = {
+  PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
+  DAILY_LIMIT_EXCEEDED: 'LIMIT_DAILY_EXCEEDED',
+} as const;
+
+export type LimitErrorCode = (typeof LIMIT_ERROR_CODES)[keyof typeof LIMIT_ERROR_CODES];
+
+export class LimitExceededException extends HttpException {
+  constructor(
+    public readonly errorCode: LimitErrorCode,
+    message: string,
+  ) {
+    super({ errorCode, message }, HttpStatus.UNPROCESSABLE_ENTITY);
+  }
+}
 
 @Injectable()
 export class LimitsService {
@@ -26,8 +42,9 @@ export class LimitsService {
     if (!limits) return; // No limits set
 
     if (amount > limits.perTransactionLimit) {
-      throw new Error(
-        `Transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+      throw new LimitExceededException(
+        LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
+        `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
       );
     }
 
@@ -48,7 +65,8 @@ export class LimitsService {
 
     const currentDailyTotal = usage._sum.amount || 0;
     if (currentDailyTotal + amount > limits.dailyLimit) {
-      throw new Error(
+      throw new LimitExceededException(
+        LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
         `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
       );
     }
