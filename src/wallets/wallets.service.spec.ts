@@ -117,16 +117,19 @@ describe('WalletsService', () => {
       mockPrismaWallet.findFirst.mockResolvedValue(null);
       mockPrismaWallet.create.mockResolvedValue(mockWallet);
       jest
-        .spyOn(encryptionService, 'encryptAndSerialize')
-        .mockReturnValue('encrypted-secret');
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('decrypted-private-key');
 
       const result = await service.createWallet(createWalletRequest);
 
       expect(result.wallet.id).toBe('wallet-123');
       expect(result.wallet.userId).toBe('user-123');
       expect(result.wallet.publicKey).toBe('public-key-123');
-      expect(result.privateKey).toBeDefined();
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalled();
+      expect(result.privateKey).toBe('decrypted-private-key');
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
+      });
     });
 
     it('should throw ConflictException if user already has a wallet on the network', async () => {
@@ -284,15 +287,18 @@ describe('WalletsService', () => {
       mockPrismaWallet.findUnique.mockResolvedValue(existingWallet);
       mockPrismaWallet.update.mockResolvedValue(updatedWallet);
       jest
-        .spyOn(encryptionService, 'encryptAndSerialize')
-        .mockReturnValue('new-encrypted-secret');
+        .spyOn(encryptionService, 'deserializeAndDecrypt')
+        .mockReturnValue('new-private-key');
 
       const result = await service.rotateWalletKey('wallet-123');
 
       expect(result.wallet.id).toBe('wallet-123');
       expect(result.wallet.secretVersion).toBe(2);
-      expect(result.privateKey).toBeDefined();
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalled();
+      expect(result.privateKey).toBe('new-private-key');
+      expect(keyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { walletId: 'wallet-123', operation: 'rotation' },
+      });
     });
 
     it('should throw NotFoundException if wallet not found', async () => {

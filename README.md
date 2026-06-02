@@ -207,10 +207,28 @@ A new developer API route is available: `GET /developers/:id/projects` returns t
 ## Security Model (MVP)
 
 * Private keys are never exposed to clients
-* Keys are encrypted at rest
+* Keys are encrypted at rest using AES-256-GCM
 * All blockchain transactions are signed server-side
 * Fees are sponsored by the platform
 * Auth provider is the source of truth for identity
+* **Centralized key management** via KeyManagementService for consistent security
+
+### Key Management Architecture
+
+Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key operations:
+
+**Key Features:**
+- ✅ Single source of truth for key generation
+- ✅ Provider abstraction (Stellar, future HSM/KMS support)
+- ✅ Automatic audit logging of all key operations
+- ✅ Private keys NEVER exposed outside the service boundary
+- ✅ Immediate encryption after generation
+- ✅ Graceful handling of invalid/disconnected states
+
+**Documentation:**
+- [Key Management Module README](src/key-management/README.md)
+- [Key Management Consolidation Guide](docs/key-management-consolidation.md)
+- [Migration Guide](docs/MIGRATION-KEY-MANAGEMENT.md)
 
 > ⚠️ This MVP uses a custodial model. Progressive decentralization is planned.
 

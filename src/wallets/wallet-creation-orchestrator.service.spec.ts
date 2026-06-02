@@ -184,7 +184,7 @@ describe('WalletCreationOrchestrator', () => {
           network: WalletNetwork.TESTNET,
           status: WalletStatus.ACTIVE,
         }),
-        privateKey: expect.any(String),
+        privateKey: 'decrypted-private-key',
         isNewWallet: true,
         idempotencyKey: 'unique-key-123',
       });
@@ -195,7 +195,7 @@ describe('WalletCreationOrchestrator', () => {
       expect(mockPrisma.wallet.create).toHaveBeenCalledWith({
         data: expect.objectContaining({
           userId: 'user-123',
-          publicKey: expect.any(String),
+          publicKey: 'GABC123DEF456',
           encryptedSecret: 'encrypted-private-key',
           network: WalletNetwork.TESTNET,
           status: 'PROVISIONING',
@@ -357,7 +357,7 @@ describe('WalletCreationOrchestrator', () => {
           id: 'wallet-123',
           userId: 'user-123',
         }),
-        privateKey: expect.any(String),
+        privateKey: 'decrypted-private-key',
         isNewWallet: true,
         idempotencyKey: undefined,
       });

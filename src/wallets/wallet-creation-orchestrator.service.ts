@@ -459,8 +459,8 @@ export class WalletCreationOrchestrator {
       provisioningWallet = await tx.wallet.create({
         data: {
           userId: request.userId,
-          publicKey: keyPair.publicKey,
-          encryptedSecret,
+          publicKey: encryptedKeyMaterial.publicKey,
+          encryptedSecret: encryptedKeyMaterial.encryptedData,
           network: request.network,
           status: 'PROVISIONING', // Start in PROVISIONING (Issue #188)
           encryptionVersion: 1,
@@ -611,17 +611,6 @@ export class WalletCreationOrchestrator {
         error,
       );
     }
-  }
-
-  /**
-   * Generates a Stellar keypair (simplified for MVP)
-   */
-  private generateStellarKeyPair(): { publicKey: string; privateKey: string } {
-    // In real implementation, use stellar-sdk: Stellar.Keypair.random()
-    const privateKey = crypto.randomBytes(32).toString('hex');
-    const publicKey = `G${crypto.randomBytes(32).toString('hex').toUpperCase()}`;
-
-    return { publicKey, privateKey };
   }
 
   /**
