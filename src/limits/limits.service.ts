@@ -3,6 +3,22 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
 
+export const LIMIT_ERROR_CODES = {
+  PER_TX_LIMIT_EXCEEDED: 'LIMIT_PER_TX_EXCEEDED',
+  DAILY_LIMIT_EXCEEDED: 'LIMIT_DAILY_EXCEEDED',
+} as const;
+
+export type LimitErrorCode = (typeof LIMIT_ERROR_CODES)[keyof typeof LIMIT_ERROR_CODES];
+
+export class LimitExceededException extends HttpException {
+  constructor(
+    public readonly errorCode: LimitErrorCode,
+    message: string,
+  ) {
+    super({ errorCode, message }, HttpStatus.UNPROCESSABLE_ENTITY);
+  }
+}
+
 @Injectable()
 export class LimitsService {
   constructor(private readonly prisma: PrismaService) {}
@@ -23,14 +39,18 @@ export class LimitsService {
     const limits = await this.getLimits(walletId);
     if (!limits) return;
 
-    if (amount > limits.perTransactionLimit) {
-      throw new Error(
-        `Transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
+    // Enforce per-transaction cap: a cap of 0 blocks all transactions
+    if (limits.perTransactionLimit >= 0 && amount > limits.perTransactionLimit) {
+      throw new LimitExceededException(
+        LIMIT_ERROR_CODES.PER_TX_LIMIT_EXCEEDED,
+        `Per-transaction limit exceeded. Limit: ${limits.perTransactionLimit}`,
       );
     }
 
-    const startOfDay = new Date();
-    startOfDay.setHours(0, 0, 0, 0);
+    // Enforce daily cap only when a positive daily limit is configured
+    if (limits.dailyLimit > 0) {
+      const startOfDay = new Date();
+      startOfDay.setHours(0, 0, 0, 0);
 
     const txns = await this.prisma.transaction.findMany({
       where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },

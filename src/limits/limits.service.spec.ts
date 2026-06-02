@@ -209,6 +209,25 @@ describe('LimitsService', () => {
       );
     });
 
+    it('should block all transactions when perTransactionLimit is 0', async () => {
+      prisma.userLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 0,
+        dailyLimit: 1000,
+      });
+      await expect(service.checkLimits(1, 1)).rejects.toMatchObject({
+        response: expect.objectContaining({ errorCode: 'LIMIT_PER_TX_EXCEEDED' }),
+      });
+    });
+
+    it('should skip daily check when dailyLimit is 0', async () => {
+      prisma.userLimit.findUnique.mockResolvedValue({
+        perTransactionLimit: 200,
+        dailyLimit: 0,
+      });
+      await expect(service.checkLimits(1, 50)).resolves.not.toThrow();
+      expect(prisma.payment.aggregate).not.toHaveBeenCalled();
+    });
+
     it('should throw if daily limit exceeded', async () => {
       prisma.walletLimit.findUnique.mockResolvedValue({
         perTransactionLimit: 200,
