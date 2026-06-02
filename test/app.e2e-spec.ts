@@ -20,17 +20,17 @@ describe('AppController (e2e)', () => {
     await app.close();
   });
 
-  it('/ (GET)', () => {
+  it('/v1/ (GET)', () => {
     return request(app.getHttpServer())
-      .get('/')
+      .get('/v1/')
       .expect(200)
       .expect('Hello World!');
   });
 
-  describe('/ready (GET)', () => {
+  describe('/v1/ready (GET)', () => {
     it('should return 200 with ready status when database is connected', async () => {
       const response = await request(app.getHttpServer())
-        .get('/ready')
+        .get('/v1/ready')
         .expect(200);
 
       expect(response.body).toHaveProperty('status', 'ready');
@@ -43,9 +43,9 @@ describe('AppController (e2e)', () => {
     });
 
     it('should be accessible without authentication (public endpoint)', async () => {
-      // The /ready endpoint should not require API key or authentication
+      // The /v1/ready endpoint should not require API key or authentication
       const response = await request(app.getHttpServer())
-        .get('/ready')
+        .get('/v1/ready')
         .expect(200);
 
       expect(response.body.status).toBe('ready');

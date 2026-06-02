@@ -4,57 +4,86 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
-import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
+import { PaymentStatus } from './entities/payment.entity';
+
+// Only PENDING payments can be transitioned; terminal states are immutable.
+const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
+  [PaymentStatus.PENDING]: [PaymentStatus.CONFIRMED, PaymentStatus.FAILED],
+  [PaymentStatus.CONFIRMED]: [],
+  [PaymentStatus.FAILED]: [],
+};
 
 @Injectable()
 export class PaymentsService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
+    private readonly walletsService: WalletsService,
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
-    const { fromId, toId, amount, currency, description } = createPaymentDto;
+    const { walletId, receiverWalletId, fromId, toId, amount, currency, description } =
+      createPaymentDto;
 
+    // Validate sender wallet exists and is ACTIVE
+    const senderWallet = await this.walletsService.findWalletById(walletId);
+    if (senderWallet.status !== WalletStatus.ACTIVE) {
+      throw new BadRequestException(
+        `Sender wallet is not active (status: ${senderWallet.status})`,
+      );
+    }
+
+    // Validate receiver wallet exists (status not enforced for receiver)
+    await this.walletsService.findWalletById(receiverWalletId);
+
+    // Scope limits check to the wallet owner (legacy userId)
     await this.limitsService.checkLimits(fromId, amount);
 
-    return this.prisma.payment.create({
+    return this.prisma.transaction.create({
       data: {
         fromId,
         toId,
         amount,
         currency,
         description,
-        userId: fromId, // Legacy support: default to sender
+        userId: fromId,
         status: 'PENDING',
       },
     });
   }
 
   findAll() {
-    return this.prisma.payment.findMany();
+    return this.prisma.transaction.findMany();
   }
 
-  findOne(id: number) {
-    return this.prisma.payment.findUnique({ where: { id } });
+  findOne(id: string) {
+    return this.prisma.transaction.findUnique({ where: { id } });
   }
 
-  update(id: number, updatePaymentDto: UpdatePaymentDto) {
-    return `This action updates a #${id} payment`;
-  }
-
-  async remove(id: number) {
+  async update(id: number, updatePaymentDto: UpdatePaymentDto) {
     const payment = await this.prisma.payment.findUnique({ where: { id } });
     if (!payment) {
       throw new NotFoundException(`Payment #${id} not found`);
     }
-    if (payment.status !== 'PENDING') {
-      throw new BadRequestException(
-        `Cannot delete payment in status: ${payment.status}`,
-      );
+
+    if (updatePaymentDto.status !== undefined) {
+      const allowed = ALLOWED_TRANSITIONS[payment.status] ?? [];
+      if (!allowed.includes(updatePaymentDto.status)) {
+        throw new BadRequestException(
+          `Cannot transition payment from ${payment.status} to ${updatePaymentDto.status}`,
+        );
+      }
     }
-    return this.prisma.payment.delete({ where: { id } });
+
+    return this.prisma.payment.update({
+      where: { id },
+      data: updatePaymentDto,
+    });
+  }
+
+  remove(id: string) {
+    return `This action removes payment ${id}`;
   }
 }
