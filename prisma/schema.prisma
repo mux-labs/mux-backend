@@ -331,6 +331,9 @@ model ApiKey {
   revokedAt       DateTime?
   revokedReason   String?
 
+  /// Grace period end for revoked keys still accepting requests
+  gracePeriodEndsAt DateTime?
+
   /// Metadata
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt

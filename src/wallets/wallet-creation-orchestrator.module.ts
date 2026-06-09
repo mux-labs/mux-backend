@@ -5,9 +5,17 @@ import { EncryptionModule } from '../encryption/encryption.module';
 import { WalletsModule } from './wallets.module';
 import { UsersModule } from '../users/users.module';
 import { WebhookModule } from '../webhooks/webhook.module';
+import { KeyManagementModule } from '../key-management/key-management.module';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
 
 @Module({
-  imports: [EncryptionModule, WalletsModule, UsersModule, WebhookModule],
+  imports: [
+    EncryptionModule,
+    KeyManagementModule,
+    WalletsModule,
+    UsersModule,
+    WebhookModule,
+  ],
   controllers: [WalletCreationOrchestratorController],
   providers: [WalletCreationOrchestrator, IdempotencyService],
   exports: [WalletCreationOrchestrator],

@@ -1,4 +1,9 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import {
+  Injectable,
+  NotFoundException,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { UpdateLimitDto } from './dto/update-limit.dto';
@@ -52,16 +57,21 @@ export class LimitsService {
       const startOfDay = new Date();
       startOfDay.setHours(0, 0, 0, 0);
 
-    const txns = await this.prisma.transaction.findMany({
-      where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
-      select: { amount: true },
-    });
+      const txns = await this.prisma.transaction.findMany({
+        where: { senderWalletId: walletId, createdAt: { gte: startOfDay } },
+        select: { amount: true },
+      });
 
-    const currentDailyTotal = txns.reduce((sum, t) => sum + Number(t.amount), 0);
-    if (currentDailyTotal + amount > limits.dailyLimit) {
-      throw new Error(
-        `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+      const currentDailyTotal = txns.reduce(
+        (sum, t) => sum + Number(t.amount),
+        0,
       );
+      if (currentDailyTotal + amount > limits.dailyLimit) {
+        throw new LimitExceededException(
+          LIMIT_ERROR_CODES.DAILY_LIMIT_EXCEEDED,
+          `Daily limit exceeded. Limit: ${limits.dailyLimit}, Used: ${currentDailyTotal}`,
+        );
+      }
     }
   }
 

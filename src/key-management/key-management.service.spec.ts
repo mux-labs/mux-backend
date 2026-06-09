@@ -6,6 +6,8 @@ import { EncryptionService, DecryptionError } from '../encryption/encryption.ser
 import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 
+import { KeyRotationAuditService } from './key-rotation-audit.service';
+
 // Prevent loading the real PrismaService (which requires the generated Prisma client)
 jest.mock('../prisma/prisma.service', () => ({
   PrismaService: jest.fn(),
@@ -28,6 +30,13 @@ describe('KeyManagementService', () => {
     $transaction: jest.fn(),
   };
 
+  const mockAuditService = {
+    persistAuditLog: jest.fn().mockResolvedValue(undefined),
+    convertToPersistentFormat: jest.fn().mockReturnValue({}),
+    queryAuditLogs: jest.fn(),
+    getRotationHistory: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -46,6 +55,10 @@ describe('KeyManagementService', () => {
         {
           provide: PrismaService,
           useValue: mockPrisma,
+        },
+        {
+          provide: KeyRotationAuditService,
+          useValue: mockAuditService,
         },
       ],
     }).compile();

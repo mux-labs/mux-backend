@@ -4,9 +4,12 @@ import {
   OrchestratorMetrics,
   CreateWalletOrchestratorRequest,
 } from './wallet-creation-orchestrator.service';
-import { WalletNetwork } from './domain/wallet.model';
+import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { ConfigService } from '@nestjs/config';
+import { KeyType } from '../key-management/domain/key-types';
 
 const mockPrisma = {
   wallet: {
@@ -51,6 +54,10 @@ const mockIdempotentUserService = {
   findOrCreateUser: jest.fn(),
 };
 
+const mockKeyManagementService = {
+  generateKey: jest.fn(),
+};
+
 // Global mock for fetch (Friendbot calls)
 const mockFetch = jest.fn();
 global.fetch = mockFetch;
@@ -58,49 +65,30 @@ global.fetch = mockFetch;
 describe('WalletCreationOrchestrator', () => {
   let orchestrator: WalletCreationOrchestrator;
 
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        WalletCreationOrchestrator,
-        {
-          provide: PrismaClient,
-          useValue: mockPrisma,
-        },
-        {
-          provide: EncryptionService,
-          useValue: mockEncryptionService,
-        },
-        {
-          provide: ConfigService,
-          useValue: mockConfigService,
-        },
-        {
-          provide: IdempotentUserService,
-          useValue: mockIdempotentUserService,
-        },
-      ],
-    }).compile();
-
-    orchestrator = module.get<WalletCreationOrchestrator>(
-      WalletCreationOrchestrator,
-    );
-
   beforeEach(() => {
     jest.clearAllMocks();
 
-    // Directly instantiate with mocks, passing mockPrisma as the optional prismaClient arg
+    mockKeyManagementService.generateKey.mockResolvedValue({
+      publicKey: 'GABC123DEF456',
+      encryptedData: 'encrypted-private-key',
+      encryptionVersion: 1,
+      keyVersion: 1,
+      keyType: KeyType.STELLAR_ED25519,
+    });
+    mockEncryptionService.deserializeAndDecrypt.mockReturnValue(
+      'decrypted-private-key',
+    );
+
     orchestrator = new WalletCreationOrchestrator(
       mockEncryptionService as any,
       mockConfigService as any,
       mockIdempotentUserService as any,
+      mockKeyManagementService as any,
       mockPrisma as any,
     );
 
     // Setup default mock returns
     mockEncryptionService.validateConfiguration.mockReturnValue(true);
-    mockEncryptionService.encryptAndSerialize.mockReturnValue(
-      'encrypted-private-key',
-    );
 
     // Mock fetch to succeed by default (Friendbot)
     mockFetch.mockResolvedValue({
@@ -155,9 +143,6 @@ describe('WalletCreationOrchestrator', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      const activeWallet = { ...provisioningWallet, status: WalletStatus.ACTIVE };
-
-      // Wallet returned after activation (ACTIVE status)
       const activeWallet = {
         ...provisioningWallet,
         status: 'ACTIVE',
@@ -201,7 +186,7 @@ describe('WalletCreationOrchestrator', () => {
           status: 'PROVISIONING',
           encryptionVersion: 1,
           secretVersion: 1,
-        },
+        }),
       });
 
       // Wallet is then transitioned to ACTIVE (Issue #188)

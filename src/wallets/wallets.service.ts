@@ -16,6 +16,7 @@ import {
   EncryptionService,
   DecryptionError,
 } from '../encryption/encryption.service';
+import { KeyDecryptionException } from '../key-management/exceptions/key-decryption.exception';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
 import * as crypto from 'crypto';
@@ -45,7 +46,7 @@ export class WalletsService {
     private configService: ConfigService,
     private keyManagementService: KeyManagementService,
   ) {
-    this.prisma = new PrismaClient(undefined);
+    this.prisma = new PrismaClient({} as any);
   }
 
   async onModuleInit() {

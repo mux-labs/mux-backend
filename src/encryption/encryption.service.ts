@@ -17,6 +17,8 @@ export class DecryptionError extends Error {
   }
 }
 
+export type DecryptionErrorCode = DecryptionError['code'];
+
 @Injectable()
 export class EncryptionService {
   private readonly logger = new Logger(EncryptionService.name);

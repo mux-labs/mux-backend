@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Horizon } from 'stellar-sdk';
+import { Server } from 'stellar-sdk';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
 
 export interface HorizonBalance {
@@ -13,7 +13,7 @@ export interface HorizonBalance {
 @Injectable()
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
-  private readonly server: Horizon.Server;
+  private readonly server: Server;
 
   constructor(private readonly configService: ConfigService) {
     const horizonUrl = this.configService.get<string>(
@@ -21,7 +21,7 @@ export class StellarHorizonService {
       'https://horizon-testnet.stellar.org',
     );
 
-    this.server = new Horizon.Server(horizonUrl, { allowHttp: false });
+    this.server = new Server(horizonUrl, { allowHttp: false });
     this.logger.log(`Initialized Stellar Horizon client: ${horizonUrl}`);
   }
 
@@ -61,7 +61,6 @@ export class StellarHorizonService {
       await this.server.loadAccount(publicKey);
       return true;
     } catch (error) {
-      // Horizon returns a 404-style error when account is not found
       if (
         error?.response?.status === 404 ||
         error?.message?.includes('404') ||

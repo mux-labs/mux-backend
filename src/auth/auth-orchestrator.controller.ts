@@ -10,14 +10,13 @@ import {
   Res,
   UseGuards,
 } from '@nestjs/common';
-import { Response } from 'express';
+import type { Response } from 'express';
 import {
   AuthOrchestrator,
-  AuthenticationRequest,
-  AuthenticationResult,
-  AuthenticationRequestWithIdempotency,
+  type AuthenticationRequest,
+  type AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
-import { Public } from './public.decorator';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 
 @Controller('auth')
 export class AuthOrchestratorController {
@@ -73,6 +72,7 @@ export class AuthOrchestratorController {
    */
   @Get('validate/:authId')
   async validateAuthentication(@Param('authId') authId: string) {
+    const isValid = await this.authOrchestrator.validateAuthentication(authId);
     return { valid: isValid };
   }
 }

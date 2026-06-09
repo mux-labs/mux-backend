@@ -118,10 +118,6 @@ export class UsersService {
   async update(id: string, updateUserDto: UpdateUserDto) {
     const data: any = {};
 
-    if (updateUserDto.authId) {
-      data.authId = updateUserDto.authId.trim();
-    }
-
     if (updateUserDto.email) {
       data.email = updateUserDto.email.trim();
     }

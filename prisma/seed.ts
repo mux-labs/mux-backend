@@ -1,9 +1,10 @@
-import { PrismaClient, WalletNetwork, WalletStatus } from '../src/generated/prisma';
+import { PrismaClient } from '../src/generated/prisma/client';
+import { WalletNetwork, WalletStatus } from '../src/generated/prisma/client';
 
 // import { PrismaClient } from '@prisma/client';
 // import { WalletNetwork, WalletStatus } from '../src/generated/prisma';
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({} as any);
 
 async function main() {
   console.log('Seeding demo users and wallets...');

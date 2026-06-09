@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
@@ -179,12 +179,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   ): Promise<WalletBalance | null> {
     const balance = await this.prisma.walletBalance.findUnique({
       where: {
-        walletId_assetType_assetCode_assetIssuer: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
           walletId,
-          assetType: asset.type,
-          assetCode: asset.code || null,
-          assetIssuer: asset.issuer || null,
-        },
+          asset,
+        ),
       },
     });
 
@@ -560,12 +558,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
     const existing = await this.prisma.walletBalance.findUnique({
       where: {
-        walletId_assetType_assetCode_assetIssuer: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
           walletId,
-          assetType: asset.type,
-          assetCode: asset.code || null,
-          assetIssuer: asset.issuer || null,
-        },
+          asset,
+        ),
       },
     });
 
@@ -573,12 +569,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
 
     await this.prisma.walletBalance.upsert({
       where: {
-        walletId_assetType_assetCode_assetIssuer: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
           walletId,
-          assetType: asset.type,
-          assetCode: asset.code || null,
-          assetIssuer: asset.issuer || null,
-        },
+          asset,
+        ),
       },
       create: {
         walletId,
@@ -607,12 +601,10 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   private async setZeroBalances(walletId: string): Promise<SyncBalancesResult> {
     await this.prisma.walletBalance.upsert({
       where: {
-        walletId_assetType_assetCode_assetIssuer: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
           walletId,
-          assetType: AssetType.NATIVE,
-          assetCode: null,
-          assetIssuer: null,
-        },
+          { type: AssetType.NATIVE },
+        ),
       },
       create: {
         walletId,
@@ -650,6 +642,15 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       asset1.code === asset2.code &&
       asset1.issuer === asset2.issuer
     );
+  }
+
+  private assetCompoundKey(walletId: string, asset: Asset) {
+    return {
+      walletId,
+      assetType: asset.type,
+      assetCode: asset.code ?? null,
+      assetIssuer: asset.issuer ?? null,
+    } as any;
   }
 
   private calculateDifference(balance1: string, balance2: string): string {

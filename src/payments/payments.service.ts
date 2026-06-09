@@ -4,8 +4,11 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { CreatePaymentDto } from './dto/create-payment.dto';
+import { UpdatePaymentDto } from './dto/update-payment.dto';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from '../limits/limits.service';
+import { WalletsService } from '../wallets/wallets.service';
+import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 
 // Only PENDING payments can be transitioned; terminal states are immutable.
@@ -24,10 +27,16 @@ export class PaymentsService {
   ) {}
 
   async create(createPaymentDto: CreatePaymentDto) {
-    const { walletId, receiverWalletId, fromId, toId, amount, currency, description } =
-      createPaymentDto;
+    const {
+      walletId,
+      receiverWalletId,
+      fromId,
+      toId,
+      amount,
+      currency,
+      description,
+    } = createPaymentDto;
 
-    // Validate sender wallet exists and is ACTIVE
     const senderWallet = await this.walletsService.findWalletById(walletId);
     if (senderWallet.status !== WalletStatus.ACTIVE) {
       throw new BadRequestException(
@@ -35,13 +44,10 @@ export class PaymentsService {
       );
     }
 
-    // Validate receiver wallet exists (status not enforced for receiver)
     await this.walletsService.findWalletById(receiverWalletId);
+    await this.limitsService.checkLimits(walletId, amount);
 
-    // Scope limits check to the wallet owner (legacy userId)
-    await this.limitsService.checkLimits(fromId, amount);
-
-    return this.prisma.transaction.create({
+    return this.prisma.payment.create({
       data: {
         fromId,
         toId,
@@ -49,23 +55,28 @@ export class PaymentsService {
         currency,
         description,
         userId: fromId,
-        status: 'PENDING',
+        status: PaymentStatus.PENDING,
       },
     });
   }
 
   findAll() {
-    return this.prisma.transaction.findMany();
+    return this.prisma.payment.findMany();
   }
 
   findOne(id: string) {
-    return this.prisma.transaction.findUnique({ where: { id } });
+    return this.prisma.payment.findUnique({
+      where: { id: parseInt(id, 10) },
+    });
   }
 
-  async update(id: number, updatePaymentDto: UpdatePaymentDto) {
-    const payment = await this.prisma.payment.findUnique({ where: { id } });
+  async update(id: string, updatePaymentDto: UpdatePaymentDto) {
+    const paymentId = parseInt(id, 10);
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: paymentId },
+    });
     if (!payment) {
-      throw new NotFoundException(`Payment #${id} not found`);
+      throw new NotFoundException(`Payment #${paymentId} not found`);
     }
 
     if (updatePaymentDto.status !== undefined) {
@@ -78,7 +89,7 @@ export class PaymentsService {
     }
 
     return this.prisma.payment.update({
-      where: { id },
+      where: { id: paymentId },
       data: updatePaymentDto,
     });
   }

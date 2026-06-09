@@ -1,7 +1,14 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { KeyOperation } from '@prisma/client';
+
+enum KeyOperation {
+  GENERATE = 'GENERATE',
+  SIGN = 'SIGN',
+  ROTATE = 'ROTATE',
+  REVOKE = 'REVOKE',
+  ACCESS = 'ACCESS',
+}
 
 describe('KeyRotationAuditService', () => {
   let service: KeyRotationAuditService;

@@ -5,6 +5,7 @@ import {
   AuthenticationRequest,
   AuthenticationResult,
 } from './auth-orchestrator.service';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC } from './public.decorator';
 
@@ -50,7 +51,10 @@ describe('AuthOrchestratorController', () => {
         },
         Reflector,
       ],
-    }).compile();
+    })
+      .overrideGuard(AuthRateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<AuthOrchestratorController>(
       AuthOrchestratorController,
@@ -61,6 +65,11 @@ describe('AuthOrchestratorController', () => {
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  const mockResponse = () => ({
+    json: jest.fn(),
+    setHeader: jest.fn(),
   });
 
   describe('authenticate', () => {
@@ -77,12 +86,14 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(mockAuthenticationResult);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      await controller.authenticate(authRequest, undefined, response as any);
 
-      expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith(
-        authRequest,
-      );
-      expect(result).toEqual(mockAuthenticationResult);
+      expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith({
+        ...authRequest,
+        idempotencyKey: undefined,
+      });
+      expect(response.json).toHaveBeenCalledWith(mockAuthenticationResult);
     });
 
     it('should return authentication result with user and wallet', async () => {
@@ -90,12 +101,17 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(mockAuthenticationResult);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      await controller.authenticate(authRequest, undefined, response as any);
 
-      expect(result).toHaveProperty('user');
-      expect(result).toHaveProperty('wallet');
-      expect(result).toHaveProperty('isNewUser');
-      expect(result).toHaveProperty('isNewWallet');
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: expect.any(Object),
+          wallet: expect.any(Object),
+          isNewUser: expect.any(Boolean),
+          isNewWallet: expect.any(Boolean),
+        }),
+      );
     });
 
     it('should be marked as public endpoint', () => {
@@ -119,10 +135,12 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(newUserResult);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      await controller.authenticate(authRequest, undefined, response as any);
 
-      expect(result.isNewUser).toBe(true);
-      expect(result.isNewWallet).toBe(true);
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({ isNewUser: true, isNewWallet: true }),
+      );
     });
 
     it('should handle returning user authentication', async () => {
@@ -136,10 +154,12 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(returningUserResult);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      await controller.authenticate(authRequest, undefined, response as any);
 
-      expect(result.isNewUser).toBe(false);
-      expect(result.isNewWallet).toBe(false);
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({ isNewUser: false, isNewWallet: false }),
+      );
     });
 
     it('should handle authentication with minimal request data', async () => {
@@ -153,12 +173,14 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(mockAuthenticationResult);
 
-      const result = await controller.authenticate(minimalRequest);
+      const response = mockResponse();
+      await controller.authenticate(minimalRequest, undefined, response as any);
 
-      expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith(
-        minimalRequest,
-      );
-      expect(result).toBeDefined();
+      expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith({
+        ...minimalRequest,
+        idempotencyKey: undefined,
+      });
+      expect(response.json).toHaveBeenCalled();
     });
 
     it('should propagate errors from authOrchestrator', async () => {
@@ -167,9 +189,10 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockRejectedValue(error);
 
-      await expect(controller.authenticate(authRequest)).rejects.toThrow(
-        'Authentication failed',
-      );
+      const response = mockResponse();
+      await expect(
+        controller.authenticate(authRequest, undefined, response as any),
+      ).rejects.toThrow('Authentication failed');
     });
   });
 

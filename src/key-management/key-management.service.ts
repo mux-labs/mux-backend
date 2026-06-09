@@ -2,8 +2,9 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IKeyProvider } from './interfaces/key-provider.interface';
 import { StellarKeyProvider } from './providers/stellar-key.provider';
-import { EncryptionService } from '../encryption/encryption.service';
+import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 import {
   GeneratedKeyPair,
   SignatureResult,
@@ -66,6 +67,7 @@ export class KeyManagementService {
     private readonly encryptionService: EncryptionService,
     private readonly configService: ConfigService,
     private readonly prisma: PrismaService,
+    private readonly auditService: KeyRotationAuditService,
   ) {
     // Initialize key providers
     this.providers = new Map();
@@ -271,7 +273,7 @@ export class KeyManagementService {
       return {
         encryptedData: newEncryptedData,
         encryptionVersion: 2, // Increment encryption envelope version
-        keyVersion: currentKeyVersion, // Key algorithm version is unchanged on re-encryption
+        keyVersion: 1,
         keyType,
         publicKey: '', // Would derive from private key in production
       };

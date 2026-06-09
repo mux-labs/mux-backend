@@ -217,7 +217,7 @@ export class AuthOrchestrator {
           authId: userResult.user.authId,
           email: userResult.user.email,
           displayName: userResult.user.displayName,
-          status: userResult.user.status,
+          status: userResult.user.status ?? 'ACTIVE',
           authProvider: userResult.user.authProvider,
           lastLoginAt: userResult.user.lastLoginAt ?? null,
         },

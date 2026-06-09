@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { KeyOperation } from '@prisma/client';
+import { KeyOperation } from '../generated/prisma/client';
 import { KeyOperationAudit } from './domain/key-types';
 
 export interface PersistAuditLogRequest {

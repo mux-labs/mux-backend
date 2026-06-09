@@ -5,7 +5,7 @@ import {
   SignatureResult,
   KeyType,
 } from '../domain/key-types';
-import { EncryptionService } from '../../encryption/encryption.service';
+import { EncryptionService, DecryptionError } from '../../encryption/encryption.service';
 import { Keypair } from 'stellar-sdk';
 import { StrKeyHelper } from '../utils/strkey.helper';
 

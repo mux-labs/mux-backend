@@ -105,20 +105,19 @@ export class TransactionsService {
     }
 
     // Create transaction in database
-    try {
-      const created = await this.prisma.transaction.create({
-        data: {
-          amount,
-          assetType: asset.type,
-          assetCode: asset.code ?? null,
-          assetIssuer: asset.issuer ?? null,
-          senderWalletId,
-          receiverWalletId: receiverWalletId ?? null,
-          status: TransactionStatus.PENDING,
-          metadata: metadata ?? null,
-          idempotencyKey: idempotencyKey ?? null,
-        },
-      });
+    const created = await this.prisma.transaction.create({
+      data: {
+        amount,
+        assetType: asset.type,
+        assetCode: asset.code ?? null,
+        assetIssuer: asset.issuer ?? null,
+        senderWalletId,
+        receiverWalletId: receiverWalletId ?? null,
+        status: TransactionStatus.PENDING,
+        metadata: metadata ?? undefined,
+        idempotencyKey: idempotencyKey ?? null,
+      },
+    });
 
     this.webhookEventEmitter
       .emitTransactionCreated({

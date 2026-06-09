@@ -12,6 +12,8 @@ import {
 } from '@nestjs/common';
 import {
   WebhookService,
+} from './webhook.service';
+import type {
   CreateWebhookEndpointRequest,
   UpdateWebhookEndpointRequest,
 } from './webhook.service';

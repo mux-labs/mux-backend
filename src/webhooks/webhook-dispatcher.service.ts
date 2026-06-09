@@ -296,7 +296,7 @@ export class WebhookDispatcherService {
         endpointId: endpoint.id,
         eventId: event.id,
         eventType: event.type,
-        payload: event,
+        payload: JSON.parse(JSON.stringify(event)),
         status: DeliveryStatus.PENDING,
         attempts: 0,
         maxAttempts: this.maxRetries,

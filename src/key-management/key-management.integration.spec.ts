@@ -26,6 +26,8 @@ import { KeyType } from './domain/key-types';
 // Shared helpers
 // ---------------------------------------------------------------------------
 
+import { KeyRotationAuditService } from './key-rotation-audit.service';
+
 /** Builds a minimal ConfigService stub that satisfies EncryptionService. */
 function makeConfigService(
   key = 'integration-test-key-32bytes!!',
@@ -59,6 +61,13 @@ describe('KeyManagement (integration harness)', () => {
         {
           provide: ConfigService,
           useValue: makeConfigService(),
+        },
+        {
+          provide: KeyRotationAuditService,
+          useValue: {
+            persistAuditLog: jest.fn().mockResolvedValue(undefined),
+            convertToPersistentFormat: jest.fn().mockReturnValue({}),
+          },
         },
       ],
     }).compile();

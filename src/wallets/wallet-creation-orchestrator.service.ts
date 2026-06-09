@@ -14,9 +14,10 @@ import {
   WalletStatusResponse,
 } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyType } from '../key-management/domain/key-types';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
-import * as crypto from 'crypto';
 
 export type OrchestrationPhase =
   | 'user-resolution'
@@ -56,7 +57,7 @@ export interface User {
   authId: string;
   email?: string;
   displayName?: string;
-  status: string;
+  status?: string;
   authProvider: string;
   lastLoginAt?: Date;
   createdAt: Date;
@@ -161,9 +162,10 @@ export class WalletCreationOrchestrator {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
     private idempotentUserService: IdempotentUserService,
+    private keyManagementService: KeyManagementService,
     prismaClient?: PrismaClient,
   ) {
-    this.prisma = prismaClient ?? new PrismaClient(undefined);
+    this.prisma = prismaClient ?? new PrismaClient({} as any);
   }
 
   async onModuleInit() {
@@ -267,7 +269,8 @@ export class WalletCreationOrchestrator {
         if (request.idempotencyKey) {
           await this.storeIdempotencyRecord(
             request.idempotencyKey,
-            txResult,
+            result,
+            request,
             tx,
           );
         }
@@ -280,7 +283,7 @@ export class WalletCreationOrchestrator {
           phases: newWallet.phaseTimings,
         });
 
-        return txResult;
+        return result;
       });
 
       return result;
@@ -430,32 +433,28 @@ export class WalletCreationOrchestrator {
     const { request } = context;
     const phaseTimings: Partial<Record<OrchestrationPhase, number>> = {};
 
-    // Phase: key-generation
-    let keyPair: { publicKey: string; privateKey: string };
+    // Phase: key-generation + key-encryption via KeyManagementService
+    let encryptedKeyMaterial: {
+      publicKey: string;
+      encryptedData: string;
+      encryptionVersion: number;
+    };
+    let privateKey: string;
     try {
       const t = Date.now();
-      keyPair = this.generateStellarKeyPair();
+      encryptedKeyMaterial = await this.keyManagementService.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { userId: request.userId, network: request.network },
+      });
+      privateKey = this.encryptionService.deserializeAndDecrypt(
+        encryptedKeyMaterial.encryptedData,
+      );
       phaseTimings['key-generation'] = Date.now() - t;
+      phaseTimings['key-encryption'] = 0;
     } catch (error) {
       throw new WalletOrchestrationError(
         'Key generation failed',
         'key-generation',
-        error,
-      );
-    }
-
-    // Phase: key-encryption
-    let encryptedSecret: string;
-    try {
-      const t = Date.now();
-      encryptedSecret = this.encryptionService.encryptAndSerialize(
-        keyPair.privateKey,
-      );
-      phaseTimings['key-encryption'] = Date.now() - t;
-    } catch (error) {
-      throw new WalletOrchestrationError(
-        'Key encryption failed',
-        'key-encryption',
         error,
       );
     }
@@ -470,8 +469,8 @@ export class WalletCreationOrchestrator {
           publicKey: encryptedKeyMaterial.publicKey,
           encryptedSecret: encryptedKeyMaterial.encryptedData,
           network: request.network,
-          status: 'PROVISIONING', // Start in PROVISIONING (Issue #188)
-          encryptionVersion: 1,
+          status: 'PROVISIONING',
+          encryptionVersion: encryptedKeyMaterial.encryptionVersion,
           secretVersion: 1,
           keyVersion: 1,
         },
@@ -511,7 +510,7 @@ export class WalletCreationOrchestrator {
 
     return {
       wallet: this.mapPrismaWalletToDomain(activatedWallet),
-      privateKey: keyPair.privateKey,
+      privateKey,
       phaseTimings,
     };
   }

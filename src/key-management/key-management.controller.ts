@@ -10,14 +10,12 @@ import {
 } from '@nestjs/common';
 import {
   KeyManagementService,
-  GenerateKeyRequest,
-  SignRequest,
-  RotateKeyRequest,
 } from './key-management.service';
+import type { GenerateKeyRequest, SignRequest } from './key-management.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
 import { KeyRotationAuditService, QueryAuditLogsRequest } from './key-rotation-audit.service';
-import { KeyOperation } from '@prisma/client';
+import { KeyOperation } from '../generated/prisma/client';
 
 /**
  * Internal controller for key management operations
@@ -182,27 +180,6 @@ export class KeyManagementController {
     return {
       success: true,
       data: statistics,
-    };
-  }
-
-  /**
-   * Rotates a key (generates new keypair, marks old as rotated)
-   * 
-   * POST /internal/key-management/rotate
-   * Body: { keyId, encryptedKeyMaterial, keyType, reason?, metadata? }
-   */
-  @Post('rotate')
-  @HttpCode(HttpStatus.OK)
-  async rotateKey(@Body() request: RotateKeyRequest) {
-    const result = await this.keyManagementService.rotateKey(request);
-
-    return {
-      success: true,
-      newPublicKey: result.newKey.publicKey,
-      newEncryptedData: result.newKey.encryptedData,
-      encryptionVersion: result.newKey.encryptionVersion,
-      previousKeyId: result.previousKeyId,
-      rotatedAt: new Date(),
     };
   }
 

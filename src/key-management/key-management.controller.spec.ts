@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { KeyManagementController } from './key-management.controller';
 import { KeyManagementService } from './key-management.service';
 import { KeyType } from './domain/key-types';
+import { KeyRotationAuditService } from './key-rotation-audit.service';
 import {
   KeyStatistics,
   DetailedKeyStatistics,
@@ -28,6 +29,13 @@ describe('KeyManagementController', () => {
         {
           provide: KeyManagementService,
           useValue: mockKeyManagementService,
+        },
+        {
+          provide: KeyRotationAuditService,
+          useValue: {
+            queryAuditLogs: jest.fn(),
+            getRotationHistory: jest.fn(),
+          },
         },
       ],
     }).compile();
