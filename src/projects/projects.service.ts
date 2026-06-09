@@ -51,11 +51,7 @@ export class ProjectsService {
     return project;
   }
 
-  async update(
-    id: string,
-    dto: UpdateProjectDto,
-    developerId?: string,
-  ) {
+  async update(id: string, dto: UpdateProjectDto, developerId?: string) {
     const project = await this.findOne(id);
 
     if (developerId && project.developerId !== developerId) {

@@ -5,6 +5,8 @@ import { EncryptionService } from '../../encryption/encryption.service';
 import { KeyType } from '../domain/key-types';
 import { StrKeyHelper } from './strkey.helper';
 import { Keypair } from 'stellar-sdk';
+import { PrismaService } from '../../prisma/prisma.service';
+import { KeyRotationAuditService } from '../key-rotation-audit.service';
 
 describe('StrKeyHelper Integration with Key Management', () => {
   let keyManagementService: KeyManagementService;
@@ -23,10 +25,29 @@ describe('StrKeyHelper Integration with Key Management', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: PrismaService,
+          useValue: {
+            wallet: {
+              findUnique: jest.fn(),
+              create: jest.fn(),
+              update: jest.fn(),
+            },
+            $transaction: jest.fn(),
+          },
+        },
+        {
+          provide: KeyRotationAuditService,
+          useValue: {
+            persistAuditLog: jest.fn().mockResolvedValue(undefined),
+            convertToPersistentFormat: jest.fn().mockReturnValue({}),
+          },
+        },
       ],
     }).compile();
 
-    keyManagementService = module.get<KeyManagementService>(KeyManagementService);
+    keyManagementService =
+      module.get<KeyManagementService>(KeyManagementService);
     encryptionService = module.get<EncryptionService>(EncryptionService);
   });
 
@@ -38,7 +59,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
       });
 
       // The public key should be a valid Stellar StrKey format
-      expect(StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey)).toBe(true);
+      expect(StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey)).toBe(
+        true,
+      );
       expect(keyMaterial.publicKey.startsWith('G')).toBe(true);
       expect(keyMaterial.publicKey.length).toBe(56);
 
@@ -92,7 +115,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
       });
 
       // Validate public key format
-      expect(StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey)).toBe(true);
+      expect(StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey)).toBe(
+        true,
+      );
 
       // Sign data
       const testData = Buffer.from('test transaction data');
@@ -104,7 +129,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
 
       // Signature should reference the validated public key
       expect(signature.publicKey).toBe(keyMaterial.publicKey);
-      expect(StrKeyHelper.isValidEd25519PublicKey(signature.publicKey)).toBe(true);
+      expect(StrKeyHelper.isValidEd25519PublicKey(signature.publicKey)).toBe(
+        true,
+      );
       expect(signature.signature).toBeDefined();
     });
 
@@ -162,7 +189,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
 
       // Should detect secret seed pattern
       expect(StrKeyHelper.looksLikeSecretSeed(decryptedSecret)).toBe(true);
-      expect(StrKeyHelper.looksLikeSecretSeed(keyMaterial.publicKey)).toBe(false);
+      expect(StrKeyHelper.looksLikeSecretSeed(keyMaterial.publicKey)).toBe(
+        false,
+      );
     });
 
     it('should safely mask keys for logging', async () => {
@@ -202,7 +231,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
 
       expect(generateLog).toBeDefined();
       expect(generateLog?.publicKey).toBe(keyMaterial.publicKey);
-      expect(StrKeyHelper.isValidEd25519PublicKey(generateLog!.publicKey)).toBe(true);
+      expect(StrKeyHelper.isValidEd25519PublicKey(generateLog!.publicKey)).toBe(
+        true,
+      );
     });
 
     it('should audit signing operations with valid keys', async () => {
@@ -220,7 +251,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
       const signLog = auditLog.find((log) => log.operation === 'SIGN');
 
       expect(signLog).toBeDefined();
-      expect(StrKeyHelper.isValidEd25519PublicKey(signLog!.publicKey)).toBe(true);
+      expect(StrKeyHelper.isValidEd25519PublicKey(signLog!.publicKey)).toBe(
+        true,
+      );
     });
   });
 
@@ -233,7 +266,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
       const invalidPublicKey = 'GINVALIDKEY123';
 
       // StrKey helper should detect invalid format
-      expect(StrKeyHelper.isValidEd25519PublicKey(invalidPublicKey)).toBe(false);
+      expect(StrKeyHelper.isValidEd25519PublicKey(invalidPublicKey)).toBe(
+        false,
+      );
 
       // Attempting to sign with invalid public key should still work
       // (public key is just for audit, not used in signing)
@@ -289,7 +324,9 @@ describe('StrKeyHelper Integration with Key Management', () => {
       });
 
       // Decode the public key to raw bytes
-      const rawPublicKey = StrKeyHelper.decodeEd25519PublicKey(keyMaterial.publicKey);
+      const rawPublicKey = StrKeyHelper.decodeEd25519PublicKey(
+        keyMaterial.publicKey,
+      );
 
       expect(Buffer.isBuffer(rawPublicKey)).toBe(true);
       expect(rawPublicKey.length).toBe(32);
@@ -303,9 +340,15 @@ describe('StrKeyHelper Integration with Key Management', () => {
   describe('Statistics Integration', () => {
     it('should generate statistics with validated keys', async () => {
       // Generate multiple keys
-      await keyManagementService.generateKey({ keyType: KeyType.STELLAR_ED25519 });
-      await keyManagementService.generateKey({ keyType: KeyType.STELLAR_ED25519 });
-      await keyManagementService.generateKey({ keyType: KeyType.STELLAR_ED25519 });
+      await keyManagementService.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+      });
+      await keyManagementService.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+      });
+      await keyManagementService.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+      });
 
       const stats = keyManagementService.getStatistics();
 
@@ -313,11 +356,15 @@ describe('StrKeyHelper Integration with Key Management', () => {
 
       // All public keys in audit log should be valid
       const auditLog = keyManagementService.getAuditLog(100);
-      const generateLogs = auditLog.filter((log) => log.operation === 'GENERATE');
+      const generateLogs = auditLog.filter(
+        (log) => log.operation === 'GENERATE',
+      );
 
       generateLogs.forEach((log) => {
         if (log.publicKey !== 'failed') {
-          expect(StrKeyHelper.isValidEd25519PublicKey(log.publicKey)).toBe(true);
+          expect(StrKeyHelper.isValidEd25519PublicKey(log.publicKey)).toBe(
+            true,
+          );
         }
       });
     });

@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { TransactionsController } from './transactions.controller';
 import { TransactionsService } from './transactions.service';
+import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 import { TransactionStatus } from './domain/transaction.model';
@@ -24,6 +25,10 @@ describe('TransactionsController', () => {
       controllers: [TransactionsController],
       providers: [
         { provide: TransactionsService, useValue: mockTransactionsService },
+        {
+          provide: StellarTransactionBuildService,
+          useValue: { buildPayment: jest.fn() },
+        },
       ],
     })
       .overrideGuard(ApiKeyGuard)
@@ -47,10 +52,13 @@ describe('TransactionsController', () => {
 
       await controller.findByWallet('wallet-1', undefined, undefined);
 
-      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith('wallet-1', {
-        limit: undefined,
-        offset: undefined,
-      });
+      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith(
+        'wallet-1',
+        {
+          limit: undefined,
+          offset: undefined,
+        },
+      );
     });
 
     it('should parse and pass limit and offset', async () => {
@@ -58,17 +66,24 @@ describe('TransactionsController', () => {
 
       await controller.findByWallet('wallet-1', '10', '20');
 
-      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith('wallet-1', {
-        limit: 10,
-        offset: 20,
-      });
+      expect(mockTransactionsService.findByWallet).toHaveBeenCalledWith(
+        'wallet-1',
+        {
+          limit: 10,
+          offset: 20,
+        },
+      );
     });
 
     it('should return the result from the service', async () => {
       const tx = { id: 'tx-1', status: TransactionStatus.PENDING };
       mockTransactionsService.findByWallet.mockResolvedValue([tx]);
 
-      const result = await controller.findByWallet('wallet-1', undefined, undefined);
+      const result = await controller.findByWallet(
+        'wallet-1',
+        undefined,
+        undefined,
+      );
 
       expect(result).toEqual([tx]);
     });

@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException } from '@nestjs/common';
-import { AuthOrchestrator } from './auth-orchestrator.service';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { AuthOrchestrator, AuthPayloadValidator } from './auth-orchestrator.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
@@ -391,6 +391,7 @@ describe('AuthOrchestrator', () => {
         displayName: 'Test User',
         status: 'ACTIVE',
         authProvider: 'GOOGLE',
+        lastLoginAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
       };

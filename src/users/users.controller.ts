@@ -45,9 +45,7 @@ export class UsersController {
   ) {
     const parsedPage = page ? parseInt(page, 10) : undefined;
     const parsedLimit = limit ? parseInt(limit, 10) : undefined;
-    const validStatus = Object.values(UserStatus).includes(
-      status as UserStatus,
-    )
+    const validStatus = Object.values(UserStatus).includes(status as UserStatus)
       ? (status as UserStatus)
       : undefined;
 

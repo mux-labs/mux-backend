@@ -1,4 +1,10 @@
-import { Injectable, Logger, ForbiddenException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ForbiddenException,
+  BadRequestException,
+  HttpException,
+} from '@nestjs/common';
 import {
   IdempotentUserService,
   FindOrCreateUserRequest,
@@ -253,6 +259,9 @@ export class AuthOrchestrator {
         `Authentication orchestration failed for authId ${request.authId}:`,
         error,
       );
+      if (error instanceof HttpException) {
+        throw error;
+      }
       throw new Error(`Authentication failed: ${error.message}`);
     }
   }

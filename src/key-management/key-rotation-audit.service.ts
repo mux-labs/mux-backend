@@ -32,7 +32,7 @@ export interface QueryAuditLogsRequest {
 
 /**
  * Service for persisting key rotation audit logs to database
- * 
+ *
  * Provides:
  * - Persistent storage of key operations for compliance
  * - Queryable audit trail for security monitoring
@@ -47,7 +47,7 @@ export class KeyRotationAuditService {
 
   /**
    * Persists a key operation audit log to the database
-   * 
+   *
    * CRITICAL: This should be called for ALL key operations
    * to maintain compliance and security monitoring capabilities
    */
@@ -56,7 +56,8 @@ export class KeyRotationAuditService {
       // Calculate expiration date if retention policy specified
       const expiresAt = request.retentionDays
         ? new Date(
-            request.timestamp.getTime() + request.retentionDays * 24 * 60 * 60 * 1000,
+            request.timestamp.getTime() +
+              request.retentionDays * 24 * 60 * 60 * 1000,
           )
         : undefined;
 
@@ -95,13 +96,16 @@ export class KeyRotationAuditService {
   /**
    * Persists multiple audit logs in a batch (for efficiency)
    */
-  async persistAuditLogBatch(requests: PersistAuditLogRequest[]): Promise<void> {
+  async persistAuditLogBatch(
+    requests: PersistAuditLogRequest[],
+  ): Promise<void> {
     try {
       await this.prisma.keyRotationAuditLog.createMany({
         data: requests.map((request) => {
           const expiresAt = request.retentionDays
             ? new Date(
-                request.timestamp.getTime() + request.retentionDays * 24 * 60 * 60 * 1000,
+                request.timestamp.getTime() +
+                  request.retentionDays * 24 * 60 * 60 * 1000,
               )
             : undefined;
 
@@ -126,10 +130,7 @@ export class KeyRotationAuditService {
 
       this.logger.log(`Persisted ${requests.length} audit logs in batch`);
     } catch (error) {
-      this.logger.error(
-        `CRITICAL: Failed to persist batch audit logs:`,
-        error,
-      );
+      this.logger.error(`CRITICAL: Failed to persist batch audit logs:`, error);
     }
   }
 
@@ -194,11 +195,7 @@ export class KeyRotationAuditService {
   async getRotationHistory(keyId: string) {
     const logs = await this.prisma.keyRotationAuditLog.findMany({
       where: {
-        OR: [
-          { keyId },
-          { previousKeyId: keyId },
-          { newKeyId: keyId },
-        ],
+        OR: [{ keyId }, { previousKeyId: keyId }, { newKeyId: keyId }],
       },
       orderBy: { timestamp: 'desc' },
     });
@@ -256,8 +253,7 @@ export class KeyRotationAuditService {
       totalLogs,
       successfulLogs,
       failedLogs,
-      successRate:
-        totalLogs > 0 ? (successfulLogs / totalLogs) * 100 : 100,
+      successRate: totalLogs > 0 ? (successfulLogs / totalLogs) * 100 : 100,
       operationBreakdown: {
         rotate: rotationLogs,
         generate: generateLogs,

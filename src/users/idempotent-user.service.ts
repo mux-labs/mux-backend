@@ -3,6 +3,7 @@ import {
   Logger,
   ConflictException,
   BadRequestException,
+  HttpException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UserStatus } from './entities/user.entity';
@@ -98,6 +99,10 @@ export class IdempotentUserService {
         `Failed to find or create user with authId ${authId}:`,
         error,
       );
+
+      if (error instanceof HttpException) {
+        throw error;
+      }
 
       if (error?.code === 'P2002') {
         this.logger.log(

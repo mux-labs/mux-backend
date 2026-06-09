@@ -69,7 +69,9 @@ describe('ApiKeyService', () => {
           }
 
           if (where?.keyHash) {
-            const key = createdKeys.find((record) => record.keyHash === where.keyHash);
+            const key = createdKeys.find(
+              (record) => record.keyHash === where.keyHash,
+            );
             if (!key) {
               return null;
             }
@@ -87,12 +89,20 @@ describe('ApiKeyService', () => {
 
           return null;
         }),
-        findMany: jest.fn().mockImplementation(async ({ where, skip, take }) => {
-          const matching = createdKeys.filter((key) => key.projectId === where.projectId);
-          return matching.slice(skip ?? 0, (skip ?? 0) + (take ?? matching.length));
-        }),
+        findMany: jest
+          .fn()
+          .mockImplementation(async ({ where, skip, take }) => {
+            const matching = createdKeys.filter(
+              (key) => key.projectId === where.projectId,
+            );
+            return matching.slice(
+              skip ?? 0,
+              (skip ?? 0) + (take ?? matching.length),
+            );
+          }),
         count: jest.fn().mockImplementation(async ({ where }) => {
-          return createdKeys.filter((key) => key.projectId === where.projectId).length;
+          return createdKeys.filter((key) => key.projectId === where.projectId)
+            .length;
         }),
         update: jest.fn().mockImplementation(async ({ where, data }) => {
           const key = createdKeys.find((record) => record.id === where.id);
@@ -272,9 +282,7 @@ describe('ApiKeyService', () => {
       expect(oldResult.apiKey).toBeDefined();
       expect(oldResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
 
-      const newResult = await service.validateApiKey(
-        rotateResult.plainTextKey,
-      );
+      const newResult = await service.validateApiKey(rotateResult.plainTextKey);
       expect(newResult.apiKey.status).toBe(ApiKeyStatus.ACTIVE);
     });
   });

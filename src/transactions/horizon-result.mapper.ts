@@ -37,9 +37,7 @@ export function mapHorizonResultToStatus(
   }
 
   const txCode =
-    result.result_code ??
-    result.extras?.result_codes?.transaction ??
-    '';
+    result.result_code ?? result.extras?.result_codes?.transaction ?? '';
 
   switch (txCode) {
     case 'tx_success':

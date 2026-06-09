@@ -6,8 +6,12 @@ import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 // Mock the generated Prisma client (not generated in test env)
-jest.mock('../generated/prisma/client', () => ({ PrismaClient: jest.fn() }), { virtual: true });
-jest.mock('../prisma/prisma.service', () => ({ PrismaService: jest.fn() }), { virtual: true });
+jest.mock('../generated/prisma/client', () => ({ PrismaClient: jest.fn() }), {
+  virtual: true,
+});
+jest.mock('../prisma/prisma.service', () => ({ PrismaService: jest.fn() }), {
+  virtual: true,
+});
 
 const mockUsersService = {
   create: jest.fn(),
@@ -68,10 +72,16 @@ describe('UsersController', () => {
         isNewUser: false,
       };
 
-      mockIdempotentUserService.findOrCreateUser.mockResolvedValue(serviceResult);
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue(
+        serviceResult,
+      );
 
-      await expect(controller.findOrCreate(request)).resolves.toEqual(serviceResult);
-      expect(mockIdempotentUserService.findOrCreateUser).toHaveBeenCalledWith(request);
+      await expect(controller.findOrCreate(request)).resolves.toEqual(
+        serviceResult,
+      );
+      expect(mockIdempotentUserService.findOrCreateUser).toHaveBeenCalledWith(
+        request,
+      );
     });
 
     it('should return new user with isNewUser=true when user does not exist', async () => {
@@ -81,9 +91,13 @@ describe('UsersController', () => {
         isNewUser: true,
       };
 
-      mockIdempotentUserService.findOrCreateUser.mockResolvedValue(serviceResult);
+      mockIdempotentUserService.findOrCreateUser.mockResolvedValue(
+        serviceResult,
+      );
 
-      await expect(controller.findOrCreate(request)).resolves.toEqual(serviceResult);
+      await expect(controller.findOrCreate(request)).resolves.toEqual(
+        serviceResult,
+      );
     });
 
     it('should propagate errors from IdempotentUserService', async () => {
@@ -92,7 +106,9 @@ describe('UsersController', () => {
         new Error('User creation failed'),
       );
 
-      await expect(controller.findOrCreate(request)).rejects.toThrow('User creation failed');
+      await expect(controller.findOrCreate(request)).rejects.toThrow(
+        'User creation failed',
+      );
     });
   });
 
@@ -100,7 +116,9 @@ describe('UsersController', () => {
     const users = [{ id: 'user-123' }];
     mockUsersService.findAll.mockResolvedValue(users);
 
-    await expect(controller.findAll('2', '10', 'ACTIVE')).resolves.toEqual(users);
+    await expect(controller.findAll('2', '10', 'ACTIVE')).resolves.toEqual(
+      users,
+    );
     expect(mockUsersService.findAll).toHaveBeenCalledWith({
       page: 2,
       limit: 10,

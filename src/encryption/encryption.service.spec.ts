@@ -8,7 +8,9 @@ describe('EncryptionService', () => {
 
   beforeEach(async () => {
     const mockConfigService = {
-      get: jest.fn(),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-32-characters-long!!'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -274,7 +276,7 @@ describe('EncryptionService', () => {
 
     it('should derive different keys from different inputs', () => {
       const key1 = 'test-encryption-key-12345-long-enough-32-chars';
-      const key2 = 'different-encryption-key-67890';
+      const key2 = 'different-encryption-key-32-chars-long!!';
 
       jest.spyOn(configService, 'get').mockReturnValue(key1);
       const service1 = new EncryptionService(configService);

@@ -26,7 +26,9 @@ export class ApiKeyController {
   @Post()
   @HttpCode(HttpStatus.CREATED)
   async createApiKey(@Body() request: CreateApiKeyDto) {
-    const result = await this.apiKeyService.createApiKey(request as CreateApiKeyRequest);
+    const result = await this.apiKeyService.createApiKey(
+      request as CreateApiKeyRequest,
+    );
 
     return {
       message: 'Store this key securely — it will not be shown again',

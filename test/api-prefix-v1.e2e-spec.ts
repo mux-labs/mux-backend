@@ -34,9 +34,7 @@ describe('API Prefix /v1 (e2e)', () => {
     });
 
     it('should return 404 for root endpoint without prefix', async () => {
-      await request(app.getHttpServer())
-        .get('/')
-        .expect(HttpStatus.NOT_FOUND);
+      await request(app.getHttpServer()).get('/').expect(HttpStatus.NOT_FOUND);
     });
 
     it('should serve /v1/ready endpoint', async () => {
@@ -107,8 +105,7 @@ describe('API Prefix /v1 (e2e)', () => {
     });
 
     it('should respond to /v1/users routes', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/users');
+      const response = await request(app.getHttpServer()).get('/v1/users');
 
       // Should not be 404 - endpoint should exist with or without proper auth
       expect(response.status).not.toBe(HttpStatus.NOT_FOUND);
@@ -121,8 +118,7 @@ describe('API Prefix /v1 (e2e)', () => {
     });
 
     it('should respond to /v1/wallets routes', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/wallets');
+      const response = await request(app.getHttpServer()).get('/v1/wallets');
 
       // Should not be 404 - endpoint should exist
       expect(response.status).not.toBe(HttpStatus.NOT_FOUND);
@@ -135,8 +131,7 @@ describe('API Prefix /v1 (e2e)', () => {
     });
 
     it('should respond to /v1/api-keys routes', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/api-keys');
+      const response = await request(app.getHttpServer()).get('/v1/api-keys');
 
       // Should not be 404 - endpoint should exist
       expect(response.status).not.toBe(HttpStatus.NOT_FOUND);
@@ -149,8 +144,7 @@ describe('API Prefix /v1 (e2e)', () => {
     });
 
     it('should respond to /v1/developers routes', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/developers');
+      const response = await request(app.getHttpServer()).get('/v1/developers');
 
       // Should not be 404 - endpoint should exist
       expect(response.status).not.toBe(HttpStatus.NOT_FOUND);
@@ -163,8 +157,7 @@ describe('API Prefix /v1 (e2e)', () => {
     });
 
     it('should respond to /v1/projects routes', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/projects');
+      const response = await request(app.getHttpServer()).get('/v1/projects');
 
       // Should not be 404 - endpoint should exist
       expect(response.status).not.toBe(HttpStatus.NOT_FOUND);

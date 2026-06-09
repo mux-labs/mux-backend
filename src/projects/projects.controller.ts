@@ -42,10 +42,7 @@ export class ProjectsController {
   }
 
   @Delete(':id')
-  remove(
-    @Param('id') id: string,
-    @Query('developerId') developerId?: string,
-  ) {
+  remove(@Param('id') id: string, @Query('developerId') developerId?: string) {
     return this.projectsService.remove(id, developerId);
   }
 }

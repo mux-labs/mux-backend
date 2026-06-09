@@ -27,10 +27,12 @@ import { KeyType } from './domain/key-types';
 // ---------------------------------------------------------------------------
 
 import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 
 /** Builds a minimal ConfigService stub that satisfies EncryptionService. */
 function makeConfigService(
-  key = 'integration-test-key-32bytes!!',
+  key = 'integration-test-encryption-key-32chars!!',
 ): Partial<ConfigService> {
   return {
     get: jest.fn((envKey: string) => {
@@ -67,6 +69,17 @@ describe('KeyManagement (integration harness)', () => {
           useValue: {
             persistAuditLog: jest.fn().mockResolvedValue(undefined),
             convertToPersistentFormat: jest.fn().mockReturnValue({}),
+          },
+        },
+        {
+          provide: PrismaService,
+          useValue: {
+            wallet: {
+              findUnique: jest.fn(),
+              create: jest.fn(),
+              update: jest.fn(),
+            },
+            $transaction: jest.fn(),
           },
         },
       ],
@@ -119,7 +132,11 @@ describe('KeyManagement (integration harness)', () => {
       ]);
 
       const publicKeys = [a.publicKey, b.publicKey, c.publicKey];
-      const encryptedBlobs = [a.encryptedData, b.encryptedData, c.encryptedData];
+      const encryptedBlobs = [
+        a.encryptedData,
+        b.encryptedData,
+        c.encryptedData,
+      ];
 
       // All public keys distinct
       expect(new Set(publicKeys).size).toBe(3);
@@ -299,7 +316,7 @@ describe('KeyManagement (integration harness)', () => {
           dataToSign: Buffer.from('data'),
           publicKey: keyMaterial.publicKey,
         }),
-      ).rejects.toThrow('Signing operation failed');
+      ).rejects.toThrow(KeyDecryptionException);
     });
 
     it('records a failed SIGN audit entry when material is invalid', async () => {
@@ -367,13 +384,13 @@ describe('KeyManagement (integration harness)', () => {
       parsed.tag = 'ffffffffffffffffffffffffffffffff'; // break GCM auth tag
       const tampered = JSON.stringify(parsed);
 
-      const isValid = await service.validateKey(
-        keyMaterial.publicKey,
-        tampered,
-        KeyType.STELLAR_ED25519,
-      );
-
-      expect(isValid).toBe(false);
+      await expect(
+        service.validateKey(
+          keyMaterial.publicKey,
+          tampered,
+          KeyType.STELLAR_ED25519,
+        ),
+      ).rejects.toThrow(KeyDecryptionException);
     });
 
     it('returns false for completely invalid JSON material', async () => {
@@ -435,7 +452,7 @@ describe('KeyManagement (integration harness)', () => {
           '{"encryptedData":"badbad","iv":"00000000000000000000000000000000","tag":"00000000000000000000000000000000"}',
           KeyType.STELLAR_ED25519,
         ),
-      ).rejects.toThrow('Key re-encryption failed');
+      ).rejects.toThrow(KeyDecryptionException);
     });
   });
 

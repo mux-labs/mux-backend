@@ -22,7 +22,10 @@ describe('DevelopersService', () => {
     };
 
     const module: TestingModule = await Test.createTestingModule({
-      providers: [DevelopersService, { provide: PrismaService, useValue: prisma }],
+      providers: [
+        DevelopersService,
+        { provide: PrismaService, useValue: prisma },
+      ],
     }).compile();
 
     service = module.get<DevelopersService>(DevelopersService);
@@ -33,30 +36,48 @@ describe('DevelopersService', () => {
   });
 
   it('should create a developer record', async () => {
-    prisma.developer.create.mockResolvedValue({ id: 'dev-123', email: 'test@example.com' });
-    const result = await service.create({ name: 'Test', email: 'test@example.com' });
+    prisma.developer.create.mockResolvedValue({
+      id: 'dev-123',
+      email: 'test@example.com',
+    });
+    const result = await service.create({
+      name: 'Test',
+      email: 'test@example.com',
+    });
 
-    expect(prisma.developer.create).toHaveBeenCalledWith({ data: { name: 'Test', email: 'test@example.com' } });
+    expect(prisma.developer.create).toHaveBeenCalledWith({
+      data: { name: 'Test', email: 'test@example.com' },
+    });
     expect(result).toEqual({ id: 'dev-123', email: 'test@example.com' });
   });
 
   it('should return a developer by id', async () => {
-    prisma.developer.findUnique.mockResolvedValue({ id: 'dev-123', email: 'test@example.com' });
+    prisma.developer.findUnique.mockResolvedValue({
+      id: 'dev-123',
+      email: 'test@example.com',
+    });
     const result = await service.findOne('dev-123');
 
-    expect(prisma.developer.findUnique).toHaveBeenCalledWith({ where: { id: 'dev-123' } });
+    expect(prisma.developer.findUnique).toHaveBeenCalledWith({
+      where: { id: 'dev-123' },
+    });
     expect(result).toEqual({ id: 'dev-123', email: 'test@example.com' });
   });
 
   it('should list projects for a developer', async () => {
-    prisma.developer.findUnique.mockResolvedValue({ id: 'dev-123', email: 'test@example.com' });
+    prisma.developer.findUnique.mockResolvedValue({
+      id: 'dev-123',
+      email: 'test@example.com',
+    });
     prisma.project.findMany.mockResolvedValue([
       { id: 'proj-123', name: 'Test Project', developerId: 'dev-123' },
     ]);
 
     const result = await service.findProjects('dev-123');
 
-    expect(prisma.project.findMany).toHaveBeenCalledWith({ where: { developerId: 'dev-123' } });
+    expect(prisma.project.findMany).toHaveBeenCalledWith({
+      where: { developerId: 'dev-123' },
+    });
     expect(result).toEqual([
       { id: 'proj-123', name: 'Test Project', developerId: 'dev-123' },
     ]);
@@ -68,22 +89,38 @@ describe('DevelopersService', () => {
   });
 
   it('should update an existing developer', async () => {
-    prisma.developer.findUnique.mockResolvedValue({ id: 'dev-123', email: 'test@example.com' });
-    prisma.developer.update.mockResolvedValue({ id: 'dev-123', email: 'updated@example.com' });
+    prisma.developer.findUnique.mockResolvedValue({
+      id: 'dev-123',
+      email: 'test@example.com',
+    });
+    prisma.developer.update.mockResolvedValue({
+      id: 'dev-123',
+      email: 'updated@example.com',
+    });
 
-    const result = await service.update('dev-123', { email: 'updated@example.com' });
+    const result = await service.update('dev-123', {
+      email: 'updated@example.com',
+    });
 
-    expect(prisma.developer.update).toHaveBeenCalledWith({ where: { id: 'dev-123' }, data: { email: 'updated@example.com' } });
+    expect(prisma.developer.update).toHaveBeenCalledWith({
+      where: { id: 'dev-123' },
+      data: { email: 'updated@example.com' },
+    });
     expect(result).toEqual({ id: 'dev-123', email: 'updated@example.com' });
   });
 
   it('should remove an existing developer', async () => {
-    prisma.developer.findUnique.mockResolvedValue({ id: 'dev-123', email: 'test@example.com' });
+    prisma.developer.findUnique.mockResolvedValue({
+      id: 'dev-123',
+      email: 'test@example.com',
+    });
     prisma.developer.delete.mockResolvedValue({ id: 'dev-123' });
 
     const result = await service.remove('dev-123');
 
-    expect(prisma.developer.delete).toHaveBeenCalledWith({ where: { id: 'dev-123' } });
+    expect(prisma.developer.delete).toHaveBeenCalledWith({
+      where: { id: 'dev-123' },
+    });
     expect(result).toEqual({ id: 'dev-123' });
   });
 });

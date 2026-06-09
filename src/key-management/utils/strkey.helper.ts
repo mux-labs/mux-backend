@@ -2,17 +2,17 @@ import { StrKey } from 'stellar-sdk';
 
 /**
  * StrKey Encoding Helper for Stellar Key Management
- * 
+ *
  * Provides utility functions for encoding and decoding Stellar keys
  * using the StrKey format (base32 with checksums).
- * 
+ *
  * Stellar uses specific prefixes:
  * - G for public keys (Ed25519 public key)
  * - S for secret seeds (Ed25519 private key)
  * - M for pre-authorized transaction hashes
  * - X for signed payload signers
  * - T for muxed accounts
- * 
+ *
  * This helper wraps stellar-sdk's StrKey functionality with additional
  * validation and error handling.
  */
@@ -20,7 +20,7 @@ import { StrKey } from 'stellar-sdk';
 export class StrKeyHelper {
   /**
    * Encodes an Ed25519 public key to Stellar format (G...)
-   * 
+   *
    * @param rawPublicKey - 32-byte raw Ed25519 public key
    * @returns Stellar-formatted public key starting with 'G'
    * @throws Error if the key is invalid or wrong length
@@ -31,7 +31,9 @@ export class StrKeyHelper {
     }
 
     if (rawPublicKey.length !== 32) {
-      throw new Error(`Invalid public key length: expected 32 bytes, got ${rawPublicKey.length}`);
+      throw new Error(
+        `Invalid public key length: expected 32 bytes, got ${rawPublicKey.length}`,
+      );
     }
 
     try {
@@ -43,7 +45,7 @@ export class StrKeyHelper {
 
   /**
    * Encodes an Ed25519 secret seed to Stellar format (S...)
-   * 
+   *
    * @param rawSeed - 32-byte raw Ed25519 secret seed
    * @returns Stellar-formatted secret seed starting with 'S'
    * @throws Error if the seed is invalid or wrong length
@@ -54,7 +56,9 @@ export class StrKeyHelper {
     }
 
     if (rawSeed.length !== 32) {
-      throw new Error(`Invalid secret seed length: expected 32 bytes, got ${rawSeed.length}`);
+      throw new Error(
+        `Invalid secret seed length: expected 32 bytes, got ${rawSeed.length}`,
+      );
     }
 
     try {
@@ -66,7 +70,7 @@ export class StrKeyHelper {
 
   /**
    * Decodes a Stellar-formatted Ed25519 public key (G...) to raw bytes
-   * 
+   *
    * @param encodedKey - Stellar-formatted public key starting with 'G'
    * @returns 32-byte raw Ed25519 public key
    * @throws Error if the key is invalid or malformed
@@ -77,7 +81,9 @@ export class StrKeyHelper {
     }
 
     if (!encodedKey.startsWith('G')) {
-      throw new Error(`Invalid public key format: expected key to start with 'G', got '${encodedKey.charAt(0)}'`);
+      throw new Error(
+        `Invalid public key format: expected key to start with 'G', got '${encodedKey.charAt(0)}'`,
+      );
     }
 
     try {
@@ -89,7 +95,7 @@ export class StrKeyHelper {
 
   /**
    * Decodes a Stellar-formatted Ed25519 secret seed (S...) to raw bytes
-   * 
+   *
    * @param encodedSeed - Stellar-formatted secret seed starting with 'S'
    * @returns 32-byte raw Ed25519 secret seed
    * @throws Error if the seed is invalid or malformed
@@ -100,7 +106,9 @@ export class StrKeyHelper {
     }
 
     if (!encodedSeed.startsWith('S')) {
-      throw new Error(`Invalid secret seed format: expected seed to start with 'S', got '${encodedSeed.charAt(0)}'`);
+      throw new Error(
+        `Invalid secret seed format: expected seed to start with 'S', got '${encodedSeed.charAt(0)}'`,
+      );
     }
 
     try {
@@ -112,7 +120,7 @@ export class StrKeyHelper {
 
   /**
    * Validates if a string is a valid Stellar Ed25519 public key
-   * 
+   *
    * @param key - String to validate
    * @returns true if valid, false otherwise
    */
@@ -130,7 +138,7 @@ export class StrKeyHelper {
 
   /**
    * Validates if a string is a valid Stellar Ed25519 secret seed
-   * 
+   *
    * @param seed - String to validate
    * @returns true if valid, false otherwise
    */
@@ -148,7 +156,7 @@ export class StrKeyHelper {
 
   /**
    * Encodes a pre-authorized transaction hash
-   * 
+   *
    * @param hash - 32-byte transaction hash
    * @returns Stellar-formatted hash starting with 'T'
    * @throws Error if the hash is invalid
@@ -159,19 +167,23 @@ export class StrKeyHelper {
     }
 
     if (hash.length !== 32) {
-      throw new Error(`Invalid hash length: expected 32 bytes, got ${hash.length}`);
+      throw new Error(
+        `Invalid hash length: expected 32 bytes, got ${hash.length}`,
+      );
     }
 
     try {
       return StrKey.encodePreAuthTx(hash);
     } catch (error) {
-      throw new Error(`Failed to encode pre-authorized transaction: ${error.message}`);
+      throw new Error(
+        `Failed to encode pre-authorized transaction: ${error.message}`,
+      );
     }
   }
 
   /**
    * Decodes a pre-authorized transaction hash
-   * 
+   *
    * @param encoded - Stellar-formatted hash starting with 'T'
    * @returns 32-byte transaction hash
    * @throws Error if invalid
@@ -184,13 +196,15 @@ export class StrKeyHelper {
     try {
       return StrKey.decodePreAuthTx(encoded);
     } catch (error) {
-      throw new Error(`Failed to decode pre-authorized transaction: ${error.message}`);
+      throw new Error(
+        `Failed to decode pre-authorized transaction: ${error.message}`,
+      );
     }
   }
 
   /**
    * Encodes a SHA256 hash for signing
-   * 
+   *
    * @param hash - 32-byte hash
    * @returns Stellar-formatted hash starting with 'X'
    * @throws Error if the hash is invalid
@@ -201,7 +215,9 @@ export class StrKeyHelper {
     }
 
     if (hash.length !== 32) {
-      throw new Error(`Invalid hash length: expected 32 bytes, got ${hash.length}`);
+      throw new Error(
+        `Invalid hash length: expected 32 bytes, got ${hash.length}`,
+      );
     }
 
     try {
@@ -213,7 +229,7 @@ export class StrKeyHelper {
 
   /**
    * Decodes a SHA256 hash
-   * 
+   *
    * @param encoded - Stellar-formatted hash starting with 'X'
    * @returns 32-byte hash
    * @throws Error if invalid
@@ -232,13 +248,20 @@ export class StrKeyHelper {
 
   /**
    * Checks if a value is a valid StrKey of any type
-   * 
+   *
    * @param value - String to check
    * @returns Object with validation results for each type
    */
   static getStrKeyType(value: string): {
     isValid: boolean;
-    type: 'publicKey' | 'secretSeed' | 'preAuthTx' | 'sha256Hash' | 'muxedAccount' | 'contract' | 'unknown';
+    type:
+      | 'publicKey'
+      | 'secretSeed'
+      | 'preAuthTx'
+      | 'sha256Hash'
+      | 'muxedAccount'
+      | 'contract'
+      | 'unknown';
   } {
     if (typeof value !== 'string') {
       return { isValid: false, type: 'unknown' };
@@ -281,7 +304,7 @@ export class StrKeyHelper {
   /**
    * Safely checks if a value could be a secret seed without logging it
    * Useful for security validation in production
-   * 
+   *
    * @param value - Value to check
    * @returns true if it appears to be a secret seed format
    */
@@ -296,13 +319,17 @@ export class StrKeyHelper {
 
   /**
    * Masks a key for safe logging (shows only first/last chars)
-   * 
+   *
    * @param key - Key to mask
    * @param prefixLength - Number of characters to show at start (default: 4)
    * @param suffixLength - Number of characters to show at end (default: 4)
    * @returns Masked key string
    */
-  static maskKey(key: string, prefixLength: number = 4, suffixLength: number = 4): string {
+  static maskKey(
+    key: string,
+    prefixLength: number = 4,
+    suffixLength: number = 4,
+  ): string {
     if (typeof key !== 'string' || key.length <= prefixLength + suffixLength) {
       return '***';
     }

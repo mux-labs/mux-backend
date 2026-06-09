@@ -22,6 +22,8 @@ import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { PrismaClient } from '../generated/prisma/client';
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -66,8 +68,12 @@ const makeUser = (overrides: Record<string, any> = {}) => ({
 describe('WalletCreationOrchestrator (integration harness)', () => {
   let orchestrator: WalletCreationOrchestrator;
   let encryptionService: jest.Mocked<EncryptionService>;
-  let idempotentUserService: jest.Mocked<Pick<IdempotentUserService, 'findUserById'>>;
-  let idempotencyService: jest.Mocked<Pick<IdempotencyService, 'getCachedResponse' | 'cacheResponse'>>;
+  let idempotentUserService: jest.Mocked<
+    Pick<IdempotentUserService, 'findUserById'>
+  >;
+  let idempotencyService: jest.Mocked<
+    Pick<IdempotencyService, 'getCachedResponse' | 'cacheResponse'>
+  >;
   let mockTx: any;
   let mockPrisma: any;
 
@@ -76,6 +82,11 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       wallet: {
         findFirst: jest.fn(),
         create: jest.fn(),
+        update: jest.fn(),
+      },
+      idempotencyRecord: {
+        findUnique: jest.fn().mockResolvedValue(null),
+        create: jest.fn().mockResolvedValue({}),
       },
     };
 
@@ -89,6 +100,7 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
     encryptionService = {
       validateConfiguration: jest.fn().mockReturnValue(true),
       encryptAndSerialize: jest.fn().mockReturnValue('encrypted-key'),
+      deserializeAndDecrypt: jest.fn().mockReturnValue('decrypted-private-key'),
     } as any;
 
     idempotentUserService = {
@@ -107,6 +119,19 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
         { provide: ConfigService, useValue: { get: jest.fn() } },
         { provide: IdempotentUserService, useValue: idempotentUserService },
         { provide: IdempotencyService, useValue: idempotencyService },
+        {
+          provide: KeyManagementService,
+          useValue: {
+            generateKey: jest.fn().mockResolvedValue({
+              publicKey: 'GABC1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZABCD',
+              encryptedData: 'encrypted-key',
+              encryptionVersion: 1,
+              keyVersion: 1,
+              keyType: 'STELLAR_ED25519',
+            }),
+          },
+        },
+        { provide: PrismaClient, useValue: mockPrisma },
       ],
     }).compile();
 
@@ -130,7 +155,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
     beforeEach(() => {
       idempotentUserService.findUserById.mockResolvedValue(makeUser());
       mockTx.wallet.findFirst.mockResolvedValue(null);
-      mockTx.wallet.create.mockResolvedValue(makeDbWallet());
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
     });
 
     it('creates wallet, encrypts key, and returns isNewWallet=true', async () => {
@@ -142,8 +170,8 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       expect(result.wallet.network).toBe(WalletNetwork.TESTNET);
       expect(result.wallet.status).toBe(WalletStatus.ACTIVE);
       expect(result.privateKey).toBeTruthy();
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(
-        expect.any(String),
+      expect(encryptionService.deserializeAndDecrypt).toHaveBeenCalledWith(
+        'encrypted-key',
       );
     });
 
@@ -154,7 +182,7 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
         data: expect.objectContaining({
           userId: 'user-abc',
           network: WalletNetwork.TESTNET,
-          status: 'ACTIVE',
+          status: WalletStatus.PROVISIONING,
           encryptionVersion: 1,
           secretVersion: 1,
           encryptedSecret: 'encrypted-key',
@@ -189,15 +217,20 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
 
   describe('idempotency key', () => {
     it('returns cached result on second call without hitting DB', async () => {
-      const cachedResult = {
+      const cachedEntry = {
+        userId: 'user-abc',
+        network: WalletNetwork.TESTNET,
         wallet: makeDbWallet(),
-        privateKey: 'cached-key',
         isNewWallet: true,
         idempotencyKey: 'idem-key-1',
       };
 
       idempotentUserService.findUserById.mockResolvedValue(makeUser());
-      idempotencyService.getCachedResponse.mockResolvedValue(cachedResult);
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue({
+        key: 'idem-key-1',
+        expiresAt: new Date(Date.now() + 60_000),
+        response: cachedEntry,
+      });
 
       const result = await orchestrator.createWallet({
         userId: 'user-abc',
@@ -205,15 +238,20 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
         idempotencyKey: 'idem-key-1',
       });
 
-      expect(result).toEqual(cachedResult);
+      expect(result.wallet.id).toBe('wallet-abc');
+      expect(result.isNewWallet).toBe(true);
+      expect(result.privateKey).toBe('');
       expect(mockTx.wallet.create).not.toHaveBeenCalled();
     });
 
     it('stores result after successful creation', async () => {
       idempotentUserService.findUserById.mockResolvedValue(makeUser());
-      idempotencyService.getCachedResponse.mockResolvedValue(null);
+      mockTx.idempotencyRecord.findUnique.mockResolvedValue(null);
       mockTx.wallet.findFirst.mockResolvedValue(null);
-      mockTx.wallet.create.mockResolvedValue(makeDbWallet());
+      mockTx.wallet.create.mockResolvedValue(
+        makeDbWallet({ status: WalletStatus.PROVISIONING }),
+      );
+      mockTx.wallet.update.mockResolvedValue(makeDbWallet());
 
       await orchestrator.createWallet({
         userId: 'user-abc',
@@ -221,12 +259,15 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
         idempotencyKey: 'idem-key-2',
       });
 
-      expect(idempotencyService.cacheResponse).toHaveBeenCalledWith(
-        'idem-key-2',
-        expect.objectContaining({ isNewWallet: true }),
-        'POST',
-        '/wallets/orchestration/create',
-      );
+      expect(mockTx.idempotencyRecord.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          key: 'idem-key-2',
+          method: 'INTERNAL',
+          endpoint: 'wallet-creation',
+          statusCode: 200,
+          response: expect.objectContaining({ isNewWallet: true }),
+        }),
+      });
     });
   });
 
@@ -239,7 +280,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       idempotentUserService.findUserById.mockResolvedValue(null);
 
       await expect(
-        orchestrator.createWallet({ userId: 'unknown', network: WalletNetwork.TESTNET }),
+        orchestrator.createWallet({
+          userId: 'unknown',
+          network: WalletNetwork.TESTNET,
+        }),
       ).rejects.toThrow();
     });
 
@@ -247,7 +291,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       mockPrisma.$transaction.mockRejectedValue(new Error('DB down'));
 
       await expect(
-        orchestrator.createWallet({ userId: 'user-abc', network: WalletNetwork.TESTNET }),
+        orchestrator.createWallet({
+          userId: 'user-abc',
+          network: WalletNetwork.TESTNET,
+        }),
       ).rejects.toThrow('Wallet creation orchestration failed');
     });
   });
@@ -260,7 +307,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
     it('returns wallet when found', async () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(makeDbWallet());
 
-      const result = await orchestrator.getWalletByUser('user-abc', WalletNetwork.TESTNET);
+      const result = await orchestrator.getWalletByUser(
+        'user-abc',
+        WalletNetwork.TESTNET,
+      );
 
       expect(result).not.toBeNull();
       expect(result!.id).toBe('wallet-abc');
@@ -270,7 +320,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
     it('returns null when wallet does not exist', async () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
-      const result = await orchestrator.getWalletByUser('user-abc', WalletNetwork.MAINNET);
+      const result = await orchestrator.getWalletByUser(
+        'user-abc',
+        WalletNetwork.MAINNET,
+      );
 
       expect(result).toBeNull();
     });
@@ -285,7 +338,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
       await expect(
-        orchestrator.validateUserCanCreateWallet('user-abc', WalletNetwork.TESTNET),
+        orchestrator.validateUserCanCreateWallet(
+          'user-abc',
+          WalletNetwork.TESTNET,
+        ),
       ).resolves.toBe(true);
     });
 
@@ -293,7 +349,10 @@ describe('WalletCreationOrchestrator (integration harness)', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(makeDbWallet());
 
       await expect(
-        orchestrator.validateUserCanCreateWallet('user-abc', WalletNetwork.TESTNET),
+        orchestrator.validateUserCanCreateWallet(
+          'user-abc',
+          WalletNetwork.TESTNET,
+        ),
       ).resolves.toBe(false);
     });
   });

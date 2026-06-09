@@ -10,9 +10,7 @@ import {
   HttpCode,
   HttpStatus,
 } from '@nestjs/common';
-import {
-  WebhookService,
-} from './webhook.service';
+import { WebhookService } from './webhook.service';
 import type {
   CreateWebhookEndpointRequest,
   UpdateWebhookEndpointRequest,

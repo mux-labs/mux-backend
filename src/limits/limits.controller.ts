@@ -26,11 +26,12 @@ export class LimitsController {
   constructor(private readonly limitsService: LimitsService) {}
 
   @Post()
-  setLimits(
-    @Param('walletId') walletId: string,
-    @Body() dto: SetLimitsDto,
-  ) {
-    return this.limitsService.setLimits(walletId, dto.dailyLimit, dto.perTransactionLimit);
+  setLimits(@Param('walletId') walletId: string, @Body() dto: SetLimitsDto) {
+    return this.limitsService.setLimits(
+      walletId,
+      dto.dailyLimit,
+      dto.perTransactionLimit,
+    );
   }
 
   @Get()

@@ -1,17 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { APP_GUARD } from '@nestjs/core';
 import { WalletsController } from './wallets.controller';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { WalletNetwork } from './domain/wallet.model';
-
-// Mock guards to avoid dependency resolution issues
-class MockApiKeyGuard {
-  canActivate() { return true; }
-}
-class MockRateLimitGuard {
-  canActivate() { return true; }
-}
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
 describe('WalletsController', () => {
   let controller: WalletsController;
@@ -38,12 +31,13 @@ describe('WalletsController', () => {
           provide: WalletsService,
           useValue: mockWalletsService,
         },
-        {
-          provide: APP_GUARD,
-          useClass: MockApiKeyGuard,
-        },
       ],
-    }).compile();
+    })
+      .overrideGuard(ApiKeyGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(RateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<WalletsController>(WalletsController);
     walletsService = module.get<WalletsService>(WalletsService);
@@ -63,7 +57,10 @@ describe('WalletsController', () => {
       network: WalletNetwork.TESTNET,
     };
 
-    mockWalletsService.create.mockResolvedValue({ wallet: { id: 'wallet-123' }, privateKey: 'secret' });
+    mockWalletsService.create.mockResolvedValue({
+      wallet: { id: 'wallet-123' },
+      privateKey: 'secret',
+    });
 
     await expect(controller.create(dto)).resolves.toEqual({
       wallet: { id: 'wallet-123' },
@@ -75,7 +72,9 @@ describe('WalletsController', () => {
   it('should call findOne with the requested wallet id', async () => {
     mockWalletsService.findOne.mockResolvedValue({ id: 'wallet-123' });
 
-    await expect(controller.findOne('wallet-123')).resolves.toEqual({ id: 'wallet-123' });
+    await expect(controller.findOne('wallet-123')).resolves.toEqual({
+      id: 'wallet-123',
+    });
     expect(mockWalletsService.findOne).toHaveBeenCalledWith('wallet-123');
   });
 

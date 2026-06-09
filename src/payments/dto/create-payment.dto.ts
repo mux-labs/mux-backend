@@ -1,4 +1,11 @@
-import { IsString, IsNotEmpty, IsNumber, IsPositive, IsOptional, IsInt } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsNumber,
+  IsPositive,
+  IsOptional,
+  IsInt,
+} from 'class-validator';
 
 export class CreatePaymentDto {
   /** Sender wallet UUID — validated to exist and be ACTIVE before payment is created. */

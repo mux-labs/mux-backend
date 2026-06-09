@@ -2,7 +2,10 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { NotFoundException } from '@nestjs/common';
 import { KeyManagementService } from './key-management.service';
-import { EncryptionService, DecryptionError } from '../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 
@@ -41,7 +44,9 @@ describe('KeyManagementService', () => {
     jest.clearAllMocks();
 
     const mockConfigService = {
-      get: jest.fn().mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -276,9 +281,9 @@ describe('KeyManagementService', () => {
       const stellarProvider = (service as any).providers.get(
         KeyType.STELLAR_ED25519,
       );
-      jest.spyOn(stellarProvider, 'sign').mockRejectedValue(
-        new Error('Network timeout'),
-      );
+      jest
+        .spyOn(stellarProvider, 'sign')
+        .mockRejectedValue(new Error('Network timeout'));
 
       await expect(
         service.sign({
@@ -336,15 +341,16 @@ describe('KeyManagementService', () => {
     });
 
     it('should throw KeyDecryptionException when decrypt fails during validate', async () => {
-      jest
-        .spyOn(encryptionService, 'deserializeAndDecrypt')
-        .mockImplementation(() => {
-          throw new DecryptionError('Decryption failed', 'DECRYPTION_FAILED');
-        });
+      const stellarProvider = (service as any).providers.get(
+        KeyType.STELLAR_ED25519,
+      );
+      jest.spyOn(stellarProvider, 'validateKeyPair').mockRejectedValue(
+        new DecryptionError('Decryption failed', 'DECRYPTION_FAILED'),
+      );
 
       await expect(
         service.validateKey(
-          'GSOME_PUBLIC_KEY',
+          'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567ABCDEFGHIJKLMNOPQRST',
           'corrupted-material',
           KeyType.STELLAR_ED25519,
         ),
@@ -359,9 +365,9 @@ describe('KeyManagementService', () => {
       const stellarProvider = (service as any).providers.get(
         KeyType.STELLAR_ED25519,
       );
-      jest.spyOn(stellarProvider, 'validateKeyPair').mockRejectedValue(
-        new Error('Unexpected internal error'),
-      );
+      jest
+        .spyOn(stellarProvider, 'validateKeyPair')
+        .mockRejectedValue(new Error('Unexpected internal error'));
 
       const result = await service.validateKey(
         'GSOME_PUBLIC_KEY',
@@ -537,7 +543,11 @@ describe('KeyManagementService', () => {
         const tx = {
           wallet: {
             create: jest.fn().mockResolvedValue(createdSuccessor),
-            update: jest.fn().mockResolvedValue({ ...activePredecessor, successorId, status: 'ROTATING' }),
+            update: jest.fn().mockResolvedValue({
+              ...activePredecessor,
+              successorId,
+              status: 'ROTATING',
+            }),
           },
         };
         return cb(tx);

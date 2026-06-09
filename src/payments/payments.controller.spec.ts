@@ -30,7 +30,6 @@ describe('PaymentsController', () => {
       .compile();
 
     controller = module.get<PaymentsController>(PaymentsController);
-    service = module.get(PaymentsService);
     jest.clearAllMocks();
   });
 
@@ -45,14 +44,20 @@ describe('PaymentsController', () => {
       const updated = { id: 1, status: PaymentStatus.CONFIRMED };
       paymentsService.update.mockResolvedValue(updated);
 
-      const result = await controller.update('1', { status: PaymentStatus.CONFIRMED });
+      const result = await controller.update('1', {
+        status: PaymentStatus.CONFIRMED,
+      });
 
-      expect(paymentsService.update).toHaveBeenCalledWith(1, { status: PaymentStatus.CONFIRMED });
+      expect(paymentsService.update).toHaveBeenCalledWith('1', {
+        status: PaymentStatus.CONFIRMED,
+      });
       expect(result).toEqual(updated);
     });
 
     it('should propagate NotFoundException from service', async () => {
-      paymentsService.update.mockRejectedValue(new NotFoundException('Payment #99 not found'));
+      paymentsService.update.mockRejectedValue(
+        new NotFoundException('Payment #99 not found'),
+      );
 
       await expect(
         controller.update('99', { status: PaymentStatus.CONFIRMED }),
@@ -61,7 +66,9 @@ describe('PaymentsController', () => {
 
     it('should propagate BadRequestException from service', async () => {
       paymentsService.update.mockRejectedValue(
-        new BadRequestException('Cannot transition payment from CONFIRMED to FAILED'),
+        new BadRequestException(
+          'Cannot transition payment from CONFIRMED to FAILED',
+        ),
       );
 
       await expect(

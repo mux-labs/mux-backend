@@ -10,6 +10,7 @@ import { IdempotentUserService } from '../users/idempotent-user.service';
 import { KeyManagementService } from '../key-management/key-management.service';
 import { ConfigService } from '@nestjs/config';
 import { KeyType } from '../key-management/domain/key-types';
+import { NotFoundException, ConflictException } from '@nestjs/common';
 
 const mockPrisma = {
   wallet: {
@@ -56,6 +57,22 @@ const mockIdempotentUserService = {
 
 const mockKeyManagementService = {
   generateKey: jest.fn(),
+};
+
+const mockWalletRow = {
+  id: 'wallet-123',
+  userId: 'user-123',
+  publicKey: 'GABC123DEF456',
+  encryptedSecret: 'encrypted-private-key',
+  encryptionVersion: 1,
+  secretVersion: 1,
+  network: WalletNetwork.TESTNET,
+  status: 'ACTIVE',
+  statusReason: 'Wallet provisioned and activated',
+  statusChangedAt: new Date(),
+  rotatedFromId: null,
+  createdAt: new Date(),
+  updatedAt: new Date(),
 };
 
 // Global mock for fetch (Friendbot calls)
@@ -204,9 +221,10 @@ describe('WalletCreationOrchestrator', () => {
         { method: 'GET' },
       );
 
-      expect(encryptionService.encryptAndSerialize).toHaveBeenCalledWith(
-        expect.any(String),
-      );
+      expect(mockKeyManagementService.generateKey).toHaveBeenCalledWith({
+        keyType: KeyType.STELLAR_ED25519,
+        metadata: { userId: 'user-123', network: WalletNetwork.TESTNET },
+      });
     });
 
     it('should store an idempotency record after creating a new wallet', async () => {
@@ -317,8 +335,6 @@ describe('WalletCreationOrchestrator', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       };
-      const activeWallet = { ...provisioningWallet, status: WalletStatus.ACTIVE };
-
       const activeWallet = {
         ...provisioningWallet,
         status: 'ACTIVE',
@@ -402,19 +418,21 @@ describe('WalletCreationOrchestrator', () => {
       network: WalletNetwork.TESTNET,
     };
 
-    it('should throw WalletOrchestrationError with phase=key-encryption when encryption fails', async () => {
-      mockEncryptionService.encryptAndSerialize.mockImplementation(() => {
-        throw new Error('Encryption key unavailable');
-      });
+    it('should throw WalletOrchestrationError with phase=key-generation when key generation fails', async () => {
+      mockKeyManagementService.generateKey.mockRejectedValue(
+        new Error('Encryption key unavailable'),
+      );
 
       mockPrisma.$transaction.mockImplementation(async (callback) =>
         callback(mockPrisma as any),
       );
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
-      const err = await orchestrator.createWallet(createRequest).catch((e) => e);
+      const err = await orchestrator
+        .createWallet(createRequest)
+        .catch((e) => e);
       expect(err).toBeInstanceOf(WalletOrchestrationError);
-      expect(err.phase).toBe('key-encryption');
+      expect(err.phase).toBe('key-generation');
     });
 
     it('should throw WalletOrchestrationError with phase=wallet-persist when DB create fails', async () => {
@@ -424,7 +442,9 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
       mockPrisma.wallet.create.mockRejectedValue(new Error('DB write error'));
 
-      const err = await orchestrator.createWallet(createRequest).catch((e) => e);
+      const err = await orchestrator
+        .createWallet(createRequest)
+        .catch((e) => e);
       expect(err).toBeInstanceOf(WalletOrchestrationError);
       expect(err.phase).toBe('wallet-persist');
     });
@@ -453,7 +473,9 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
       mockPrisma.wallet.update.mockRejectedValue(new Error('DB update error'));
 
-      const err = await orchestrator.createWallet(createRequest).catch((e) => e);
+      const err = await orchestrator
+        .createWallet(createRequest)
+        .catch((e) => e);
       expect(err).toBeInstanceOf(WalletOrchestrationError);
       expect(err.phase).toBe('wallet-activation');
     });
@@ -462,7 +484,9 @@ describe('WalletCreationOrchestrator', () => {
       const originalError = new Error('original DB error');
       mockPrisma.$transaction.mockRejectedValue(originalError);
 
-      const err = await orchestrator.createWallet(createRequest).catch((e) => e);
+      const err = await orchestrator
+        .createWallet(createRequest)
+        .catch((e) => e);
       expect(err).toBeInstanceOf(WalletOrchestrationError);
       expect(err.cause).toBe(originalError);
     });
@@ -496,29 +520,47 @@ describe('WalletCreationOrchestrator', () => {
     let warnSpy: jest.SpyInstance;
 
     beforeEach(() => {
-      logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
-      warnSpy = jest.spyOn(orchestrator['logger'], 'warn').mockImplementation(() => {});
+      logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      warnSpy = jest
+        .spyOn(orchestrator['logger'], 'warn')
+        .mockImplementation(() => {});
     });
 
     const provisioningWallet = {
-      id: 'wallet-123', userId: 'user-123', publicKey: 'GABC',
-      encryptedSecret: 'enc', encryptionVersion: 1, secretVersion: 1,
-      network: WalletNetwork.TESTNET, status: WalletStatus.PROVISIONING,
-      statusReason: null, statusChangedAt: new Date(),
-      rotatedFromId: null, createdAt: new Date(), updatedAt: new Date(),
+      id: 'wallet-123',
+      userId: 'user-123',
+      publicKey: 'GABC',
+      encryptedSecret: 'enc',
+      encryptionVersion: 1,
+      secretVersion: 1,
+      network: WalletNetwork.TESTNET,
+      status: WalletStatus.PROVISIONING,
+      statusReason: null,
+      statusChangedAt: new Date(),
+      rotatedFromId: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
     const activeWallet = { ...provisioningWallet, status: WalletStatus.ACTIVE };
 
     it('should emit outcome=created with phase timings on new wallet', async () => {
-      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.$transaction.mockImplementation(async (cb) =>
+        cb(mockPrisma as any),
+      );
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
       mockPrisma.wallet.create.mockResolvedValue(provisioningWallet);
       mockPrisma.wallet.update.mockResolvedValue(activeWallet);
 
-      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET });
+      await orchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+      });
 
-      const metricsCall = logSpy.mock.calls.find(([msg]) =>
-        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      const metricsCall = logSpy.mock.calls.find(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
       );
       expect(metricsCall).toBeDefined();
       const line: string = metricsCall[0];
@@ -533,26 +575,37 @@ describe('WalletCreationOrchestrator', () => {
     });
 
     it('should emit outcome=existing when wallet already exists', async () => {
-      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.$transaction.mockImplementation(async (cb) =>
+        cb(mockPrisma as any),
+      );
       mockPrisma.wallet.findFirst.mockResolvedValue(activeWallet);
 
-      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET });
+      await orchestrator.createWallet({
+        userId: 'user-123',
+        network: WalletNetwork.TESTNET,
+      });
 
-      const metricsCall = logSpy.mock.calls.find(([msg]) =>
-        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      const metricsCall = logSpy.mock.calls.find(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
       );
       expect(metricsCall[0]).toContain('outcome=existing');
     });
 
     it('should emit outcome=failed with failedPhase via warn on error', async () => {
-      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.$transaction.mockImplementation(async (cb) =>
+        cb(mockPrisma as any),
+      );
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
       mockPrisma.wallet.create.mockRejectedValue(new Error('db error'));
 
-      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET }).catch(() => {});
+      await orchestrator
+        .createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET })
+        .catch(() => {});
 
-      const metricsCall = warnSpy.mock.calls.find(([msg]) =>
-        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      const metricsCall = warnSpy.mock.calls.find(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
       );
       expect(metricsCall).toBeDefined();
       const line: string = metricsCall[0];
@@ -563,10 +616,13 @@ describe('WalletCreationOrchestrator', () => {
     it('should emit outcome=failed without failedPhase for non-orchestration errors', async () => {
       mockPrisma.$transaction.mockRejectedValue(new Error('connection lost'));
 
-      await orchestrator.createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET }).catch(() => {});
+      await orchestrator
+        .createWallet({ userId: 'user-123', network: WalletNetwork.TESTNET })
+        .catch(() => {});
 
-      const metricsCall = warnSpy.mock.calls.find(([msg]) =>
-        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      const metricsCall = warnSpy.mock.calls.find(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
       );
       expect(metricsCall[0]).toContain('outcome=failed');
       expect(metricsCall[0]).not.toContain('failedPhase=');
@@ -731,8 +787,13 @@ describe('WalletCreationOrchestrator', () => {
       mockPrisma.$transaction.mockImplementation(async (callback: any) =>
         callback(mockPrisma),
       );
+      mockPrisma.idempotencyRecord.findUnique.mockResolvedValue(null);
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
-      mockPrisma.wallet.create.mockResolvedValue(mockWalletRow);
+      mockPrisma.wallet.create.mockResolvedValue({
+        ...mockWalletRow,
+        status: 'PROVISIONING',
+      });
+      mockPrisma.wallet.update.mockResolvedValue(mockWalletRow);
 
       const p2002 = Object.assign(new Error('Unique constraint'), {
         code: 'P2002',
@@ -856,11 +917,16 @@ describe('WalletCreationOrchestrator', () => {
   describe('createWallet — user not found', () => {
     it('should throw NotFoundException when user does not exist', async () => {
       mockIdempotentUserService.findUserById.mockResolvedValue(null);
-      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      mockPrisma.$transaction.mockImplementation(async (cb) =>
+        cb(mockPrisma as any),
+      );
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
       await expect(
-        orchestrator.createWallet({ userId: 'missing-user', network: WalletNetwork.TESTNET }),
+        orchestrator.createWallet({
+          userId: 'missing-user',
+          network: WalletNetwork.TESTNET,
+        }),
       ).rejects.toThrow(NotFoundException);
     });
   });
@@ -872,22 +938,32 @@ describe('WalletCreationOrchestrator', () => {
     };
 
     it('should re-throw ConflictException without wrapping', async () => {
-      mockPrisma.$transaction.mockRejectedValue(new ConflictException('conflict'));
+      mockPrisma.$transaction.mockRejectedValue(
+        new ConflictException('conflict'),
+      );
 
-      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(ConflictException);
+      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(
+        ConflictException,
+      );
     });
 
     it('should re-throw NotFoundException without wrapping', async () => {
-      mockPrisma.$transaction.mockRejectedValue(new NotFoundException('not found'));
+      mockPrisma.$transaction.mockRejectedValue(
+        new NotFoundException('not found'),
+      );
 
-      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(NotFoundException);
+      await expect(orchestrator.createWallet(createRequest)).rejects.toThrow(
+        NotFoundException,
+      );
     });
 
     it('should re-throw WalletOrchestrationError without double-wrapping', async () => {
       const original = new WalletOrchestrationError('direct', 'key-generation');
       mockPrisma.$transaction.mockRejectedValue(original);
 
-      const err = await orchestrator.createWallet(createRequest).catch((e) => e);
+      const err = await orchestrator
+        .createWallet(createRequest)
+        .catch((e) => e);
       expect(err).toBe(original);
     });
   });
@@ -896,11 +972,19 @@ describe('WalletCreationOrchestrator', () => {
     it('should emit outcome=idempotent when checkIdempotency returns a cached result', async () => {
       const cachedResult = {
         wallet: {
-          id: 'wallet-cached', userId: 'user-123', publicKey: 'GCACHED',
-          encryptedSecret: 'enc', encryptionVersion: 1, secretVersion: 1,
-          network: WalletNetwork.TESTNET, status: WalletStatus.ACTIVE,
-          statusReason: null, statusChangedAt: new Date(),
-          rotatedFromId: null, createdAt: new Date(), updatedAt: new Date(),
+          id: 'wallet-cached',
+          userId: 'user-123',
+          publicKey: 'GCACHED',
+          encryptedSecret: 'enc',
+          encryptionVersion: 1,
+          secretVersion: 1,
+          network: WalletNetwork.TESTNET,
+          status: WalletStatus.ACTIVE,
+          statusReason: null,
+          statusChangedAt: new Date(),
+          rotatedFromId: null,
+          createdAt: new Date(),
+          updatedAt: new Date(),
         },
         privateKey: '',
         isNewWallet: false,
@@ -908,10 +992,16 @@ describe('WalletCreationOrchestrator', () => {
       };
 
       // Patch private checkIdempotency to return cached result
-      jest.spyOn(orchestrator as any, 'checkIdempotency').mockResolvedValue(cachedResult);
+      jest
+        .spyOn(orchestrator as any, 'checkIdempotency')
+        .mockResolvedValue(cachedResult);
 
-      const logSpy = jest.spyOn(orchestrator['logger'], 'log').mockImplementation(() => {});
-      mockPrisma.$transaction.mockImplementation(async (cb) => cb(mockPrisma as any));
+      const logSpy = jest
+        .spyOn(orchestrator['logger'], 'log')
+        .mockImplementation(() => {});
+      mockPrisma.$transaction.mockImplementation(async (cb) =>
+        cb(mockPrisma as any),
+      );
       mockPrisma.wallet.findFirst.mockResolvedValue(null);
 
       const result = await orchestrator.createWallet({
@@ -921,8 +1011,9 @@ describe('WalletCreationOrchestrator', () => {
       });
 
       expect(result).toBe(cachedResult);
-      const metricsCall = logSpy.mock.calls.find(([msg]) =>
-        typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
+      const metricsCall = logSpy.mock.calls.find(
+        ([msg]) =>
+          typeof msg === 'string' && msg.includes('[orchestrator-metrics]'),
       );
       expect(metricsCall).toBeDefined();
       expect(metricsCall![0]).toContain('outcome=idempotent');

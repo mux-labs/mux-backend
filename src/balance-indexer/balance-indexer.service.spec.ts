@@ -5,6 +5,7 @@ import { BalanceIndexerService } from './balance-indexer.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { AssetType, BalanceSyncStatus } from './domain/balance.model';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
 const WALLET_ID = 'wallet-123';
 const PUBLIC_KEY = 'GABC123';
@@ -53,8 +54,8 @@ describe('BalanceIndexerService', () => {
       findMany: jest.fn(),
     },
     balanceSyncJob: {
-      create: jest.fn(),
-      update: jest.fn(),
+      create: jest.fn().mockResolvedValue({ id: 'job-1' }),
+      update: jest.fn().mockResolvedValue({}),
     },
   };
 
@@ -67,6 +68,11 @@ describe('BalanceIndexerService', () => {
     get: jest.fn().mockReturnValue(300_000),
   };
 
+  const mockWebhookEmitter = {
+    emitBalanceUpdated: jest.fn().mockResolvedValue(undefined),
+    emitBalanceMismatch: jest.fn().mockResolvedValue(undefined),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -76,6 +82,7 @@ describe('BalanceIndexerService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: StellarHorizonService, useValue: mockHorizon },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: WebhookEventEmitterService, useValue: mockWebhookEmitter },
       ],
     }).compile();
 
@@ -125,9 +132,7 @@ describe('BalanceIndexerService', () => {
         publicKey: PUBLIC_KEY,
       });
       mockHorizon.accountExists.mockResolvedValue(true);
-      mockHorizon.getAccountBalances.mockResolvedValue([
-        makeBalanceUpdate(),
-      ]);
+      mockHorizon.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
       mockPrisma.walletBalance.upsert.mockResolvedValue(nativeBalance);
 
       const syncSpy = jest.spyOn(service, 'syncWalletBalances');
@@ -294,7 +299,9 @@ describe('BalanceIndexerService', () => {
       expect(result.difference).toBeDefined();
       expect(mockPrisma.walletBalance.updateMany).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ mismatchDetectedAt: expect.any(Date) }),
+          data: expect.objectContaining({
+            mismatchDetectedAt: expect.any(Date),
+          }),
         }),
       );
     });
@@ -317,6 +324,13 @@ describe('BalanceIndexerService', () => {
         { id: 'w1', publicKey: 'PK1', status: 'ACTIVE' },
         { id: 'w2', publicKey: 'PK2', status: 'ACTIVE' },
       ]);
+      mockPrisma.wallet.findUnique.mockImplementation(({ where }: any) => {
+        const wallet = [
+          { id: 'w1', publicKey: 'PK1', status: 'ACTIVE' },
+          { id: 'w2', publicKey: 'PK2', status: 'ACTIVE' },
+        ].find((w) => w.id === where.id);
+        return Promise.resolve(wallet ?? null);
+      });
       mockHorizon.accountExists.mockResolvedValue(true);
       mockHorizon.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
       mockPrisma.walletBalance.findUnique.mockResolvedValue(null);

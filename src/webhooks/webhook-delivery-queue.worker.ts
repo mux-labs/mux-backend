@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { WebhookDispatcherService } from './webhook-dispatcher.service';
 
@@ -7,7 +12,9 @@ import { WebhookDispatcherService } from './webhook-dispatcher.service';
  * Runs every WEBHOOK_QUEUE_INTERVAL_MS (default 30s).
  */
 @Injectable()
-export class WebhookDeliveryQueueWorker implements OnModuleInit, OnModuleDestroy {
+export class WebhookDeliveryQueueWorker
+  implements OnModuleInit, OnModuleDestroy
+{
   private readonly logger = new Logger(WebhookDeliveryQueueWorker.name);
   private timer: NodeJS.Timeout | null = null;
   private running = false;
@@ -26,7 +33,9 @@ export class WebhookDeliveryQueueWorker implements OnModuleInit, OnModuleDestroy
 
   onModuleInit() {
     this.timer = setInterval(() => this.run(), this.intervalMs);
-    this.logger.log(`Delivery queue worker started (interval: ${this.intervalMs}ms)`);
+    this.logger.log(
+      `Delivery queue worker started (interval: ${this.intervalMs}ms)`,
+    );
   }
 
   onModuleDestroy() {

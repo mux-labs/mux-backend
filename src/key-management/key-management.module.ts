@@ -9,7 +9,11 @@ import { PrismaModule } from '../prisma/prisma.module';
 @Module({
   imports: [EncryptionModule, PrismaModule],
   controllers: [KeyManagementController],
-  providers: [KeyManagementService, StellarKeyProvider, KeyRotationAuditService],
+  providers: [
+    KeyManagementService,
+    StellarKeyProvider,
+    KeyRotationAuditService,
+  ],
   exports: [KeyManagementService, KeyRotationAuditService],
 })
 export class KeyManagementModule {}

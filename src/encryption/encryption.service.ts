@@ -10,7 +10,10 @@ export interface EncryptionResult {
 
 export class DecryptionError extends Error {
   code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA';
-  constructor(message: string, code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA') {
+  constructor(
+    message: string,
+    code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA',
+  ) {
     super(message);
     this.name = 'DecryptionError';
     this.code = code;

@@ -177,9 +177,7 @@ export class UsersService {
 
   private normalizeStatus(status: string): UserStatus {
     if (!Object.values(UserStatus).includes(status as UserStatus)) {
-      throw new BadRequestException(
-        `Invalid user status: ${status}.`,
-      );
+      throw new BadRequestException(`Invalid user status: ${status}.`);
     }
 
     return status as UserStatus;

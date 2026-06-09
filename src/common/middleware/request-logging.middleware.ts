@@ -9,6 +9,12 @@ export function requestLogger(
 ) {
   const logger = new Logger('RequestLogger');
   try {
+    if (!req) {
+      logger.warn('Request logging skipped: invalid request object');
+      next();
+      return;
+    }
+
     const idHeader =
       req &&
       req.headers &&

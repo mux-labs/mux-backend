@@ -17,6 +17,7 @@ import {
   type AuthenticationRequestWithIdempotency,
 } from './auth-orchestrator.service';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
+import { Public } from './public.decorator';
 
 @Controller('auth')
 export class AuthOrchestratorController {
@@ -34,6 +35,7 @@ export class AuthOrchestratorController {
    * Supports optional Idempotency-Key header for request deduplication.
    * Protected by per-IP rate limiting to prevent brute force attacks.
    */
+  @Public()
   @Post('authenticate')
   @UseGuards(AuthRateLimitGuard)
   @HttpCode(HttpStatus.OK)

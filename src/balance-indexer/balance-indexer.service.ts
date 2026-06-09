@@ -1,4 +1,10 @@
-import { Injectable, Logger, NotFoundException, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  OnModuleInit,
+  OnModuleDestroy,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { StellarHorizonService } from './stellar-horizon.service';
 import { ConfigService } from '@nestjs/config';
@@ -86,12 +92,20 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       'BALANCE_SYNC_INTERVAL_MS',
       10 * 60 * 1000, // 10 minutes
     );
-    this.maxRetries = this.configService.get<number>('BALANCE_SYNC_MAX_RETRIES', 3);
+    this.maxRetries = this.configService.get<number>(
+      'BALANCE_SYNC_MAX_RETRIES',
+      3,
+    );
   }
 
   onModuleInit() {
-    this.syncTimer = setInterval(() => this.runScheduledSync(), this.syncIntervalMs);
-    this.logger.log(`Scheduled balance sync started (interval: ${this.syncIntervalMs}ms)`);
+    this.syncTimer = setInterval(
+      () => this.runScheduledSync(),
+      this.syncIntervalMs,
+    );
+    this.logger.log(
+      `Scheduled balance sync started (interval: ${this.syncIntervalMs}ms)`,
+    );
   }
 
   onModuleDestroy() {
@@ -107,10 +121,16 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   async runScheduledSync(): Promise<void> {
     this.logger.log('Running scheduled balance sync for all active wallets');
     try {
-      const wallets = await this.prisma.wallet.findMany({ where: { status: 'ACTIVE' } });
+      const wallets = await this.prisma.wallet.findMany({
+        where: { status: 'ACTIVE' },
+      });
       for (const wallet of wallets) {
-        await this.syncWalletBalancesWithRetry({ walletId: wallet.id }).catch((err) =>
-          this.logger.error(`Scheduled sync failed for wallet ${wallet.id}:`, err),
+        await this.syncWalletBalancesWithRetry({ walletId: wallet.id }).catch(
+          (err) =>
+            this.logger.error(
+              `Scheduled sync failed for wallet ${wallet.id}:`,
+              err,
+            ),
         );
       }
     } catch (err) {
@@ -144,13 +164,17 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
    * Detects stale balances for a wallet and marks them in the DB
    */
   async detectStaleBalances(walletId: string): Promise<StaleBalanceResult> {
-    const balances = await this.prisma.walletBalance.findMany({ where: { walletId } });
+    const balances = await this.prisma.walletBalance.findMany({
+      where: { walletId },
+    });
     const staleAssets: string[] = [];
     let oldestStale: Date | null = null;
 
     for (const b of balances) {
       if (this.isBalanceStale(b)) {
-        const label = b.assetCode ? `${b.assetCode}/${b.assetType}` : b.assetType;
+        const label = b.assetCode
+          ? `${b.assetCode}/${b.assetType}`
+          : b.assetType;
         staleAssets.push(label);
         if (!oldestStale || (b.lastSyncedAt && b.lastSyncedAt < oldestStale)) {
           oldestStale = b.lastSyncedAt ?? null;
@@ -163,7 +187,9 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     }
 
     if (staleAssets.length > 0) {
-      this.logger.warn(`Stale balances detected for wallet ${walletId}: ${staleAssets.join(', ')}`);
+      this.logger.warn(
+        `Stale balances detected for wallet ${walletId}: ${staleAssets.join(', ')}`,
+      );
     }
 
     return { walletId, staleAssets, staleSince: oldestStale };

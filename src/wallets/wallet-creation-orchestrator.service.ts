@@ -28,7 +28,11 @@ export type OrchestrationPhase =
   | 'wallet-activation'
   | 'idempotency-store';
 
-export type OrchestrationOutcome = 'created' | 'existing' | 'idempotent' | 'failed';
+export type OrchestrationOutcome =
+  | 'created'
+  | 'existing'
+  | 'idempotent'
+  | 'failed';
 
 export interface OrchestratorMetrics {
   userId: string;
@@ -304,7 +308,10 @@ export class WalletCreationOrchestrator {
         error,
       );
 
-      if (error instanceof ConflictException || error instanceof NotFoundException) {
+      if (
+        error instanceof ConflictException ||
+        error instanceof NotFoundException
+      ) {
         throw error;
       }
 
@@ -345,7 +352,9 @@ export class WalletCreationOrchestrator {
    * Removes stale PROVISIONING wallets older than `olderThanMs` milliseconds.
    * Call this from a scheduled job or on startup to recover from crashed orchestrations.
    */
-  async cleanupStaleProvisioningWallets(olderThanMs = 5 * 60 * 1000): Promise<number> {
+  async cleanupStaleProvisioningWallets(
+    olderThanMs = 5 * 60 * 1000,
+  ): Promise<number> {
     const cutoff = new Date(Date.now() - olderThanMs);
     const { count } = await this.prisma.wallet.deleteMany({
       where: {
@@ -429,7 +438,11 @@ export class WalletCreationOrchestrator {
   private async createNewWallet(
     context: OrchestrationContext,
     tx: any,
-  ): Promise<{ wallet: Wallet; privateKey: string; phaseTimings: Partial<Record<OrchestrationPhase, number>> }> {
+  ): Promise<{
+    wallet: Wallet;
+    privateKey: string;
+    phaseTimings: Partial<Record<OrchestrationPhase, number>>;
+  }> {
     const { request } = context;
     const phaseTimings: Partial<Record<OrchestrationPhase, number>> = {};
 
@@ -550,7 +563,10 @@ export class WalletCreationOrchestrator {
     const cached = record.response as WalletIdempotencyCacheEntry;
 
     // Reject if the same key was previously used for a different operation
-    if (cached.userId !== request.userId || cached.network !== request.network) {
+    if (
+      cached.userId !== request.userId ||
+      cached.network !== request.network
+    ) {
       throw new ConflictException(
         `Idempotency key "${idempotencyKey}" was already used for a different userId or network`,
       );
@@ -753,10 +769,7 @@ export class WalletCreationOrchestrator {
   /**
    * Transitions a PROVISIONING wallet to ACTIVE within a transaction.
    */
-  private async activateWallet(
-    walletId: string,
-    tx: any,
-  ): Promise<Wallet> {
+  private async activateWallet(walletId: string, tx: any): Promise<Wallet> {
     try {
       const updatedWallet = await tx.wallet.update({
         where: { id: walletId },
@@ -768,9 +781,7 @@ export class WalletCreationOrchestrator {
         },
       });
 
-      this.logger.log(
-        `Activated wallet ${walletId} (PROVISIONING -> ACTIVE)`,
-      );
+      this.logger.log(`Activated wallet ${walletId} (PROVISIONING -> ACTIVE)`);
 
       return this.mapPrismaWalletToDomain(updatedWallet);
     } catch (error) {

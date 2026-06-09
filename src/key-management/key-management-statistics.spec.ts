@@ -19,7 +19,9 @@ describe('KeyManagementService - Statistics', () => {
 
   beforeEach(async () => {
     const mockConfigService = {
-      get: jest.fn().mockReturnValue('test-encryption-key-12345'),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-32-characters-long!!'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -32,7 +34,14 @@ describe('KeyManagementService - Statistics', () => {
         },
         {
           provide: PrismaService,
-          useValue: { wallet: { findUnique: jest.fn(), create: jest.fn(), update: jest.fn() }, $transaction: jest.fn() },
+          useValue: {
+            wallet: {
+              findUnique: jest.fn(),
+              create: jest.fn(),
+              update: jest.fn(),
+            },
+            $transaction: jest.fn(),
+          },
         },
         {
           provide: KeyRotationAuditService,

@@ -9,7 +9,12 @@ import { RateLimitModule } from '../rate-limit/rate-limit.module';
 import { KeyManagementModule } from '../key-management/key-management.module';
 
 @Module({
-  imports: [EncryptionModule, ApiKeyModule, RateLimitModule, KeyManagementModule],
+  imports: [
+    EncryptionModule,
+    ApiKeyModule,
+    RateLimitModule,
+    KeyManagementModule,
+  ],
   controllers: [WalletsController],
   providers: [WalletsService, WalletCreationOrchestrator, EncryptionService],
   exports: [WalletsService, WalletCreationOrchestrator],

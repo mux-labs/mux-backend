@@ -1,6 +1,6 @@
 /**
  * Contract Tests for StrKey Helper
- * 
+ *
  * These tests verify that the StrKeyHelper conforms to the Stellar StrKey
  * specification and maintains compatibility with stellar-sdk.
  */
@@ -77,7 +77,8 @@ describe('StrKeyHelper Contract Tests', () => {
 
       // Validate using StrKeyHelper
       const helperValidResult = StrKeyHelper.isValidEd25519PublicKey(validKey);
-      const helperInvalidResult = StrKeyHelper.isValidEd25519PublicKey(invalidKey);
+      const helperInvalidResult =
+        StrKeyHelper.isValidEd25519PublicKey(invalidKey);
 
       // Validate using stellar-sdk directly
       const sdkValidResult = StrKey.isValidEd25519PublicKey(validKey);
@@ -96,8 +97,10 @@ describe('StrKeyHelper Contract Tests', () => {
       const invalidSeed = 'SINVALIDSEED';
 
       // Validate using StrKeyHelper
-      const helperValidResult = StrKeyHelper.isValidEd25519SecretSeed(validSeed);
-      const helperInvalidResult = StrKeyHelper.isValidEd25519SecretSeed(invalidSeed);
+      const helperValidResult =
+        StrKeyHelper.isValidEd25519SecretSeed(validSeed);
+      const helperInvalidResult =
+        StrKeyHelper.isValidEd25519SecretSeed(invalidSeed);
 
       // Validate using stellar-sdk directly
       const sdkValidResult = StrKey.isValidEd25519SecretSeed(validSeed);
@@ -114,21 +117,27 @@ describe('StrKeyHelper Contract Tests', () => {
   describe('Stellar Protocol Compliance', () => {
     it('should produce 56-character public keys', () => {
       const keypair = Keypair.random();
-      const encoded = StrKeyHelper.encodeEd25519PublicKey(keypair.rawPublicKey());
+      const encoded = StrKeyHelper.encodeEd25519PublicKey(
+        keypair.rawPublicKey(),
+      );
 
       expect(encoded.length).toBe(56);
     });
 
     it('should produce 56-character secret seeds', () => {
       const keypair = Keypair.random();
-      const encoded = StrKeyHelper.encodeEd25519SecretSeed(keypair.rawSecretKey());
+      const encoded = StrKeyHelper.encodeEd25519SecretSeed(
+        keypair.rawSecretKey(),
+      );
 
       expect(encoded.length).toBe(56);
     });
 
     it('should produce public keys starting with G', () => {
       const keypair = Keypair.random();
-      const encoded = StrKeyHelper.encodeEd25519PublicKey(keypair.rawPublicKey());
+      const encoded = StrKeyHelper.encodeEd25519PublicKey(
+        keypair.rawPublicKey(),
+      );
 
       expect(encoded.startsWith('G')).toBe(true);
       expect(encoded.charAt(0)).toBe('G');
@@ -136,7 +145,9 @@ describe('StrKeyHelper Contract Tests', () => {
 
     it('should produce secret seeds starting with S', () => {
       const keypair = Keypair.random();
-      const encoded = StrKeyHelper.encodeEd25519SecretSeed(keypair.rawSecretKey());
+      const encoded = StrKeyHelper.encodeEd25519SecretSeed(
+        keypair.rawSecretKey(),
+      );
 
       expect(encoded.startsWith('S')).toBe(true);
       expect(encoded.charAt(0)).toBe('S');
@@ -148,11 +159,17 @@ describe('StrKeyHelper Contract Tests', () => {
       const invalidBuffer64 = Buffer.alloc(64);
 
       // Valid buffer should work
-      expect(() => StrKeyHelper.encodeEd25519PublicKey(validBuffer)).not.toThrow();
+      expect(() =>
+        StrKeyHelper.encodeEd25519PublicKey(validBuffer),
+      ).not.toThrow();
 
       // Invalid buffers should throw
-      expect(() => StrKeyHelper.encodeEd25519PublicKey(invalidBuffer16)).toThrow(/32 bytes/);
-      expect(() => StrKeyHelper.encodeEd25519PublicKey(invalidBuffer64)).toThrow(/32 bytes/);
+      expect(() =>
+        StrKeyHelper.encodeEd25519PublicKey(invalidBuffer16),
+      ).toThrow(/32 bytes/);
+      expect(() =>
+        StrKeyHelper.encodeEd25519PublicKey(invalidBuffer64),
+      ).toThrow(/32 bytes/);
     });
 
     it('should produce 32-byte buffers when decoding', () => {
@@ -174,7 +191,8 @@ describe('StrKeyHelper Contract Tests', () => {
 
       // Encode
       const encodedPublic = StrKeyHelper.encodeEd25519PublicKey(originalPublic);
-      const encodedSecret = StrKeyHelper.encodeEd25519SecretSeed(originalSecret);
+      const encodedSecret =
+        StrKeyHelper.encodeEd25519SecretSeed(originalSecret);
 
       // Decode
       const decodedPublic = StrKeyHelper.decodeEd25519PublicKey(encodedPublic);
@@ -187,7 +205,7 @@ describe('StrKeyHelper Contract Tests', () => {
 
     it('should detect checksum errors in invalid keys', () => {
       const validKey = Keypair.random().publicKey();
-      
+
       // Corrupt the key by changing a character (breaks checksum)
       const corruptedKey = 'G' + validKey.substring(1, 55) + 'A';
 
@@ -217,7 +235,9 @@ describe('StrKeyHelper Contract Tests', () => {
 
       for (let i = 0; i < 1000; i++) {
         const keypair = Keypair.random();
-        const encoded = StrKeyHelper.encodeEd25519PublicKey(keypair.rawPublicKey());
+        const encoded = StrKeyHelper.encodeEd25519PublicKey(
+          keypair.rawPublicKey(),
+        );
         const decoded = StrKeyHelper.decodeEd25519PublicKey(encoded);
         const isValid = StrKeyHelper.isValidEd25519PublicKey(encoded);
 
@@ -240,9 +260,13 @@ describe('StrKeyHelper Contract Tests', () => {
   describe('Edge Cases and Error Handling', () => {
     it('should handle null and undefined gracefully', () => {
       expect(StrKeyHelper.isValidEd25519PublicKey(null as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519PublicKey(undefined as any)).toBe(false);
+      expect(StrKeyHelper.isValidEd25519PublicKey(undefined as any)).toBe(
+        false,
+      );
       expect(StrKeyHelper.isValidEd25519SecretSeed(null as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(undefined as any)).toBe(false);
+      expect(StrKeyHelper.isValidEd25519SecretSeed(undefined as any)).toBe(
+        false,
+      );
     });
 
     it('should handle empty strings gracefully', () => {
@@ -276,30 +300,32 @@ describe('StrKeyHelper Contract Tests', () => {
   describe('Performance Characteristics', () => {
     it('should encode 10000 keys in reasonable time', () => {
       const startTime = Date.now();
-      
+
       for (let i = 0; i < 10000; i++) {
         const rawKey = Keypair.random().rawPublicKey();
         StrKeyHelper.encodeEd25519PublicKey(rawKey);
       }
 
       const duration = Date.now() - startTime;
-      
+
       // Should complete in less than 5 seconds (very generous)
       expect(duration).toBeLessThan(5000);
     });
 
     it('should validate 10000 keys in reasonable time', () => {
       // Pre-generate keys
-      const keys = Array.from({ length: 10000 }, () => Keypair.random().publicKey());
+      const keys = Array.from({ length: 10000 }, () =>
+        Keypair.random().publicKey(),
+      );
 
       const startTime = Date.now();
-      
+
       keys.forEach((key) => {
         StrKeyHelper.isValidEd25519PublicKey(key);
       });
 
       const duration = Date.now() - startTime;
-      
+
       // Should complete in less than 2 seconds (very generous)
       expect(duration).toBeLessThan(2000);
     });
@@ -329,8 +355,12 @@ describe('StrKeyHelper Contract Tests', () => {
       const sdkSecretSeed = keypair.secret();
 
       // Should decode without errors
-      expect(() => StrKeyHelper.decodeEd25519PublicKey(sdkPublicKey)).not.toThrow();
-      expect(() => StrKeyHelper.decodeEd25519SecretSeed(sdkSecretSeed)).not.toThrow();
+      expect(() =>
+        StrKeyHelper.decodeEd25519PublicKey(sdkPublicKey),
+      ).not.toThrow();
+      expect(() =>
+        StrKeyHelper.decodeEd25519SecretSeed(sdkSecretSeed),
+      ).not.toThrow();
 
       // Should match raw keys
       const decodedPublic = StrKeyHelper.decodeEd25519PublicKey(sdkPublicKey);

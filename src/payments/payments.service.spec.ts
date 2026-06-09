@@ -8,7 +8,10 @@ import { WalletStatus } from '../wallets/domain/wallet.model';
 import { PaymentStatus } from './entities/payment.entity';
 
 const ACTIVE_WALLET = { id: 'wallet-uuid-sender', status: WalletStatus.ACTIVE };
-const RECEIVER_WALLET = { id: 'wallet-uuid-receiver', status: WalletStatus.ACTIVE };
+const RECEIVER_WALLET = {
+  id: 'wallet-uuid-receiver',
+  status: WalletStatus.ACTIVE,
+};
 
 const BASE_DTO = {
   walletId: 'wallet-uuid-sender',
@@ -68,7 +71,9 @@ describe('PaymentsService', () => {
 
       const result = await service.create(BASE_DTO);
 
-      expect(walletsService.findWalletById).toHaveBeenCalledWith(BASE_DTO.walletId);
+      expect(walletsService.findWalletById).toHaveBeenCalledWith(
+        BASE_DTO.walletId,
+      );
       expect(walletsService.findWalletById).toHaveBeenCalledWith(
         BASE_DTO.receiverWalletId,
       );
@@ -96,7 +101,9 @@ describe('PaymentsService', () => {
         status: WalletStatus.SUSPENDED,
       });
 
-      await expect(service.create(BASE_DTO)).rejects.toThrow(BadRequestException);
+      await expect(service.create(BASE_DTO)).rejects.toThrow(
+        BadRequestException,
+      );
       expect(prisma.payment.create).not.toHaveBeenCalled();
     });
   });

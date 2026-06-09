@@ -3,10 +3,7 @@ import { KeyManagementController } from './key-management.controller';
 import { KeyManagementService } from './key-management.service';
 import { KeyType } from './domain/key-types';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
-import {
-  KeyStatistics,
-  DetailedKeyStatistics,
-} from './domain/key-statistics';
+import { KeyStatistics, DetailedKeyStatistics } from './domain/key-statistics';
 
 describe('KeyManagementController', () => {
   let controller: KeyManagementController;
@@ -40,9 +37,7 @@ describe('KeyManagementController', () => {
       ],
     }).compile();
 
-    controller = module.get<KeyManagementController>(
-      KeyManagementController,
-    );
+    controller = module.get<KeyManagementController>(KeyManagementController);
     service = module.get<KeyManagementService>(KeyManagementService);
 
     // Reset mocks

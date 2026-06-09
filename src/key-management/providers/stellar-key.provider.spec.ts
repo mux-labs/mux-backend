@@ -1,8 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { StellarKeyProvider } from './stellar-key.provider';
-import { EncryptionService, DecryptionError } from '../../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../../encryption/encryption.service';
 import { KeyType } from '../domain/key-types';
+import { Keypair } from 'stellar-sdk';
 
 describe('StellarKeyProvider', () => {
   let provider: StellarKeyProvider;
@@ -10,7 +14,9 @@ describe('StellarKeyProvider', () => {
 
   beforeEach(async () => {
     const mockConfigService = {
-      get: jest.fn().mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -153,10 +159,7 @@ describe('StellarKeyProvider', () => {
       // This simulates a signing failure after successful decryption
       let caught: Error | undefined;
       try {
-        await provider.sign(
-          'some-encrypted-material',
-          Buffer.from('data'),
-        );
+        await provider.sign('some-encrypted-material', Buffer.from('data'));
       } catch (e) {
         caught = e as Error;
       }
@@ -208,8 +211,10 @@ describe('StellarKeyProvider', () => {
           throw new DecryptionError('Decryption failed', 'DECRYPTION_FAILED');
         });
 
+      const publicKey = Keypair.random().publicKey();
+
       await expect(
-        provider.validateKeyPair('GSOME_KEY', 'corrupted-material'),
+        provider.validateKeyPair(publicKey, 'corrupted-material'),
       ).rejects.toThrow(DecryptionError);
     });
 

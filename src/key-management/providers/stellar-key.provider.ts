@@ -5,10 +5,12 @@ import {
   SignatureResult,
   KeyType,
 } from '../domain/key-types';
-import { EncryptionService, DecryptionError } from '../../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../../encryption/encryption.service';
 import { Keypair } from 'stellar-sdk';
 import { StrKeyHelper } from '../utils/strkey.helper';
-
 
 /**
  * Stellar Ed25519 key provider implementation
@@ -33,7 +35,9 @@ export class StellarKeyProvider implements IKeyProvider {
       const publicKey = keypair.publicKey();
       const privateKey = keypair.secret();
 
-      this.logger.log('Generated new Stellar Ed25519 keypair using stellar-sdk');
+      this.logger.log(
+        'Generated new Stellar Ed25519 keypair using stellar-sdk',
+      );
 
       return {
         publicKey,

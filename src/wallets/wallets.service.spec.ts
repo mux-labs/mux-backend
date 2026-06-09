@@ -2,7 +2,13 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { WalletsService, CreateWalletRequest } from './wallets.service';
 import { WalletNetwork } from './domain/wallet.model';
-import { EncryptionService } from '../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../encryption/encryption.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyDecryptionException } from '../key-management/exceptions/key-decryption.exception';
+import { KeyType } from '../key-management/domain/key-types';
 
 // Shared mock Prisma wallet methods
 const mockPrismaWallet = {
@@ -28,8 +34,12 @@ jest.mock('crypto', () => {
     ...actual,
     sign: jest.fn().mockReturnValue(Buffer.from('mock-signature')),
     generateKeyPairSync: jest.fn().mockReturnValue({
-      publicKey: { export: jest.fn().mockReturnValue(Buffer.from('mock-public-key')) },
-      privateKey: { export: jest.fn().mockReturnValue(Buffer.from('mock-private-key')) },
+      publicKey: {
+        export: jest.fn().mockReturnValue(Buffer.from('mock-public-key')),
+      },
+      privateKey: {
+        export: jest.fn().mockReturnValue(Buffer.from('mock-private-key')),
+      },
     }),
     createPrivateKey: jest.fn().mockReturnValue({}),
   };
@@ -38,6 +48,11 @@ jest.mock('crypto', () => {
 describe('WalletsService', () => {
   let service: WalletsService;
   let encryptionService: EncryptionService;
+  let keyManagementService: {
+    generateKey: jest.Mock;
+    sign: jest.Mock;
+    validateKey: jest.Mock;
+  };
 
   beforeEach(async () => {
     jest.clearAllMocks();
@@ -52,6 +67,18 @@ describe('WalletsService', () => {
       get: jest.fn().mockReturnValue('test-encryption-key'),
     };
 
+    const mockKeyManagementService = {
+      generateKey: jest.fn().mockResolvedValue({
+        publicKey: 'new-public-key',
+        encryptedData: 'new-encrypted-secret',
+        encryptionVersion: 1,
+        keyVersion: 2,
+        keyType: 'STELLAR_ED25519',
+      }),
+      sign: jest.fn(),
+      validateKey: jest.fn(),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WalletsService,
@@ -63,11 +90,16 @@ describe('WalletsService', () => {
           provide: ConfigService,
           useValue: mockConfigService,
         },
+        {
+          provide: KeyManagementService,
+          useValue: mockKeyManagementService,
+        },
       ],
     }).compile();
 
     service = module.get<WalletsService>(WalletsService);
     encryptionService = module.get<EncryptionService>(EncryptionService);
+    keyManagementService = module.get(KeyManagementService);
   });
 
   it('should be defined', () => {
@@ -230,7 +262,7 @@ describe('WalletsService', () => {
         status: 'ACTIVE',
       };
 
-      mockPrisma.wallet.findUnique.mockResolvedValue(mockWallet);
+      mockPrismaWallet.findUnique.mockResolvedValue(mockWallet);
       jest
         .spyOn(encryptionService, 'deserializeAndDecrypt')
         .mockImplementation(() => {

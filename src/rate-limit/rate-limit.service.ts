@@ -60,10 +60,14 @@ export class RateLimitService {
     projectRateLimitRpm?: number,
     isSensitive: boolean = false,
   ): Promise<RateLimitResult> {
-    const windowMs = isSensitive ? this.sensitiveConfig.windowMs : this.defaultConfig.windowMs;
+    const windowMs = isSensitive
+      ? this.sensitiveConfig.windowMs
+      : this.defaultConfig.windowMs;
     const maxRequests =
       projectRateLimitRpm ??
-      (isSensitive ? this.sensitiveConfig.maxRequests : this.defaultConfig.maxRequests);
+      (isSensitive
+        ? this.sensitiveConfig.maxRequests
+        : this.defaultConfig.maxRequests);
     const now = new Date();
 
     // Calculate window start by rounding down to the nearest window boundary

@@ -95,7 +95,9 @@ describe('LimitsService', () => {
       prisma.walletLimit.findUnique.mockResolvedValue(limit);
       prisma.walletLimit.delete.mockResolvedValue(limit);
       await service.removeLimits(walletId);
-      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({ where: { walletId } });
+      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
+        where: { walletId },
+      });
     });
 
     it('should throw NotFoundException if no limits exist', async () => {

@@ -26,7 +26,15 @@ describe('transaction.model', () => {
 
     it('uses provided id and timestamp', () => {
       const at = new Date('2024-01-01');
-      const tx = createTransaction('10', { type: 'NATIVE' }, 'wallet-a', null, null, 'fixed-id', at);
+      const tx = createTransaction(
+        '10',
+        { type: 'NATIVE' },
+        'wallet-a',
+        null,
+        null,
+        'fixed-id',
+        at,
+      );
 
       expect(tx.id).toBe('fixed-id');
       expect(tx.createdAt).toBe(at);
@@ -35,7 +43,13 @@ describe('transaction.model', () => {
     });
 
     it('sets receiverWalletId and metadata when provided', () => {
-      const tx = createTransaction('10', { type: 'NATIVE' }, 'wallet-a', 'wallet-b', { ref: '123' });
+      const tx = createTransaction(
+        '10',
+        { type: 'NATIVE' },
+        'wallet-a',
+        'wallet-b',
+        { ref: '123' },
+      );
 
       expect(tx.receiverWalletId).toBe('wallet-b');
       expect(tx.metadata).toEqual({ ref: '123' });
@@ -61,12 +75,23 @@ describe('transaction.model', () => {
     let pending: Transaction;
 
     beforeEach(() => {
-      pending = createTransaction('100', { type: 'NATIVE' }, 'wallet-a', 'wallet-b');
+      pending = createTransaction(
+        '100',
+        { type: 'NATIVE' },
+        'wallet-a',
+        'wallet-b',
+      );
     });
 
     it('transitions PENDING -> SUBMITTED and sets submittedAt', () => {
       const at = new Date('2024-06-01');
-      const result = transitionTransactionStatus(pending, TransactionStatus.SUBMITTED, undefined, undefined, at);
+      const result = transitionTransactionStatus(
+        pending,
+        TransactionStatus.SUBMITTED,
+        undefined,
+        undefined,
+        at,
+      );
 
       expect(result.status).toBe(TransactionStatus.SUBMITTED);
       expect(result.submittedAt).toBe(at);
@@ -75,9 +100,18 @@ describe('transaction.model', () => {
     });
 
     it('transitions SUBMITTED -> CONFIRMED and sets confirmedAt', () => {
-      const submitted = transitionTransactionStatus(pending, TransactionStatus.SUBMITTED);
+      const submitted = transitionTransactionStatus(
+        pending,
+        TransactionStatus.SUBMITTED,
+      );
       const at = new Date('2024-06-02');
-      const result = transitionTransactionStatus(submitted, TransactionStatus.CONFIRMED, undefined, undefined, at);
+      const result = transitionTransactionStatus(
+        submitted,
+        TransactionStatus.CONFIRMED,
+        undefined,
+        undefined,
+        at,
+      );
 
       expect(result.status).toBe(TransactionStatus.CONFIRMED);
       expect(result.confirmedAt).toBe(at);
@@ -85,7 +119,13 @@ describe('transaction.model', () => {
 
     it('transitions PENDING -> FAILED and sets failedAt', () => {
       const at = new Date('2024-06-01');
-      const result = transitionTransactionStatus(pending, TransactionStatus.FAILED, 'timeout', undefined, at);
+      const result = transitionTransactionStatus(
+        pending,
+        TransactionStatus.FAILED,
+        'timeout',
+        undefined,
+        at,
+      );
 
       expect(result.status).toBe(TransactionStatus.FAILED);
       expect(result.failedAt).toBe(at);
@@ -116,7 +156,10 @@ describe('transaction.model', () => {
     });
 
     it('returns same object when transitioning to same status', () => {
-      const result = transitionTransactionStatus(pending, TransactionStatus.PENDING);
+      const result = transitionTransactionStatus(
+        pending,
+        TransactionStatus.PENDING,
+      );
 
       expect(result).toBe(pending);
     });

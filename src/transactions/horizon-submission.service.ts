@@ -71,16 +71,18 @@ export class HorizonSubmissionService {
           horizonResult.extras?.result_codes?.transaction ??
           String(status);
 
-        await this.persistStatus(transactionId, TransactionStatus.FAILED, txCode);
+        await this.persistStatus(
+          transactionId,
+          TransactionStatus.FAILED,
+          txCode,
+        );
         throw new BadRequestException(
           `Horizon rejected transaction: ${txCode}`,
         );
       }
 
       // 5xx — surface as service unavailable
-      throw new ServiceUnavailableException(
-        `Horizon server error (${status})`,
-      );
+      throw new ServiceUnavailableException(`Horizon server error (${status})`);
     }
 
     const mappedStatus = mapHorizonResultToStatus(horizonResult);

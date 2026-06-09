@@ -59,7 +59,15 @@ export class StellarTransactionBuildService {
   async buildPayment(
     dto: BuildTransactionDto,
   ): Promise<BuildTransactionResponseDto> {
-    const { sourcePublicKey, destinationPublicKey, amount, assetCode, assetIssuer, memo, network } = dto;
+    const {
+      sourcePublicKey,
+      destinationPublicKey,
+      amount,
+      assetCode,
+      assetIssuer,
+      memo,
+      network,
+    } = dto;
 
     // Validate asset configuration
     if (assetCode !== 'native' && !assetIssuer) {
@@ -71,7 +79,8 @@ export class StellarTransactionBuildService {
     const networkPassphrase =
       network === 'MAINNET' ? Networks.PUBLIC : Networks.TESTNET;
 
-    const server = network === 'MAINNET' ? this.horizonMainnet : this.horizonTestnet;
+    const server =
+      network === 'MAINNET' ? this.horizonMainnet : this.horizonTestnet;
 
     // Fetch source account (provides sequence number)
     let sourceAccount: Awaited<ReturnType<Server['loadAccount']>>;
@@ -94,7 +103,7 @@ export class StellarTransactionBuildService {
     const asset =
       assetCode === 'native'
         ? Asset.native()
-        : new Asset(assetCode, assetIssuer!);
+        : new Asset(assetCode, assetIssuer);
 
     // Build transaction
     try {

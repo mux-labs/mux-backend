@@ -550,11 +550,7 @@ describe('KeyRotationAuditService', () => {
 
       expect(prisma.keyRotationAuditLog.findMany).toHaveBeenCalledWith({
         where: {
-          OR: [
-            { keyId },
-            { previousKeyId: keyId },
-            { newKeyId: keyId },
-          ],
+          OR: [{ keyId }, { previousKeyId: keyId }, { newKeyId: keyId }],
         },
         orderBy: { timestamp: 'desc' },
       });

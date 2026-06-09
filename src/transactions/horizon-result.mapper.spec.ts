@@ -1,17 +1,26 @@
-import { mapHorizonResultToStatus, HorizonTransactionResult } from './horizon-result.mapper';
+import {
+  mapHorizonResultToStatus,
+  HorizonTransactionResult,
+} from './horizon-result.mapper';
 import { TransactionStatus } from './domain/transaction.model';
 
 describe('mapHorizonResultToStatus', () => {
   it('returns CONFIRMED when successful=true', () => {
-    expect(mapHorizonResultToStatus({ successful: true })).toBe(TransactionStatus.CONFIRMED);
+    expect(mapHorizonResultToStatus({ successful: true })).toBe(
+      TransactionStatus.CONFIRMED,
+    );
   });
 
   it('returns CONFIRMED for tx_success result_code', () => {
-    expect(mapHorizonResultToStatus({ result_code: 'tx_success' })).toBe(TransactionStatus.CONFIRMED);
+    expect(mapHorizonResultToStatus({ result_code: 'tx_success' })).toBe(
+      TransactionStatus.CONFIRMED,
+    );
   });
 
   it('returns CONFIRMED for tx_fee_bump_inner_success', () => {
-    expect(mapHorizonResultToStatus({ result_code: 'tx_fee_bump_inner_success' })).toBe(TransactionStatus.CONFIRMED);
+    expect(
+      mapHorizonResultToStatus({ result_code: 'tx_fee_bump_inner_success' }),
+    ).toBe(TransactionStatus.CONFIRMED);
   });
 
   it('returns CONFIRMED when result_code is in extras.result_codes.transaction', () => {
@@ -41,11 +50,15 @@ describe('mapHorizonResultToStatus', () => {
   ];
 
   it.each(failureCodes)('returns FAILED for result_code "%s"', (code) => {
-    expect(mapHorizonResultToStatus({ result_code: code })).toBe(TransactionStatus.FAILED);
+    expect(mapHorizonResultToStatus({ result_code: code })).toBe(
+      TransactionStatus.FAILED,
+    );
   });
 
   it('returns FAILED for an unknown result code', () => {
-    expect(mapHorizonResultToStatus({ result_code: 'tx_some_future_code' })).toBe(TransactionStatus.FAILED);
+    expect(
+      mapHorizonResultToStatus({ result_code: 'tx_some_future_code' }),
+    ).toBe(TransactionStatus.FAILED);
   });
 
   it('returns FAILED when result is empty (no successful flag, no code)', () => {
