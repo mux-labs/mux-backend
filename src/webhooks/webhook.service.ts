@@ -2,6 +2,8 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEndpoint, EndpointStatus } from './domain/webhook-events';
 import * as crypto from 'crypto';
+import { logWebhookOperation } from './webhook-logging.util';
+import { WebhookCacheService } from './webhook-cache.service';
 
 export interface CreateWebhookEndpointRequest {
   projectId: string;
@@ -32,7 +34,10 @@ export interface UpdateWebhookEndpointRequest {
 export class WebhookService {
   private readonly logger = new Logger(WebhookService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly webhookCache: WebhookCacheService,
+  ) {}
 
   /**
    * Creates a new webhook endpoint
@@ -40,8 +45,11 @@ export class WebhookService {
   async createEndpoint(
     request: CreateWebhookEndpointRequest,
   ): Promise<WebhookEndpoint> {
-    this.logger.log(
+    logWebhookOperation(
+      this.logger,
+      'log',
       `Creating webhook endpoint for project ${request.projectId}`,
+      { projectId: request.projectId },
     );
 
     // Generate secret for signing
@@ -58,7 +66,12 @@ export class WebhookService {
       },
     });
 
-    this.logger.log(`Created webhook endpoint ${endpoint.id}`);
+    logWebhookOperation(
+      this.logger,
+      'log',
+      `Created webhook endpoint ${endpoint.id}`,
+      { endpointId: endpoint.id, projectId: request.projectId },
+    );
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -78,6 +91,12 @@ export class WebhookService {
    * Gets a webhook endpoint by ID
    */
   async getEndpoint(endpointId: string): Promise<WebhookEndpoint> {
+    const cacheKey = this.webhookCache.endpointKey(endpointId);
+    const cached = this.webhookCache.get<WebhookEndpoint>(cacheKey);
+    if (cached) {
+      return cached;
+    }
+
     const endpoint = await this.prisma.webhookEndpoint.findUnique({
       where: { id: endpointId },
     });
@@ -86,7 +105,9 @@ export class WebhookService {
       throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
     }
 
-    return this.mapPrismaEndpointToDomain(endpoint);
+    const mapped = this.mapPrismaEndpointToDomain(endpoint);
+    this.webhookCache.set(cacheKey, mapped);
+    return mapped;
   }
 
   /**
@@ -101,7 +122,13 @@ export class WebhookService {
       data: updates,
     });
 
-    this.logger.log(`Updated webhook endpoint ${endpointId}`);
+    this.webhookCache.invalidate(this.webhookCache.endpointKey(endpointId));
+    logWebhookOperation(
+      this.logger,
+      'log',
+      `Updated webhook endpoint ${endpointId}`,
+      { endpointId },
+    );
     return this.mapPrismaEndpointToDomain(endpoint);
   }
 
@@ -113,7 +140,13 @@ export class WebhookService {
       where: { id: endpointId },
     });
 
-    this.logger.log(`Deleted webhook endpoint ${endpointId}`);
+    this.webhookCache.invalidate(this.webhookCache.endpointKey(endpointId));
+    logWebhookOperation(
+      this.logger,
+      'log',
+      `Deleted webhook endpoint ${endpointId}`,
+      { endpointId },
+    );
   }
 
   /**
@@ -127,7 +160,13 @@ export class WebhookService {
       data: { secret: newSecret },
     });
 
-    this.logger.log(`Rotated secret for webhook endpoint ${endpointId}`);
+    this.webhookCache.invalidate(this.webhookCache.endpointKey(endpointId));
+    logWebhookOperation(
+      this.logger,
+      'log',
+      `Rotated secret for webhook endpoint ${endpointId}`,
+      { endpointId },
+    );
     return { secret: newSecret };
   }
 

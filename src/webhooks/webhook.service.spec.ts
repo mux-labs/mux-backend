@@ -3,6 +3,7 @@ import { NotFoundException } from '@nestjs/common';
 import { WebhookService } from './webhook.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { EndpointStatus } from './domain/webhook-events';
+import { WebhookCacheService } from './webhook-cache.service';
 
 const PROJECT_ID = 'project-1';
 const ENDPOINT_ID = 'endpoint-1';
@@ -26,6 +27,7 @@ const mockEndpoint = {
 
 describe('WebhookService', () => {
   let service: WebhookService;
+  let cache: WebhookCacheService;
 
   const mockPrisma = {
     webhookEndpoint: {
@@ -46,11 +48,13 @@ describe('WebhookService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookService,
+        WebhookCacheService,
         { provide: PrismaService, useValue: mockPrisma },
       ],
     }).compile();
 
     service = module.get<WebhookService>(WebhookService);
+    cache = module.get<WebhookCacheService>(WebhookCacheService);
   });
 
   it('should be defined', () => {
@@ -138,6 +142,24 @@ describe('WebhookService', () => {
         NotFoundException,
       );
     });
+
+    it('returns cached endpoint on second call without hitting DB', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
+
+      await service.getEndpoint(ENDPOINT_ID);
+      await service.getEndpoint(ENDPOINT_ID);
+
+      expect(mockPrisma.webhookEndpoint.findUnique).toHaveBeenCalledTimes(1);
+    });
+
+    it('falls through to DB on cache miss', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
+
+      const result = await service.getEndpoint(ENDPOINT_ID);
+
+      expect(result.id).toBe(ENDPOINT_ID);
+      expect(mockPrisma.webhookEndpoint.findUnique).toHaveBeenCalledTimes(1);
+    });
   });
 
   // ─── updateEndpoint ──────────────────────────────────────────────────────────
@@ -152,6 +174,24 @@ describe('WebhookService', () => {
       });
 
       expect(result.url).toBe('https://new.example.com/hook');
+    });
+
+    it('invalidates cache after update', async () => {
+      const updated = { ...mockEndpoint, url: 'https://new.example.com/hook' };
+      mockPrisma.webhookEndpoint.update.mockResolvedValue(updated);
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(updated);
+      const invalidateSpy = jest.spyOn(cache, 'invalidate');
+
+      await service.getEndpoint(ENDPOINT_ID);
+      await service.updateEndpoint(ENDPOINT_ID, {
+        url: 'https://new.example.com/hook',
+      });
+      await service.getEndpoint(ENDPOINT_ID);
+
+      expect(invalidateSpy).toHaveBeenCalledWith(
+        cache.endpointKey(ENDPOINT_ID),
+      );
+      expect(mockPrisma.webhookEndpoint.findUnique).toHaveBeenCalledTimes(2);
     });
   });
 
