@@ -6,6 +6,9 @@ import { WebhookSignerService } from './webhook-signer.service';
 import { WebhookEventEmitterService } from './webhook-event-emitter.service';
 import { WebhookDeliveryQueueWorker } from './webhook-delivery-queue.worker';
 import { WebhookController } from './webhook.controller';
+import { WebhookCacheService } from './webhook-cache.service';
+import { FeatureFlagService } from '../common/services/feature-flag.service';
+import { WebhooksFeatureFlagGuard } from './webhooks-feature-flag.guard';
 
 @Module({
   imports: [ConfigModule],
@@ -16,6 +19,9 @@ import { WebhookController } from './webhook.controller';
     WebhookSignerService,
     WebhookEventEmitterService,
     WebhookDeliveryQueueWorker,
+    WebhookCacheService,
+    FeatureFlagService,
+    WebhooksFeatureFlagGuard,
   ],
   exports: [WebhookEventEmitterService, WebhookDispatcherService],
 })
