@@ -9,6 +9,8 @@ import {
   EndpointStatus,
 } from './domain/webhook-events';
 import axios, { AxiosError } from 'axios';
+import { RequestContext } from '../common/context/request-context';
+import { logWebhookOperation } from './webhook-logging.util';
 
 export interface DispatchEventRequest {
   event: WebhookEvent;
@@ -60,17 +62,32 @@ export class WebhookDispatcherService {
   async dispatchEvent(request: DispatchEventRequest): Promise<void> {
     const { event, projectId } = request;
 
-    this.logger.log(`Dispatching event ${event.type} (${event.id})`);
+    logWebhookOperation(
+      this.logger,
+      'log',
+      `Dispatching event ${event.type} (${event.id})`,
+      { eventType: event.type, eventId: event.id },
+    );
 
     // Find all endpoints subscribed to this event type
     const endpoints = await this.findSubscribedEndpoints(event.type, projectId);
 
     if (endpoints.length === 0) {
-      this.logger.log(`No endpoints subscribed to ${event.type}`);
+      logWebhookOperation(
+        this.logger,
+        'log',
+        `No endpoints subscribed to ${event.type}`,
+        { eventType: event.type },
+      );
       return;
     }
 
-    this.logger.log(`Found ${endpoints.length} endpoints for ${event.type}`);
+    logWebhookOperation(
+      this.logger,
+      'log',
+      `Found ${endpoints.length} endpoints for ${event.type}`,
+      { eventType: event.type, endpointCount: endpoints.length },
+    );
 
     // Create delivery records for each endpoint
     for (const endpoint of endpoints) {
@@ -79,7 +96,12 @@ export class WebhookDispatcherService {
 
     // Attempt immediate delivery (async)
     this.processDeliveries().catch((err) =>
-      this.logger.error('Background delivery processing failed:', err),
+      logWebhookOperation(
+        this.logger,
+        'error',
+        'Background delivery processing failed',
+        { error: err?.message },
+      ),
     );
   }
 
@@ -127,15 +149,23 @@ export class WebhookDispatcherService {
           retrying++;
         }
       } catch (error) {
-        this.logger.error(`Delivery attempt failed for ${delivery.id}:`, error);
+        logWebhookOperation(
+          this.logger,
+          'error',
+          `Delivery attempt failed for ${delivery.id}`,
+          { deliveryId: delivery.id, error: error?.message },
+        );
         failed++;
       }
     }
 
     const duration = Date.now() - startTime;
-    this.logger.log(
+    logWebhookOperation(
+      this.logger,
+      'log',
       `Processed ${deliveries.length} deliveries in ${duration}ms ` +
         `(delivered: ${delivered}, failed: ${failed}, retrying: ${retrying})`,
+      { delivered, failed, retrying, durationMs: duration },
     );
 
     return { delivered, failed, retrying };
@@ -149,15 +179,28 @@ export class WebhookDispatcherService {
 
     // Skip disabled endpoints
     if (endpoint.status !== EndpointStatus.ACTIVE) {
-      this.logger.warn(`Skipping delivery to disabled endpoint ${endpoint.id}`);
+      logWebhookOperation(
+        this.logger,
+        'warn',
+        `Skipping delivery to disabled endpoint ${endpoint.id}`,
+        { endpointId: endpoint.id, deliveryId: delivery.id },
+      );
       return DeliveryStatus.FAILED;
     }
 
     const attemptNumber = delivery.attempts + 1;
     const startTime = Date.now();
 
-    this.logger.log(
+    logWebhookOperation(
+      this.logger,
+      'log',
       `Attempting delivery ${delivery.id} to ${endpoint.url} (attempt ${attemptNumber}/${this.maxRetries})`,
+      {
+        deliveryId: delivery.id,
+        endpointId: endpoint.id,
+        attempt: attemptNumber,
+        maxAttempts: this.maxRetries,
+      },
     );
 
     try {
@@ -168,18 +211,24 @@ export class WebhookDispatcherService {
           endpoint.secret,
         );
 
+      const requestId = RequestContext.getRequestId();
+      const outboundHeaders: Record<string, string> = {
+        'Content-Type': 'application/json',
+        'X-Webhook-Event-Type': delivery.eventType,
+        'X-Webhook-Event-Id': delivery.eventId,
+        'X-Webhook-Signature': this.webhookSigner.formatSignatureHeader(
+          timestamp,
+          signature,
+        ),
+        'User-Agent': 'Mux-Webhooks/1.0',
+      };
+      if (requestId) {
+        outboundHeaders['x-request-id'] = requestId;
+      }
+
       // Make HTTP request
       const response = await axios.post(endpoint.url, delivery.payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Webhook-Event-Type': delivery.eventType,
-          'X-Webhook-Event-Id': delivery.eventId,
-          'X-Webhook-Signature': this.webhookSigner.formatSignatureHeader(
-            timestamp,
-            signature,
-          ),
-          'User-Agent': 'Mux-Webhooks/1.0',
-        },
+        headers: outboundHeaders,
         timeout: this.requestTimeoutMs,
         validateStatus: (status) => status >= 200 && status < 300,
       });
@@ -195,8 +244,11 @@ export class WebhookDispatcherService {
       );
       await this.markEndpointSuccess(endpoint.id);
 
-      this.logger.log(
+      logWebhookOperation(
+        this.logger,
+        'log',
         `Successfully delivered ${delivery.id} in ${responseTime}ms`,
+        { deliveryId: delivery.id, responseTimeMs: responseTime },
       );
       return DeliveryStatus.DELIVERED;
     } catch (error) {
@@ -208,8 +260,15 @@ export class WebhookDispatcherService {
         ? JSON.stringify(axiosError.response.data).substring(0, 500)
         : axiosError.message;
 
-      this.logger.warn(
+      logWebhookOperation(
+        this.logger,
+        'warn',
         `Delivery ${delivery.id} failed (attempt ${attemptNumber}): ${axiosError.message}`,
+        {
+          deliveryId: delivery.id,
+          attempt: attemptNumber,
+          error: axiosError.message,
+        },
       );
 
       // Determine if we should retry
@@ -419,8 +478,11 @@ export class WebhookDispatcherService {
     });
 
     if (shouldDisable) {
-      this.logger.warn(
+      logWebhookOperation(
+        this.logger,
+        'warn',
         `Disabled endpoint ${endpointId} after ${newFailureCount} consecutive failures`,
+        { endpointId, consecutiveFailures: newFailureCount },
       );
     }
   }

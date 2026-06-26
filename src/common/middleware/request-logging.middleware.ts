@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { RequestContext } from '../context/request-context';
 
 export function requestLogger(
   req: Request | any,
@@ -8,15 +9,15 @@ export function requestLogger(
   next: NextFunction,
 ) {
   const logger = new Logger('RequestLogger');
-  try {
-    if (!req) {
-      logger.warn('Request logging skipped: invalid request object');
-      next();
-      return;
-    }
 
+  if (!req) {
+    logger.warn('Request logging skipped: invalid request object');
+    next();
+    return;
+  }
+
+  try {
     const idHeader =
-      req &&
       req.headers &&
       (req.headers['x-request-id'] || req.headers['X-Request-Id']);
     const id =
@@ -24,6 +25,10 @@ export function requestLogger(
         ? idHeader
         : randomUUID();
     const start = Date.now();
+
+    if (req.headers) {
+      req.headers['x-request-id'] = id;
+    }
 
     if (res && typeof res.setHeader === 'function') {
       try {
@@ -53,9 +58,16 @@ export function requestLogger(
         }
       });
     }
+
+    RequestContext.run(id, () => {
+      try {
+        next();
+      } catch (e) {
+        logger.warn('next() threw in requestLogger');
+      }
+    });
   } catch (err: any) {
     logger.warn('Request logging failed: ' + (err && err.message));
-  } finally {
     try {
       next();
     } catch (e) {
