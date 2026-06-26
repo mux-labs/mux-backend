@@ -15,6 +15,8 @@ import {
   AssetType,
   BalanceSyncStatus,
   BalanceUpdate,
+  BalanceChangeEvent,
+  IndexBalanceEventResult,
   ReconciliationResult,
 } from './domain/balance.model';
 
@@ -77,6 +79,7 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   private readonly syncIntervalMs: number;
   private readonly maxRetries: number;
   private syncTimer: NodeJS.Timeout | null = null;
+  private readonly processedEventKeys = new Set<string>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -193,6 +196,65 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
     }
 
     return { walletId, staleAssets, staleSince: oldestStale };
+  }
+
+  /**
+   * Indexes a Stellar balance-change event with idempotency and ordering guards.
+   */
+  async indexBalanceEvent(
+    event: BalanceChangeEvent,
+  ): Promise<IndexBalanceEventResult> {
+    const eventKey = this.buildBalanceEventKey(event);
+    if (this.processedEventKeys.has(eventKey)) {
+      return { action: 'skipped', reason: 'duplicate' };
+    }
+
+    const existing = await this.prisma.walletBalance.findUnique({
+      where: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
+          event.walletId,
+          event.asset,
+        ),
+      },
+    });
+
+    if (
+      existing?.lastSyncedLedger != null &&
+      event.ledgerSequence < existing.lastSyncedLedger
+    ) {
+      return { action: 'skipped', reason: 'out_of_order' };
+    }
+
+    await this.prisma.walletBalance.upsert({
+      where: {
+        walletId_assetType_assetCode_assetIssuer: this.assetCompoundKey(
+          event.walletId,
+          event.asset,
+        ),
+      },
+      create: {
+        walletId: event.walletId,
+        assetType: event.asset.type,
+        assetCode: event.asset.code || null,
+        assetIssuer: event.asset.issuer || null,
+        balance: event.balance,
+        syncStatus: BalanceSyncStatus.SYNCED,
+        lastSyncedAt: event.timestamp,
+        lastSyncedLedger: event.ledgerSequence,
+        onChainBalance: event.balance,
+      },
+      update: {
+        balance: event.balance,
+        syncStatus: BalanceSyncStatus.SYNCED,
+        lastSyncedAt: event.timestamp,
+        lastSyncedLedger: event.ledgerSequence,
+        onChainBalance: event.balance,
+        updatedAt: new Date(),
+      },
+    });
+
+    this.processedEventKeys.add(eventKey);
+    return { action: 'indexed' };
   }
 
   /**
@@ -668,6 +730,17 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       asset1.code === asset2.code &&
       asset1.issuer === asset2.issuer
     );
+  }
+
+  private buildBalanceEventKey(event: BalanceChangeEvent): string {
+    return [
+      event.walletId,
+      event.asset.type,
+      event.asset.code ?? '',
+      event.asset.issuer ?? '',
+      event.ledgerSequence,
+      event.transactionHash,
+    ].join(':');
   }
 
   private assetCompoundKey(walletId: string, asset: Asset) {

@@ -49,6 +49,15 @@ export interface BalanceUpdate {
   timestamp: Date;
 }
 
+export interface BalanceChangeEvent extends BalanceUpdate {
+  transactionHash: string;
+}
+
+export type IndexBalanceEventResult = {
+  action: 'indexed' | 'skipped';
+  reason?: 'duplicate' | 'out_of_order';
+};
+
 export interface ReconciliationResult {
   walletId: string;
   asset: Asset;
