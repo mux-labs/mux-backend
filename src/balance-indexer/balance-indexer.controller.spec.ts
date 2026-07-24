@@ -381,7 +381,7 @@ describe('BalanceIndexerController', () => {
 
   // ─── detectStaleBalances ──────────────────────────────────────────────────
 
-  describe('detectStaleBalances', () => {
+  describe('detectStaleBalances (#488)', () => {
     it('returns stale assets when detected', async () => {
       const mockResult = {
         walletId: WALLET_ID,
@@ -407,6 +407,112 @@ describe('BalanceIndexerController', () => {
       const result = await controller.detectStaleBalances(WALLET_ID);
 
       expect(result.staleAssets).toHaveLength(0);
+    });
+
+    it('delegates to service with correct walletId', async () => {
+      mockService.detectStaleBalances.mockResolvedValue({
+        walletId: WALLET_ID,
+        staleAssets: [],
+        staleSince: null,
+      });
+
+      await controller.detectStaleBalances(WALLET_ID);
+
+      expect(mockService.detectStaleBalances).toHaveBeenCalledWith(WALLET_ID);
+      expect(mockService.detectStaleBalances).toHaveBeenCalledTimes(1);
+    });
+
+    it('propagates service errors for non-existent wallet', async () => {
+      mockService.detectStaleBalances.mockRejectedValue(
+        new Error('Wallet not found'),
+      );
+
+      await expect(controller.detectStaleBalances('non-existent-wallet'))
+        .rejects.toThrow('Wallet not found');
+    });
+
+    it('returns staleSince from oldest stale balance', async () => {
+      const staleSince = new Date('2024-06-01T00:00:00.000Z');
+      mockService.detectStaleBalances.mockResolvedValue({
+        walletId: WALLET_ID,
+        staleAssets: ['NATIVE'],
+        staleSince,
+      });
+
+      const result = await controller.detectStaleBalances(WALLET_ID);
+
+      expect(result.staleSince).toEqual(staleSince);
+    });
+  });
+
+  // ─── Manual resync (#489) ────────────────────────────────────────────────
+
+  describe('syncWithRetry (#489 - manual resync)', () => {
+    it('calls service syncWalletBalancesWithRetry with correct params', async () => {
+      const mockResult = {
+        walletId: WALLET_ID,
+        balancesUpdated: 2,
+        mismatchesFound: 0,
+        syncStatus: BalanceSyncStatus.SYNCED,
+        lastSyncedAt: new Date(),
+      };
+      mockService.syncWalletBalancesWithRetry.mockResolvedValue(mockResult);
+
+      const syncDto = new SyncBalancesDto();
+      syncDto.forceRefresh = false;
+
+      const result = await controller.syncWithRetry(WALLET_ID, syncDto);
+
+      expect(result).toEqual(mockResult);
+      expect(mockService.syncWalletBalancesWithRetry).toHaveBeenCalledWith({
+        walletId: WALLET_ID,
+        forceRefresh: false,
+      });
+    });
+
+    it('passes forceRefresh=true to service', async () => {
+      mockService.syncWalletBalancesWithRetry.mockResolvedValue({
+        walletId: WALLET_ID,
+        balancesUpdated: 3,
+        mismatchesFound: 1,
+        syncStatus: BalanceSyncStatus.MISMATCH,
+        lastSyncedAt: new Date(),
+      });
+
+      const syncDto = new SyncBalancesDto();
+      syncDto.forceRefresh = true;
+
+      await controller.syncWithRetry(WALLET_ID, syncDto);
+
+      expect(mockService.syncWalletBalancesWithRetry).toHaveBeenCalledWith({
+        walletId: WALLET_ID,
+        forceRefresh: true,
+      });
+    });
+
+    it('propagates service error for non-existent wallet', async () => {
+      mockService.syncWalletBalancesWithRetry.mockRejectedValue(
+        new Error('Wallet not found'),
+      );
+
+      await expect(
+        controller.syncWithRetry('non-existent', new SyncBalancesDto()),
+      ).rejects.toThrow('Wallet not found');
+    });
+
+    it('returns sync result with mismatch status when mismatches found', async () => {
+      mockService.syncWalletBalancesWithRetry.mockResolvedValue({
+        walletId: WALLET_ID,
+        balancesUpdated: 5,
+        mismatchesFound: 2,
+        syncStatus: BalanceSyncStatus.MISMATCH,
+        lastSyncedAt: new Date(),
+      });
+
+      const result = await controller.syncWithRetry(WALLET_ID, new SyncBalancesDto());
+
+      expect(result.syncStatus).toBe(BalanceSyncStatus.MISMATCH);
+      expect(result.mismatchesFound).toBe(2);
     });
   });
 });

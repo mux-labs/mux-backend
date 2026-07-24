@@ -119,7 +119,7 @@ function requireDatabaseUrl(
   const val = requireString(env, key, violations);
   if (!val) return '';
   // Accept postgresql:// or postgres:// schemes
-  if (!/^postgre?s:\/\//i.test(val)) {
+  if (!/^postgres(ql)?:\/\//i.test(val)) {
     violations.push({
       variable: key,
       message: `${key} must be a PostgreSQL connection string starting with postgresql:// or postgres:// (received scheme: "${val.split(':')[0]}")`,
@@ -145,6 +145,23 @@ function requireMinLength(
   return val;
 }
 
+function requireNonPlaceholder(
+  env: NodeJS.ProcessEnv,
+  key: string,
+  placeholder: string,
+  violations: EnvViolation[],
+  existingVal?: string,
+): string {
+  const val = existingVal ?? env[key] ?? '';
+  if (val === placeholder) {
+    violations.push({
+      variable: key,
+      message: `${key} cannot use the default placeholder value "${placeholder}"`,
+    });
+  }
+  return val;
+}
+
 // ─── Main validation function ─────────────────────────────────────────────────
 
 /**
@@ -161,12 +178,24 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
 
   // ── Required fields ───────────────────────────────────────────────────────
   const DATABASE_URL = requireDatabaseUrl(env, 'DATABASE_URL', violations);
-  const WALLET_ENCRYPTION_KEY = requireMinLength(
+  
+  // Issue #491: Enhanced validation for WALLET_ENCRYPTION_KEY
+  let WALLET_ENCRYPTION_KEY = requireMinLength(
     env,
     'WALLET_ENCRYPTION_KEY',
     32,
     violations,
   );
+  
+  // Ensure it's not using the default placeholder value
+  WALLET_ENCRYPTION_KEY = requireNonPlaceholder(
+    env,
+    'WALLET_ENCRYPTION_KEY',
+    'your-secret-encryption-key-min-32-chars',
+    violations,
+    WALLET_ENCRYPTION_KEY,
+  );
+  
   const STELLAR_HORIZON_URL = requireUrl(
     env,
     'STELLAR_HORIZON_URL',

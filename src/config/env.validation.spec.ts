@@ -74,6 +74,25 @@ describe('validateEnv()', () => {
         'WALLET_ENCRYPTION_KEY must be at least 32 characters',
       );
     });
+
+    // Issue #491: Validate encryption key environment at boot
+    it('rejects the default placeholder value (#491)', () => {
+      expectError(
+        env({ WALLET_ENCRYPTION_KEY: 'your-secret-encryption-key-min-32-chars' }),
+        'WALLET_ENCRYPTION_KEY cannot use the default placeholder value',
+      );
+    });
+
+    it('accepts any non-placeholder key with 32+ chars (#491)', () => {
+      const validKeys = [
+        'a-valid-production-key-32-chars!!',
+        'super-secure-random-key-generated-for-production-env',
+        '$tr0ng-3ncrypti0n-k3y-f0r-prd-env!',
+      ];
+      validKeys.forEach((key) => {
+        expect(() => validateEnv(env({ WALLET_ENCRYPTION_KEY: key }))).not.toThrow();
+      });
+    });
   });
 
   describe('STELLAR_HORIZON_URL', () => {
