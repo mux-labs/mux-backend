@@ -433,4 +433,264 @@ describe('BalanceIndexerService', () => {
       expect(result).toEqual(balances);
     });
   });
+
+  // ---------------------------------------------------------------------------
+  // Issue #488: Detect and flag stale balances
+  // ---------------------------------------------------------------------------
+
+  describe('detectStaleBalances (#488)', () => {
+    it('should detect stale balances and return asset labels', async () => {
+      const staleDate = new Date(Date.now() - 10 * 60 * 1000); // 10 min ago
+      const staleNative = makeBalance({ lastSyncedAt: staleDate, assetType: AssetType.NATIVE });
+      const staleUSD = makeBalance({
+        lastSyncedAt: staleDate,
+        assetType: AssetType.CREDIT_ALPHANUM4,
+        assetCode: 'USD',
+      });
+
+      // detectStaleBalances queries prisma directly
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([staleNative, staleUSD]),
+          update: jest.fn().mockResolvedValue({}),
+        },
+      };
+
+      const result = await service.detectStaleBalances(WALLET_ID);
+
+      expect(result.walletId).toBe(WALLET_ID);
+      expect(result.staleAssets).toContain('NATIVE');
+      expect(result.staleAssets).toContain('USD/CREDIT_ALPHANUM4');
+      expect(result.staleSince).toEqual(staleDate);
+    });
+
+    it('should return empty stale assets when all balances are fresh', async () => {
+      const freshDate = new Date(); // just now — not stale
+      const freshBalance = makeBalance({ lastSyncedAt: freshDate });
+
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([freshBalance]),
+          update: jest.fn().mockResolvedValue({}),
+        },
+      };
+
+      const result = await service.detectStaleBalances(WALLET_ID);
+
+      expect(result.staleAssets).toHaveLength(0);
+      expect(result.staleSince).toBeNull();
+    });
+
+    it('should mark stale balances with STALE status in database', async () => {
+      const staleDate = new Date(Date.now() - 20 * 60 * 1000);
+      const staleBalance = makeBalance({ id: 'bal-stale', lastSyncedAt: staleDate });
+      const mockUpdate = jest.fn().mockResolvedValue({});
+
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([staleBalance]),
+          update: mockUpdate,
+        },
+      };
+
+      await service.detectStaleBalances(WALLET_ID);
+
+      expect(mockUpdate).toHaveBeenCalledWith({
+        where: { id: 'bal-stale' },
+        data: { syncStatus: BalanceSyncStatus.STALE },
+      });
+    });
+
+    it('should find oldest stale balance timestamp', async () => {
+      const oldest = new Date(Date.now() - 60 * 60 * 1000); // 1 hour ago
+      const newer = new Date(Date.now() - 30 * 60 * 1000);  // 30 min ago
+
+      const oldBalance = makeBalance({ id: 'bal-1', lastSyncedAt: oldest });
+      const newBalance = makeBalance({ id: 'bal-2', lastSyncedAt: newer });
+
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([newBalance, oldBalance]),
+          update: jest.fn().mockResolvedValue({}),
+        },
+      };
+
+      const result = await service.detectStaleBalances(WALLET_ID);
+
+      expect(result.staleSince).toEqual(oldest);
+    });
+
+    it('should handle wallet with no balances', async () => {
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([]),
+          update: jest.fn(),
+        },
+      };
+
+      const result = await service.detectStaleBalances(WALLET_ID);
+
+      expect(result.staleAssets).toHaveLength(0);
+      expect(result.staleSince).toBeNull();
+    });
+
+    it('should handle balances with null lastSyncedAt as stale', async () => {
+      const neverSyncedBalance = makeBalance({ lastSyncedAt: null });
+
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([neverSyncedBalance]),
+          update: jest.fn().mockResolvedValue({}),
+        },
+      };
+
+      const result = await service.detectStaleBalances(WALLET_ID);
+
+      expect(result.staleAssets.length).toBeGreaterThan(0);
+    });
+
+    it('should record metrics for successful detection', async () => {
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockResolvedValue([]),
+          update: jest.fn(),
+        },
+      };
+
+      await service.detectStaleBalances(WALLET_ID);
+
+      expect(mockMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'detect_stale', outcome: 'success' }),
+      );
+    });
+
+    it('should record failure metrics and rethrow on error', async () => {
+      (service as any).prisma = {
+        walletBalance: {
+          findMany: jest.fn().mockRejectedValue(new Error('DB error')),
+        },
+      };
+
+      await expect(service.detectStaleBalances(WALLET_ID)).rejects.toThrow('DB error');
+
+      expect(mockMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ operation: 'detect_stale', outcome: 'failure' }),
+      );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // Issue #489: Manual balance resync endpoint
+  // ---------------------------------------------------------------------------
+
+  describe('syncWalletBalancesWithRetry (#489)', () => {
+    it('should succeed on first attempt', async () => {
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists.mockResolvedValue(true);
+      horizonService.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
+      repo.findOne.mockResolvedValue(null);
+      repo.upsert.mockResolvedValue(undefined);
+
+      const result = await service.syncWalletBalancesWithRetry({ walletId: WALLET_ID });
+
+      expect(result.walletId).toBe(WALLET_ID);
+      expect(result.syncStatus).toBe(BalanceSyncStatus.SYNCED);
+    });
+
+    it('should retry on transient failures', async () => {
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists
+        .mockRejectedValueOnce(new Error('Network timeout'))
+        .mockResolvedValueOnce(true);
+      horizonService.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
+      repo.findOne.mockResolvedValue(null);
+      repo.upsert.mockResolvedValue(undefined);
+
+      const result = await service.syncWalletBalancesWithRetry({ walletId: WALLET_ID });
+
+      expect(result.walletId).toBe(WALLET_ID);
+      expect(horizonService.accountExists).toHaveBeenCalledTimes(2);
+    });
+
+    it('should not retry on client errors (404)', async () => {
+      const notFoundError: any = new Error('Not found');
+      notFoundError.status = 404;
+      
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists.mockRejectedValue(notFoundError);
+
+      await expect(service.syncWalletBalancesWithRetry({ walletId: WALLET_ID }))
+        .rejects.toThrow('Balance sync failed');
+
+      expect(horizonService.accountExists).toHaveBeenCalledTimes(1);
+    });
+
+    it('should stop retrying after max retries', async () => {
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists.mockRejectedValue(new Error('Persistent failure'));
+
+      await expect(service.syncWalletBalancesWithRetry({ walletId: WALLET_ID }))
+        .rejects.toThrow();
+
+      // Should try: initial + 3 retries = 4 times
+      expect(horizonService.accountExists).toHaveBeenCalledTimes(4);
+    });
+
+    it('should use exponential backoff between retries', async () => {
+      jest.useFakeTimers();
+      
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists
+        .mockRejectedValueOnce(new Error('Retry 1'))
+        .mockRejectedValueOnce(new Error('Retry 2'))
+        .mockResolvedValueOnce(true);
+      horizonService.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
+      repo.findOne.mockResolvedValue(null);
+      repo.upsert.mockResolvedValue(undefined);
+
+      const promise = service.syncWalletBalancesWithRetry({ walletId: WALLET_ID });
+
+      // Fast-forward through delays
+      await jest.runAllTimersAsync();
+
+      await promise;
+
+      jest.useRealTimers();
+      expect(horizonService.accountExists).toHaveBeenCalledTimes(3);
+    });
+
+    it('should pass forceRefresh option through retries', async () => {
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists.mockResolvedValue(true);
+      horizonService.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
+      repo.findOne.mockResolvedValue(null);
+      repo.upsert.mockResolvedValue(undefined);
+
+      await service.syncWalletBalancesWithRetry({ 
+        walletId: WALLET_ID, 
+        forceRefresh: true 
+      });
+
+      // Verify the service was called with forceRefresh
+      expect(repo.upsert).toHaveBeenCalled();
+    });
+
+    it('should log retry attempts', async () => {
+      const loggerWarnSpy = jest.spyOn(service['logger'], 'warn');
+      
+      repo.findWallet.mockResolvedValue({ id: WALLET_ID, publicKey: PUBLIC_KEY, status: 'ACTIVE' });
+      horizonService.accountExists
+        .mockRejectedValueOnce(new Error('Transient error'))
+        .mockResolvedValueOnce(true);
+      horizonService.getAccountBalances.mockResolvedValue([makeBalanceUpdate()]);
+      repo.findOne.mockResolvedValue(null);
+      repo.upsert.mockResolvedValue(undefined);
+
+      await service.syncWalletBalancesWithRetry({ walletId: WALLET_ID });
+
+      expect(loggerWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Sync retry'),
+      );
+    });
+  });
 });

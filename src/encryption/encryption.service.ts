@@ -55,6 +55,42 @@ export class EncryptionService {
     this.encryptionKey = crypto.createHash('sha256').update(key).digest();
 
     this.logger.log('Encryption service initialized with secure key');
+    
+    // Issue #491: Validate encryption key environment at boot
+    this.validateEncryptionKeyAtBoot();
+  }
+
+  /**
+   * Issue #491: Validates encryption key functionality at boot time
+   * 
+   * Performs a test encryption/decryption cycle to ensure:
+   * - The encryption key is properly configured
+   * - Encryption operations work correctly
+   * - Decryption operations work correctly
+   * 
+   * Throws an error if validation fails, preventing application startup.
+   * This ensures we fail fast if the encryption configuration is broken.
+   */
+  private validateEncryptionKeyAtBoot(): void {
+    try {
+      const testData = 'mux-backend-encryption-validation-test';
+      const encrypted = this.encrypt(testData);
+      const decrypted = this.decrypt(encrypted);
+
+      if (decrypted !== testData) {
+        throw new Error(
+          'Encryption validation failed: decrypted data does not match original',
+        );
+      }
+
+      this.logger.log('✅ Encryption key validation passed');
+    } catch (error) {
+      this.logger.error('❌ Encryption key validation failed:', error);
+      throw new Error(
+        `CRITICAL: Encryption key validation failed at boot. ${error.message}. ` +
+          'Please verify WALLET_ENCRYPTION_KEY is correctly set.',
+      );
+    }
   }
 
   /**

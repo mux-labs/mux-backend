@@ -253,6 +253,136 @@ describe('EncryptionService', () => {
     });
   });
 
+  // Issue #491: Validate encryption key environment at boot
+  describe('boot time validation (#491)', () => {
+    it('should perform encryption validation at boot successfully', () => {
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('valid-encryption-key-32-chars-long!!');
+
+      expect(() => new EncryptionService(configService)).not.toThrow();
+    });
+
+    it('should fail boot if encryption test cycle fails', () => {
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
+
+      // Create a service instance first
+      const testService = new EncryptionService(configService);
+
+      // Now mock encrypt to fail for subsequent calls
+      const originalEncrypt = testService.encrypt.bind(testService);
+      jest.spyOn(testService, 'encrypt').mockImplementation((data: string) => {
+        // First call succeeds (boot validation)
+        if (data === 'mux-backend-encryption-validation-test') {
+          throw new Error('Simulated encryption failure');
+        }
+        return originalEncrypt(data);
+      });
+
+      // Manually call the validation to test failure path
+      expect(() => {
+        // Use type assertion to access private method
+        (testService as any).validateEncryptionKeyAtBoot();
+      }).toThrow(/Encryption key validation failed/);
+    });
+
+    it('should fail boot if decrypted data does not match original', () => {
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
+
+      const testService = new EncryptionService(configService);
+
+      // Mock decrypt to return wrong data
+      jest.spyOn(testService, 'decrypt').mockReturnValue('wrong-data');
+
+      expect(() => {
+        (testService as any).validateEncryptionKeyAtBoot();
+      }).toThrow(/decrypted data does not match original/);
+    });
+
+    it('should log success message on successful validation', () => {
+      const loggerSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('valid-encryption-key-32-chars-long!!');
+
+      new EncryptionService(configService);
+
+      // Check that success message was logged
+      expect(loggerSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Encryption key validation passed'),
+      );
+
+      loggerSpy.mockRestore();
+    });
+
+    it('should log error message on failed validation', () => {
+      const loggerErrorSpy = jest.spyOn(console, 'error').mockImplementation();
+
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
+
+      const testService = new EncryptionService(configService);
+
+      // Mock encryption to fail
+      jest.spyOn(testService, 'encrypt').mockImplementation(() => {
+        throw new Error('Simulated failure');
+      });
+
+      try {
+        (testService as any).validateEncryptionKeyAtBoot();
+      } catch (error) {
+        // Expected to throw
+      }
+
+      expect(loggerErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Encryption key validation failed'),
+        expect.any(Error),
+      );
+
+      loggerErrorSpy.mockRestore();
+    });
+
+    it('should prevent app startup with corrupted encryption key', () => {
+      // Simulate a corrupted key that passes length check but fails encryption
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('corrupted-key-32-characters-long!!');
+
+      const testService = new EncryptionService(configService);
+
+      // Mock crypto operations to fail
+      jest.spyOn(testService, 'encrypt').mockImplementation(() => {
+        throw new Error('Crypto operation failed');
+      });
+
+      expect(() => {
+        (testService as any).validateEncryptionKeyAtBoot();
+      }).toThrow(/CRITICAL: Encryption key validation failed at boot/);
+    });
+
+    it('should validate encryption works bidirectionally at boot', () => {
+      jest
+        .spyOn(configService, 'get')
+        .mockReturnValue('bidirectional-test-key-32-chars-long');
+
+      // Should complete without throwing
+      const testService = new EncryptionService(configService);
+
+      // Verify the service actually works after boot validation
+      const testData = 'post-boot-test';
+      const encrypted = testService.encrypt(testData);
+      const decrypted = testService.decrypt(encrypted);
+
+      expect(decrypted).toBe(testData);
+    });
+  });
+
   describe('key derivation', () => {
     it('should derive same key from same input', () => {
       const key1 = 'test-encryption-key-12345-long-enough-32-chars';
