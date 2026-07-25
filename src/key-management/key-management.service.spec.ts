@@ -11,6 +11,7 @@ import { KeyType } from './domain/key-types';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
 import { KeyManagementMetricsService } from './key-management-metrics.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 
 // Prevent loading the real PrismaService (which requires the generated Prisma client)
 jest.mock('../prisma/prisma.service', () => ({
@@ -23,6 +24,7 @@ import { PrismaService } from '../prisma/prisma.service';
 describe('KeyManagementService', () => {
   let service: KeyManagementService;
   let encryptionService: EncryptionService;
+  let module: TestingModule;
 
   // Minimal Prisma mock — only the methods used by rotateKey
   const mockPrisma = {
@@ -46,6 +48,14 @@ describe('KeyManagementService', () => {
     recordKeyOperationDuration: jest.fn(),
   };
 
+  const mockEventEmitter = {
+    emit: jest.fn(),
+  };
+
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue('test-req-id'),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
 
@@ -60,7 +70,7 @@ describe('KeyManagementService', () => {
         }),
     };
 
-    const module: TestingModule = await Test.createTestingModule({
+    module = await Test.createTestingModule({
       providers: [
         KeyManagementService,
         EncryptionService,
@@ -79,6 +89,14 @@ describe('KeyManagementService', () => {
         {
           provide: KeyManagementMetricsService,
           useValue: mockMetricsService,
+        },
+        {
+          provide: EventEmitter2,
+          useValue: mockEventEmitter,
+        },
+        {
+          provide: RequestContextService,
+          useValue: mockRequestContext,
         },
       ],
     }).compile();
@@ -545,6 +563,7 @@ describe('KeyManagementService', () => {
       encryptedSecret: 'enc-secret',
       encryptionVersion: 1,
       secretVersion: 1,
+      keyVersion: 1,
       network: 'TESTNET',
       status: 'ACTIVE',
       successorId: null,
@@ -558,6 +577,7 @@ describe('KeyManagementService', () => {
       encryptedSecret: 'enc-secret-new',
       encryptionVersion: 1,
       secretVersion: 2,
+      keyVersion: 2,
       network: 'TESTNET',
       status: 'ACTIVE',
       rotatedFromId: predecessorId,
@@ -689,6 +709,32 @@ describe('KeyManagementService', () => {
         activePredecessor.secretVersion + 1,
       );
     });
+
+    it('should link successor keyVersion from predecessor incremented by 1', async () => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(activePredecessor);
+
+      // Capture what was passed to tx.wallet.create
+      let capturedCreateData: any;
+      mockPrisma.$transaction.mockImplementation(async (cb: any) => {
+        const tx = {
+          wallet: {
+            create: jest.fn().mockImplementation(async ({ data }: any) => {
+              capturedCreateData = data;
+              return createdSuccessor;
+            }),
+            update: jest.fn().mockResolvedValue({}),
+          },
+        };
+        return cb(tx);
+      });
+
+      await service.rotateKey(predecessorId);
+
+      // keyVersion should be predecessor.keyVersion + 1 = 2
+      expect(capturedCreateData.keyVersion).toBe(
+        activePredecessor.keyVersion + 1,
+      );
+    });
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -736,16 +782,13 @@ describe('KeyManagementService', () => {
   // domain events
   // ─────────────────────────────────────────────────────────────────────────────
   describe('domain events', () => {
-    let eventEmitter: EventEmitter2;
-
     beforeEach(() => {
-      eventEmitter = service['eventEmitter'] as EventEmitter2;
-      jest.spyOn(eventEmitter, 'emit');
+      jest.spyOn(mockEventEmitter, 'emit');
     });
 
     it('should emit key.generated after successful key generation', async () => {
       await service.generateKey({ keyType: KeyType.STELLAR_ED25519 });
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
         'key.generated',
         expect.objectContaining({ keyType: KeyType.STELLAR_ED25519 }),
       );
@@ -758,7 +801,7 @@ describe('KeyManagementService', () => {
         dataToSign: Buffer.from('data'),
         publicKey: key.publicKey,
       });
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
         'key.signed',
         expect.objectContaining({ publicKey: key.publicKey }),
       );
@@ -771,13 +814,14 @@ describe('KeyManagementService', () => {
         status: 'ACTIVE',
         successorId: null,
         secretVersion: 1,
+        keyVersion: 1,
         network: 'TESTNET',
         publicKey: 'GPRED',
       });
 
       await service.rotateKey('pred-1');
 
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
         'key.rotated',
         expect.objectContaining({ predecessorWalletId: 'pred-1' }),
       );
@@ -790,7 +834,7 @@ describe('KeyManagementService', () => {
         key.encryptedData,
         KeyType.STELLAR_ED25519,
       );
-      expect(eventEmitter.emit).toHaveBeenCalledWith(
+      expect(mockEventEmitter.emit).toHaveBeenCalledWith(
         'key.validated',
         expect.objectContaining({ publicKey: key.publicKey }),
       );

@@ -13,6 +13,7 @@ import {
 } from '../encryption/encryption.service';
 import { SafeLogger } from '../common/safe-logger';
 import { PrismaService } from '../prisma/prisma.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
 import { KeyDecryptionException } from './exceptions/key-decryption.exception';
 import { KeyManagementMetricsService } from './key-management-metrics.service';
 import { retryWithBackoff } from './utils/retry.util';
@@ -38,6 +39,8 @@ import { KeyValidatedEvent } from './events/key-validated.event';
 export interface GenerateKeyRequest {
   keyType: KeyType;
   metadata?: Record<string, any>;
+  /** Key algorithm/derivation scheme version. When omitted defaults to 1. */
+  keyVersion?: number;
 }
 
 export interface SignRequest {
@@ -105,6 +108,8 @@ export class KeyManagementService {
     private readonly prisma: PrismaService,
     private readonly auditService: KeyRotationAuditService,
     private readonly metricsService: KeyManagementMetricsService,
+    private readonly eventEmitter: EventEmitter2,
+    private readonly requestContext: RequestContextService,
   ) {
     this.maxRetries = this.configService.get<number>('KEY_MGMT_MAX_RETRIES', 3);
     this.retryBackoffMs = this.configService.get<number>('KEY_MGMT_RETRY_BACKOFF_MS', 200);
@@ -172,10 +177,15 @@ export class KeyManagementService {
         `Generated ${request.keyType} key in ${duration}ms (publicKey: ${keyPair.publicKey.substring(0, 12)}...)`,
       );
 
+      this.eventEmitter.emit(
+        'key.generated',
+        new KeyGeneratedEvent(keyPair.publicKey, request.keyType, new Date()),
+      );
+
       return {
         encryptedData,
         encryptionVersion: 1,
-        keyVersion: 1,
+        keyVersion: request.keyVersion ?? 1,
         keyType: request.keyType,
         publicKey: keyPair.publicKey,
       };
@@ -249,6 +259,11 @@ export class KeyManagementService {
 
       this.logger.log(
         `Signed data in ${duration}ms (publicKey: ${request.publicKey.substring(0, 12)}...)`,
+      );
+
+      this.eventEmitter.emit(
+        'key.signed',
+        new KeySignedEvent(request.publicKey, new Date()),
       );
 
       return signature;
@@ -417,20 +432,25 @@ export class KeyManagementService {
       );
     }
 
-    // Generate new keypair
+    // Derive the next key version from the predecessor
+    const newKeyVersion = (predecessor.keyVersion ?? 1) + 1;
+
+    // Generate new keypair with the successor key version
     const keyMaterial = await this.generateKey({
       keyType: KeyType.STELLAR_ED25519,
+      keyVersion: newKeyVersion,
       metadata: { rotatedFromId: predecessorWalletId },
     });
 
     const [successor] = await this.prisma.$transaction(async (tx) => {
-      // Create successor wallet
+      // Create successor wallet with linked key version
       const newWallet = await tx.wallet.create({
         data: {
           userId: predecessor.userId,
           publicKey: keyMaterial.publicKey,
           encryptedSecret: keyMaterial.encryptedData,
           encryptionVersion: keyMaterial.encryptionVersion,
+          keyVersion: keyMaterial.keyVersion,
           secretVersion: predecessor.secretVersion + 1,
           network: predecessor.network,
           status: 'ACTIVE',

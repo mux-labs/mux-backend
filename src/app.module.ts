@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { APP_GUARD } from '@nestjs/core';
+import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from '@nestjs/config';
 import { EventEmitterModule } from '@nestjs/event-emitter';
@@ -26,6 +26,9 @@ import { TransactionsModule } from './transactions/transactions.module';
 import { DevelopersModule } from './developers/developers.module';
 import { ProjectsModule } from './projects/projects.module';
 import { HealthModule } from './health/health.module';
+import { RequestIdInterceptor } from './common/interceptors/request-id.interceptor';
+import { ResponseRedactionInterceptor } from './common/interceptors/response-redaction.interceptor';
+import { SettlementModule } from './settlement/settlement.module';
 
 @Module({
   imports: [
@@ -55,6 +58,7 @@ import { HealthModule } from './health/health.module';
     DevelopersModule,
     ProjectsModule,
     HealthModule,
+    SettlementModule,
   ],
   controllers: [AppController],
   providers: [
@@ -67,6 +71,15 @@ import { HealthModule } from './health/health.module';
     {
       provide: APP_GUARD,
       useClass: RateLimitGuard,
+    },
+    // Global interceptors
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: RequestIdInterceptor,
+    },
+    {
+      provide: APP_INTERCEPTOR,
+      useClass: ResponseRedactionInterceptor,
     },
   ],
 })
