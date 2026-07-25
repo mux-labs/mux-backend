@@ -220,6 +220,12 @@ model Wallet {
   /// Transactions received by this wallet
   receivedTransactions Transaction[] @relation("ReceivedTransactions")
 
+  /// Settlements sent from this wallet
+  sentSettlements     Settlement[] @relation("SentSettlements")
+
+  /// Settlements received by this wallet
+  receivedSettlements Settlement[] @relation("ReceivedSettlements")
+
   @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
@@ -862,3 +868,40 @@ model Transaction {
   @@index([createdAt])
   @@index([idempotencyKey])
 }
+
+/// Settlement records for idempotent trade settlement.
+/// Each settlement is uniquely identified by a client-supplied tradeId.
+model Settlement {
+  id String @id @default(uuid())
+
+  /// Client-supplied trade identifier, used for idempotency.
+  /// Duplicate submissions with the same tradeId return the existing result.
+  tradeId String @unique
+
+  /// Wallet references
+  senderWalletId   String
+  senderWallet      Wallet  @relation("SentSettlements", fields: [senderWalletId], references: [id])
+
+  receiverWalletId  String
+  receiverWallet    Wallet  @relation("ReceivedSettlements", fields: [receiverWalletId], references: [id])
+
+  /// Settlement amount (stored as string for precision)
+  amount String
+
+  /// Settlement status
+  status String @default("COMPLETED")
+
+  /// Optional metadata for audit and tracking
+  metadata Json?
+
+  /// Operational timestamps
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tradeId])
+  @@index([senderWalletId])
+  @@index([receiverWalletId])
+  @@index([senderWalletId, createdAt])
+  @@index([receiverWalletId, createdAt])
+}
+
