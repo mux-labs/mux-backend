@@ -1,5 +1,12 @@
-import { Injectable, Logger, TooManyRequestsException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotImplementedException,
+  HttpException,
+  HttpStatus,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import axios from 'axios';
 
 export interface FaucetRequest {
   walletAddress: string;
@@ -27,6 +34,12 @@ export interface ThrottleEntry {
  * - Limiting requests per wallet address per time window
  * - Tracking request history
  * - Enforcing rate limits on proxy calls to faucet services
+ *
+ * MAINNET GATE: If STELLAR_NETWORK is set to anything that resolves to
+ * "mainnet" (case-insensitive) this service refuses all fund requests with a
+ * NotImplementedException. This is a fail-closed guard — production deployments
+ * cannot accidentally trigger Friendbot or any other faucet against the live
+ * Stellar network.
  */
 @Injectable()
 export class TestnetFaucetService {
@@ -36,24 +49,54 @@ export class TestnetFaucetService {
   private readonly maxRequestsPerWindow: number;
   private readonly throttleWindowMs: number;
   private readonly faucetProxyUrl: string;
+  /** true when the configured network is production mainnet */
+  private readonly isMainnet: boolean;
 
   constructor(private configService: ConfigService) {
     this.maxRequestsPerWindow =
       this.configService.get<number>('TESTNET_FAUCET_MAX_REQUESTS', 5) || 5;
     this.throttleWindowMs =
-      this.configService.get<number>('TESTNET_FAUCET_WINDOW_MS', 3600000) ||
-      3600000; // 1 hour default
+      this.configService.get<number>('TESTNET_FAUCET_WINDOW_MS', 3_600_000) ||
+      3_600_000; // 1 hour default
     this.faucetProxyUrl =
       this.configService.get<string>('TESTNET_FAUCET_URL', '') ||
-      'https://faucet.testnet.example.com/api/v1/fund';
+      'https://friendbot.stellar.org';
+
+    // Mainnet gate — read STELLAR_NETWORK; any value that resolves to "mainnet"
+    // (case-insensitive) locks the faucet down. An unset/empty value is treated
+    // as testnet so that development environments work without explicit config.
+    const network =
+      this.configService.get<string>('STELLAR_NETWORK', 'TESTNET')?.trim().toUpperCase() ||
+      'TESTNET';
+    this.isMainnet = network === 'MAINNET' || network === 'PUBLIC';
+
+    if (this.isMainnet) {
+      this.logger.warn(
+        'TestnetFaucetService: STELLAR_NETWORK is set to mainnet/public. ' +
+          'All faucet requests will be rejected (fail-closed).',
+      );
+    }
   }
 
   /**
    * Requests testnet funds from the faucet with throttling protection.
    *
-   * Throws TooManyRequestsException if throttle limit exceeded.
+   * @throws NotImplementedException when STELLAR_NETWORK=mainnet/public.
+   * @throws TooManyRequestsException if throttle limit exceeded.
    */
   async requestFunds(request: FaucetRequest): Promise<FaucetResponse> {
+    // MAINNET GATE — hard reject before any other logic
+    if (this.isMainnet) {
+      this.logger.error(
+        `Faucet request rejected: STELLAR_NETWORK is mainnet. ` +
+          `Wallet ${request.walletAddress} attempted faucet funding on production network.`,
+      );
+      throw new NotImplementedException(
+        'Testnet faucet is not available on mainnet. ' +
+          'Set STELLAR_NETWORK=TESTNET to enable faucet funding.',
+      );
+    }
+
     const { walletAddress } = request;
 
     this.checkThrottle(walletAddress);
@@ -88,8 +131,9 @@ export class TestnetFaucetService {
 
     if (!isWindowExpired && entry.count >= this.maxRequestsPerWindow) {
       const retryAfterMs = this.throttleWindowMs - elapsed;
-      throw new TooManyRequestsException(
+      throw new HttpException(
         `Faucet request limit exceeded. Max ${this.maxRequestsPerWindow} requests per ${this.throttleWindowMs}ms. Retry after ${retryAfterMs}ms.`,
+        HttpStatus.TOO_MANY_REQUESTS,
       );
     }
 
@@ -130,25 +174,40 @@ export class TestnetFaucetService {
   /**
    * Proxies the faucet request to the configured faucet service.
    *
-   * In production, this would make actual HTTP calls to a testnet faucet.
-   * For testing/dev, this can be mocked or stubbed.
+   * Makes a real HTTP call to the Stellar Friendbot (or a custom faucet URL
+   * configured via TESTNET_FAUCET_URL). Only callable on testnet — the mainnet
+   * gate in requestFunds() prevents this from running on production.
    */
   private async proxyFaucetRequest(
     request: FaucetRequest,
   ): Promise<FaucetResponse> {
-    const defaultAmount = 100;
-    const amount = request.requestedAmount || defaultAmount;
+    const defaultAmount = 10_000; // Friendbot default in XLM-equivalent lumens
+    const amount = request.requestedAmount ?? defaultAmount;
 
-    // Placeholder for actual HTTP proxy to faucet service
-    // In real implementation, this would be:
-    // const response = await this.httpClient.post(this.faucetProxyUrl, { ... });
+    const url = `${this.faucetProxyUrl}?addr=${encodeURIComponent(request.walletAddress)}`;
+
+    const response = await axios.get<{ hash?: string; id?: string }>(url, {
+      timeout: 15_000,
+    });
+
+    const txId =
+      response.data?.hash ??
+      response.data?.id ??
+      `faucet_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
 
     return {
       walletAddress: request.walletAddress,
       amountSent: amount,
-      transactionId: `test_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      transactionId: txId,
       timestamp: new Date(),
     };
+  }
+
+  /**
+   * Exposes the mainnet guard state for testing and health introspection.
+   */
+  isMainnetNetwork(): boolean {
+    return this.isMainnet;
   }
 
   /**
