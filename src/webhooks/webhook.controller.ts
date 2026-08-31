@@ -67,7 +67,8 @@ export class WebhookController {
   @ApiResponse({
     status: 201,
     description:
-      'Webhook endpoint created. Secret is only returned on creation.',
+      'Webhook endpoint created. The signing secret is returned exactly once here — store it immediately. ' +
+      'Only a SHA-256 hash of the secret is persisted at rest (never the plaintext).',
     example: {
       id: 'endpoint-uuid',
       url: 'https://example.com/webhook',
@@ -357,8 +358,11 @@ export class WebhookController {
   @ApiOperation({
     summary: 'Rotate the webhook signing secret',
     description:
-      'Generates a new HMAC-SHA256 signing secret for the endpoint. ' +
-      'The new secret is **only returned once** in this response — store it immediately.',
+      'Derives a new HMAC-SHA256 signing secret for the endpoint and returns it **exactly once** — store it immediately. ' +
+      'Only a SHA-256 hash of the secret is persisted at rest. ' +
+      'Rotation is downtime-free: the new secret becomes the active signing secret only after the ' +
+      'grace window (WEBHOOK_SECRET_GRACE_SECONDS) elapses, so consumers still verifying with the ' +
+      'previous secret are not cut off.',
   })
   @ApiParam({
     name: 'id',

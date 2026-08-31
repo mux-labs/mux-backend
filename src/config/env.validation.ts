@@ -37,6 +37,8 @@ export interface ValidatedEnv {
   WEBHOOK_MAX_CONSECUTIVE_FAILURES: number;
   WEBHOOK_QUEUE_INTERVAL_MS: number;
   WEBHOOK_INBOUND_SECRET: string;
+  WEBHOOK_SIGNING_KEY: string;
+  WEBHOOK_SECRET_GRACE_SECONDS: number;
   AUTH_RATE_LIMIT_MAX: number;
   AUTH_RATE_LIMIT_WINDOW_MS: number;
   RATE_LIMIT_WINDOW_MS: number;
@@ -378,6 +380,32 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
   );
   const WEBHOOK_INBOUND_SECRET =
     env.WEBHOOK_INBOUND_SECRET?.trim() ?? '';
+  const WEBHOOK_SECRET_GRACE_SECONDS = optionalInt(
+    env,
+    'WEBHOOK_SECRET_GRACE_SECONDS',
+    3_600,
+    { min: 0 },
+    violations,
+  );
+  // Master key for deriving outbound webhook signing secrets. Secrets are
+  // stored only as SHA-256 hashes, so without this key they cannot be
+  // re-derived to sign payloads — fail closed in production rather than
+  // silently deriving from a weak default.
+  const WEBHOOK_SIGNING_KEY = env.WEBHOOK_SIGNING_KEY?.trim() ?? '';
+  if (process.env.NODE_ENV === 'production') {
+    if (!WEBHOOK_SIGNING_KEY) {
+      violations.push({
+        variable: 'WEBHOOK_SIGNING_KEY',
+        message: 'WEBHOOK_SIGNING_KEY is required in production',
+      });
+    } else if (WEBHOOK_SIGNING_KEY.length < 32) {
+      violations.push({
+        variable: 'WEBHOOK_SIGNING_KEY',
+        message:
+          'WEBHOOK_SIGNING_KEY must be at least 32 characters long in production',
+      });
+    }
+  }
   const AUTH_RATE_LIMIT_MAX = optionalInt(
     env,
     'AUTH_RATE_LIMIT_MAX',
@@ -591,6 +619,8 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     WEBHOOK_MAX_CONSECUTIVE_FAILURES,
     WEBHOOK_QUEUE_INTERVAL_MS,
     WEBHOOK_INBOUND_SECRET,
+    WEBHOOK_SIGNING_KEY,
+    WEBHOOK_SECRET_GRACE_SECONDS,
     AUTH_RATE_LIMIT_MAX,
     AUTH_RATE_LIMIT_WINDOW_MS,
     RATE_LIMIT_WINDOW_MS,

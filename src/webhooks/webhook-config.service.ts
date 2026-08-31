@@ -18,6 +18,9 @@ export class WebhookConfigService implements OnModuleInit {
     'WEBHOOK_RETRY_BACKOFF_MS',
     'WEBHOOK_TIMEOUT_MS',
     'WEBHOOK_MAX_CONSECUTIVE_FAILURES',
+    // Master key used to derive webhook signing secrets (only SHA-256 hashes
+    // are stored). Missing here means outbound signatures cannot be computed.
+    'WEBHOOK_SIGNING_KEY',
   ];
 
   constructor(private readonly configService: ConfigService) {}

@@ -844,6 +844,115 @@ describe('Webhooks Integration Tests (e2e)', () => {
     });
   });
 
+  describe('Hashed secret storage & downtime-free rotation', () => {
+    function sha256Hex(value: string): string {
+      return crypto.createHash('sha256').update(value).digest('hex');
+    }
+
+    it('persists only a SHA-256 hash of the signing secret, never plaintext', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const returnedSecret = createRes.body.secret as string;
+      expect(returnedSecret).toMatch(/^whsec_/);
+
+      const row: any = await prisma.webhookEndpoint.findUnique({
+        where: { id: createRes.body.id },
+      });
+
+      // The plaintext secret must never be stored.
+      expect(row).not.toHaveProperty('secret');
+      // Only a SHA-256 hash of the derived secret is persisted, and it must
+      // match sha256 of the one-time returned secret.
+      expect(row.secretHash).toBe(sha256Hex(returnedSecret));
+      expect(row.secretHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(row.secretHash).not.toContain('whsec_');
+      expect(row.secretVersion).toBe(1);
+    });
+
+    it('stages a new secret on rotation and keeps signing with the established one during the grace window', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const endpointId = createRes.body.id;
+      const originalSecret = createRes.body.secret as string;
+
+      const rotateRes = await request(app.getHttpServer())
+        .post(`/webhooks/endpoints/${endpointId}/rotate-secret`)
+        .expect(200);
+
+      const newSecret = rotateRes.body.secret as string;
+      expect(newSecret).not.toBe(originalSecret);
+
+      const row: any = await prisma.webhookEndpoint.findUnique({
+        where: { id: endpointId },
+      });
+
+      // The pending secret is staged — hashed, never plaintext.
+      expect(row.pendingSecretVersion).toBe(2);
+      expect(row.pendingSecretHash).toBe(sha256Hex(newSecret));
+      expect(row.secretHash).toBe(sha256Hex(originalSecret));
+      expect(row.secretGracePeriodEndsAt).toBeDefined();
+
+      // During the grace window, signing must still use the ESTABLISHED
+      // secret (the one the consumer already holds) — no downtime.
+      const signingSecret = await webhookService.resolveSigningSecret(endpointId);
+      expect(signingSecret).toBe(originalSecret);
+      expect(signingSecret).not.toBe(newSecret);
+    });
+
+    it('promotes the pending secret to active once the grace window elapses', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const endpointId = createRes.body.id;
+      const originalSecret = createRes.body.secret as string;
+
+      const rotateRes = await request(app.getHttpServer())
+        .post(`/webhooks/endpoints/${endpointId}/rotate-secret`)
+        .expect(200);
+      const newSecret = rotateRes.body.secret as string;
+
+      // Force the grace window to have already elapsed.
+      await prisma.webhookEndpoint.update({
+        where: { id: endpointId },
+        data: { secretGracePeriodEndsAt: new Date(Date.now() - 1000) },
+      });
+
+      const signingSecret = await webhookService.resolveSigningSecret(endpointId);
+
+      // The new secret is now the active signing secret.
+      expect(signingSecret).toBe(newSecret);
+      expect(signingSecret).not.toBe(originalSecret);
+
+      const row: any = await prisma.webhookEndpoint.findUnique({
+        where: { id: endpointId },
+      });
+      expect(row.secretVersion).toBe(2);
+      expect(row.secretHash).toBe(sha256Hex(newSecret));
+      expect(row.pendingSecretVersion).toBeNull();
+      expect(row.secretGracePeriodEndsAt).toBeNull();
+    });
+  });
+
   describe('Secret Rotation', () => {
     it('should rotate webhook secret', async () => {
       const createRes = await request(app.getHttpServer())

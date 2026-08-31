@@ -1,10 +1,11 @@
 import {
   Injectable,
-  Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
+import { ConfigService } from '@nestjs/config';
+import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../common/cache/cache.service';
 import {
   WebhookEndpoint,
   WebhookEventType,
@@ -13,10 +14,13 @@ import {
 } from './domain/webhook-events';
 import { SafeLogger } from '../common/safe-logger';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
+import { WebhookSecretService } from './webhook-secret.service';
+import { MetricsService } from '../common/metrics/metrics.service';
 import * as crypto from 'crypto';
 
 export const WEBHOOK_CACHE_TTL = 60_000;
 export const WEBHOOK_ENDPOINT_CACHE_PREFIX = 'webhook:endpoint:';
+export const WEBHOOK_SECRET_GRACE_DEFAULT_SECONDS = 3_600;
 
 export interface CreateWebhookEndpointRequest {
   projectId: string;
@@ -56,41 +60,69 @@ export interface PaginatedDeliveriesResponse {
  *   PUT    /webhooks/endpoints/:id          – update endpoint
  *   DELETE /webhooks/endpoints/:id          – delete endpoint
  *   POST   /webhooks/endpoints/:id/rotate-secret
+ *
+ * Signing secrets are NEVER persisted in plaintext. Each endpoint's secret
+ * is derived deterministically from WEBHOOK_SIGNING_KEY (see
+ * {@link WebhookSecretService}) and only its SHA-256 hash is stored, exactly
+ * like API keys. Rotation stages a new secret version that becomes active
+ * only after a configurable grace window (WEBHOOK_SECRET_GRACE_SECONDS), so
+ * consumers still verifying with the previous secret are not cut off — no
+ * downtime.
  */
 @Injectable()
 export class WebhookService {
   private readonly logger = new SafeLogger(WebhookService.name);
+  private readonly secretGraceSeconds: number;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
-  ) {}
+    private readonly secretService: WebhookSecretService,
+    private readonly configService: ConfigService,
+    private readonly metrics: MetricsService,
+  ) {
+    this.secretGraceSeconds = this.configService.get<number>(
+      'WEBHOOK_SECRET_GRACE_SECONDS',
+      WEBHOOK_SECRET_GRACE_DEFAULT_SECONDS,
+    );
+  }
 
   async onModuleDestroy() {
     await this.prisma.$disconnect();
   }
 
   /**
-   * Creates a new webhook endpoint
+   * Creates a new webhook endpoint.
+   *
+   * Generates the endpoint id up front so the signing secret can be derived
+   * deterministically. The plaintext secret is returned exactly once — callers
+   * must store it immediately. Only `sha256(secret)` is persisted.
    */
   async createEndpoint(
     request: CreateWebhookEndpointRequest,
-  ): Promise<WebhookEndpoint> {
-    // Generate secret for signing
-    const secret = this.generateSecret();
+  ): Promise<WebhookEndpoint & { secret: string }> {
+    const endpointId = crypto.randomUUID();
+    const secret = this.secretService.deriveSecret(endpointId, 1);
 
     const endpoint = await this.prisma.webhookEndpoint.create({
       data: {
+        id: endpointId,
         projectId: request.projectId,
         url: request.url,
         events: request.events,
         description: request.description,
-        secret,
+        secretVersion: 1,
+        secretHash: this.secretService.hashSecret(secret),
         status: EndpointStatus.ACTIVE,
       },
     });
 
-    return this.mapPrismaEndpointToDomain(endpoint);
+    this.logger.log(`Created webhook endpoint ${endpoint.id}`);
+
+    return {
+      ...this.mapPrismaEndpointToDomain(endpoint),
+      secret, // Only returned once, at creation.
+    };
   }
 
   /**
@@ -246,19 +278,113 @@ export class WebhookService {
   }
 
   /**
-   * Rotates the webhook secret
+   * Rotates the webhook signing secret without downtime.
+   *
+   * Derives a new secret version and stages it as "pending". Until the grace
+   * window (WEBHOOK_SECRET_GRACE_SECONDS) elapses, outbound deliveries keep
+   * being signed with the established secret — consumers still verifying with
+   * the previous value are not cut off. After the window, the pending secret
+   * is promoted automatically on the next dispatch (see resolveSigningSecret).
+   *
+   * The new plaintext secret is returned exactly once.
    */
   async rotateSecret(endpointId: string): Promise<{ secret: string }> {
-    const newSecret = this.generateSecret();
+    const endpoint = await this.prisma.webhookEndpoint.findUnique({
+      where: { id: endpointId },
+    });
+
+    if (!endpoint) {
+      throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
+    }
+
+    const activeVersion = Math.max(
+      endpoint.secretVersion,
+      endpoint.pendingSecretVersion ?? 0,
+    );
+    const newVersion = activeVersion + 1;
+    const secret = this.secretService.deriveSecret(endpointId, newVersion);
 
     await this.prisma.webhookEndpoint.update({
       where: { id: endpointId },
-      data: { secret: newSecret },
+      data: {
+        pendingSecretVersion: newVersion,
+        pendingSecretHash: this.secretService.hashSecret(secret),
+        secretGracePeriodEndsAt: new Date(
+          Date.now() + this.secretGraceSeconds * 1000,
+        ),
+      },
     });
 
     this.invalidateEndpointCache(endpointId);
 
-    return { secret: newSecret };
+    this.logger.log(
+      `Rotated webhook endpoint ${endpointId} to pending secret v${newVersion} (grace ${this.secretGraceSeconds}s)`,
+    );
+    this.metrics.incrementCounter('webhooks_secrets_rotated_total', {
+      result: 'rotated',
+    });
+
+    return { secret }; // Only time the new secret is visible!
+  }
+
+  /**
+   * Resolves the plaintext signing secret for an outbound delivery.
+   *
+   * Reads the endpoint fresh from the database (never the cache, so rotation
+   * state is always current) and applies the grace-period promotion: once a
+   * pending rotation's window has elapsed, the pending version atomically
+   * becomes the established signing version. The derived secret is returned
+   * to sign the payload; it is never persisted.
+   */
+  async resolveSigningSecret(endpointId: string): Promise<string> {
+    const endpoint = await this.prisma.webhookEndpoint.findUnique({
+      where: { id: endpointId },
+    });
+
+    if (!endpoint) {
+      throw new NotFoundException(`Webhook endpoint ${endpointId} not found`);
+    }
+
+    const now = new Date();
+    let version = endpoint.secretVersion;
+
+    if (
+      endpoint.pendingSecretVersion != null &&
+      endpoint.secretGracePeriodEndsAt != null &&
+      endpoint.secretGracePeriodEndsAt <= now
+    ) {
+      // Grace window elapsed — promote the pending secret to active.
+      version = endpoint.pendingSecretVersion;
+      await this.prisma.webhookEndpoint.update({
+        where: { id: endpointId },
+        data: {
+          secretVersion: version,
+          secretHash:
+            endpoint.pendingSecretHash ??
+            this.secretService.hashSecret(
+              this.secretService.deriveSecret(endpointId, version),
+            ),
+          pendingSecretVersion: null,
+          pendingSecretHash: null,
+          secretGracePeriodEndsAt: null,
+        },
+      });
+      this.invalidateEndpointCache(endpointId);
+      this.logger.log(
+        `Promoted webhook endpoint ${endpointId} to signing secret v${version} after grace period`,
+      );
+      this.metrics.incrementCounter('webhooks_secrets_promoted_total', {});
+    } else if (!endpoint.secretHash) {
+      // Lazy backfill for endpoints created before hashed storage existed:
+      // derive the secret for the current version and persist its hash.
+      const derived = this.secretService.deriveSecret(endpointId, version);
+      await this.prisma.webhookEndpoint.update({
+        where: { id: endpointId },
+        data: { secretHash: this.secretService.hashSecret(derived) },
+      });
+    }
+
+    return this.secretService.deriveSecret(endpointId, version);
   }
 
   /**
@@ -292,8 +418,6 @@ export class WebhookService {
       page,
       limit,
       total,
-      page,
-      limit,
     };
   }
 
@@ -348,19 +472,13 @@ export class WebhookService {
     this.logger.log(`Requeued dead-lettered delivery ${deliveryId}`);
   }
 
-  /**
-   * Generates a secure random secret
-   */
-  private generateSecret(): string {
-    return `whsec_${crypto.randomBytes(32).toString('base64url')}`;
-  }
-
   private invalidateEndpointCache(endpointId: string): void {
     this.cache.delete(`${WEBHOOK_ENDPOINT_CACHE_PREFIX}${endpointId}`);
   }
 
   /**
-   * Maps Prisma endpoint to domain model
+   * Maps Prisma endpoint to domain model. Never exposes the signing secret —
+   * only its hash and version metadata.
    */
   private mapPrismaEndpointToDomain(prismaEndpoint: any): WebhookEndpoint {
     return {
@@ -368,7 +486,11 @@ export class WebhookService {
       projectId: prismaEndpoint.projectId,
       url: prismaEndpoint.url,
       description: prismaEndpoint.description,
-      secret: prismaEndpoint.secret,
+      secretHash: prismaEndpoint.secretHash ?? '',
+      secretVersion: prismaEndpoint.secretVersion ?? 1,
+      pendingSecretVersion: prismaEndpoint.pendingSecretVersion ?? null,
+      pendingSecretHash: prismaEndpoint.pendingSecretHash ?? null,
+      secretGracePeriodEndsAt: prismaEndpoint.secretGracePeriodEndsAt ?? null,
       events: prismaEndpoint.events,
       status: prismaEndpoint.status,
       consecutiveFailures: prismaEndpoint.consecutiveFailures,

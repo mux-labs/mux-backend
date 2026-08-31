@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookDispatchService } from './webhook-dispatch.service';
 import { WebhookRetryService } from './webhook-retry.service';
+import { WebhookService } from './webhook.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { SafeLogger } from '../common/safe-logger';
 import {
@@ -31,6 +32,7 @@ export class WebhookDispatcherService {
     private readonly prisma: PrismaService,
     private readonly dispatchService: WebhookDispatchService,
     private readonly retryService: WebhookRetryService,
+    private readonly webhookService: WebhookService,
     private readonly metrics: MetricsService,
   ) {}
 
@@ -179,13 +181,20 @@ export class WebhookDispatcherService {
       `Attempting delivery ${delivery.id} to ${endpoint.url} (attempt ${attemptNumber}/${maxRetries})`,
     );
 
+    // Resolve the plaintext signing secret (re-derived from the master key;
+    // never read from the database, which holds only a hash). This also
+    // promotes a pending rotation once its grace window has elapsed.
+    const signingSecret = await this.webhookService.resolveSigningSecret(
+      endpoint.id,
+    );
+
     // Dispatch the webhook
     const dispatchResult = await this.dispatchService.deliverWebhook(
       endpoint.url,
       delivery.payload,
       delivery.eventType,
       delivery.eventId,
-      endpoint.secret,
+      signingSecret,
     );
 
     const responseTimeSeconds = dispatchResult.responseTime / 1000;
