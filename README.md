@@ -538,8 +538,7 @@ User authentication is orchestrated via the auth service and integrates with Web
 Key authentication-related environment variables (when applicable):
 
 - `AUTH_PROVIDER` — Identity provider (e.g., CLERK, BETTER_AUTH)
-- `JWT_SECRET` — (Future) JWT signing secret
-- `API_KEY_EXPIRY_DAYS` — (Future) Default API key expiry duration in days
+- `API_KEY_DEFAULT_EXPIRY_DAYS` — Optional. When set, newly created API keys expire after this many days. Omit (or set to `0`) for non-expiring keys. See [API Key Expiry](#api-key-expiry) below.
 - `RATE_LIMIT_RPM` — Requests per minute limit (per API key)
 
 ---

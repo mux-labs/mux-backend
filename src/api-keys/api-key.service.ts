@@ -49,11 +49,15 @@ export class ApiKeyService implements OnModuleDestroy {
   private readonly logger = new SafeLogger(ApiKeyService.name);
   private prisma: PrismaClient;
   private readonly gracePeriodSeconds: number;
+  /** Default lifetime (days) for new API keys; 0 means non-expiring. */
+  private readonly defaultExpiryDays: number;
 
   constructor(private readonly configService: ConfigService) {
     this.prisma = new PrismaClient({} as any);
     this.gracePeriodSeconds =
       this.configService.get<number>('API_KEY_ROTATION_GRACE_SECONDS') ?? 3600;
+    this.defaultExpiryDays =
+      this.configService.get<number>('API_KEY_DEFAULT_EXPIRY_DAYS') ?? 0;
   }
 
   async onModuleDestroy() {
@@ -92,7 +96,9 @@ export class ApiKeyService implements OnModuleDestroy {
 
     const expiresAt = request.expiresAt
       ? new Date(request.expiresAt)
-      : undefined;
+      : this.defaultExpiryDays > 0
+        ? new Date(Date.now() + this.defaultExpiryDays * 24 * 60 * 60 * 1000)
+        : undefined;
 
     // Store hashed key
     const apiKey = await this.prisma.apiKey.create({
