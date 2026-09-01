@@ -9,6 +9,8 @@ import { KeyManagementModule } from '../key-management/key-management.module';
 import { WebhookModule } from '../webhooks/webhook.module';
 import { WalletRetryService } from './wallet-retry.service';
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
+import { WalletCacheService } from './wallet-cache.service';
+import { CacheService } from '../common/cache/cache.service';
 
 @Module({
   imports: [
@@ -24,11 +26,14 @@ import { WalletApiMetricsService } from './wallet-api-metrics.service';
     EncryptionService,
     WalletRetryService,
     WalletApiMetricsService,
+    WalletCacheService,
+    CacheService,
   ],
   exports: [
     WalletsService,
     WalletRetryService,
     WalletApiMetricsService,
+    WalletCacheService,
   ],
 })
 export class WalletsModule {}

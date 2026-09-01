@@ -10,6 +10,54 @@ import { RequestContextService } from '../request-context/request-context.servic
 const CLIENT_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
 
 /**
+ * #787 — Headers that must NEVER appear in info logs.
+ *
+ * Any header in this set is replaced with the literal string "[REDACTED]"
+ * before being written to any log line.  The check is case-insensitive so
+ * "Authorization", "authorization", and "AUTHORIZATION" are all matched.
+ *
+ * Extend this set with care — every entry here is a security invariant.
+ */
+const SENSITIVE_HEADERS: ReadonlySet<string> = new Set([
+  'authorization',
+  'x-api-key',
+  'x-internal-api-key',
+  'x-maintenance-secret',
+  'x-recovery-admin-secret',
+  'cookie',
+  'set-cookie',
+  'proxy-authorization',
+]);
+
+/**
+ * Returns a sanitized copy of the provided headers object where every
+ * sensitive header value has been replaced with "[REDACTED]".
+ *
+ * Only call this when you need to log header information.  The original
+ * request object is never mutated.
+ */
+export function redactSensitiveHeaders(
+  headers: Record<string, string | string[] | undefined> | undefined,
+): Record<string, string | string[] | undefined> {
+  if (!headers || typeof headers !== 'object') {
+    return {};
+  }
+  const safe: Record<string, string | string[] | undefined> = {};
+  for (const [key, value] of Object.entries(headers)) {
+    safe[key] = SENSITIVE_HEADERS.has(key.toLowerCase()) ? '[REDACTED]' : value;
+  }
+  return safe;
+}
+
+/**
+ * Returns true when the header name is sensitive and must be redacted.
+ * Exposed for unit testing.
+ */
+export function isSensitiveHeader(headerName: string): boolean {
+  return SENSITIVE_HEADERS.has(headerName.toLowerCase());
+}
+
+/**
  * Reads and validates the optional `X-Client-Version` header used to tag
  * support logs with the reporting client's app version. Returns undefined
  * (never throws) when the header is absent, empty, or doesn't look like a
@@ -86,6 +134,10 @@ export function requestLogger(
       ? ` clientVersion=${clientVersion}`
       : '';
 
+    // #787: Never log Authorization, X-API-Key, or any other sensitive header.
+    // The URL and method are safe to log; individual header values are NOT
+    // logged at all in the request-start line — only the redacted-safe copy is
+    // used when we need to surface header context for debugging.
     logger.log(`${method} ${url} id=${id} ip=${ip}${clientVersionSuffix}`);
 
     if (res && typeof res.on === 'function') {

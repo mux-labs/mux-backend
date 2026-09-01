@@ -148,6 +148,29 @@ jobs:
       - name: Lint OpenAPI spec
         run: pnpm run openapi:lint
 
+      - name: Check OpenAPI spec for drift
+        # #786: Fails the build if the committed openapi.json has drifted from
+        # what the live routes actually produce.  Run "pnpm openapi:generate"
+        # locally and commit the updated file to fix this.
+        run: pnpm run openapi:check-drift
+        env:
+          DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
+          WALLET_ENCRYPTION_KEY: ${{ secrets.WALLET_ENCRYPTION_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
+          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+          STELLAR_NETWORK: TESTNET
+          STELLAR_HORIZON_TESTNET_URL: https://horizon-testnet.stellar.org
+          STELLAR_HORIZON_MAINNET_URL: https://horizon.stellar.org
+          STELLAR_HORIZON_MAX_RETRIES: 3
+          STELLAR_HORIZON_RETRY_BACKOFF_MS: 500
+          STELLAR_HORIZON_RETRY_JITTER_MS: 250
+          BALANCE_STALE_THRESHOLD_MS: 300000
+          WEBHOOK_MAX_RETRIES: 5
+          WEBHOOK_RETRY_BACKOFF_MS: 1000
+          WEBHOOK_TIMEOUT_MS: 10000
+          WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10
+          AUTH_RATE_LIMIT_MAX: 10
+          AUTH_RATE_LIMIT_WINDOW_MS: 60000
+
       - name: Test
         run: pnpm test
 
