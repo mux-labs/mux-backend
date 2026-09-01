@@ -307,6 +307,47 @@ describe('validateEnv()', () => {
         'JSON_BODY_LIMIT_BYTES must be <= 10485760',
       );
     });
+
+    it('rejects 0 (min is 1 byte)', () => {
+      // #788: A body limit of zero would silently reject every request body.
+      expectError(
+        env({ JSON_BODY_LIMIT_BYTES: '0' }),
+        'JSON_BODY_LIMIT_BYTES must be >= 1',
+      );
+    });
+
+    it('rejects negative values', () => {
+      expectError(
+        env({ JSON_BODY_LIMIT_BYTES: '-1' }),
+        'JSON_BODY_LIMIT_BYTES must be >= 1',
+      );
+    });
+
+    it('rejects a non-integer value', () => {
+      expectError(
+        env({ JSON_BODY_LIMIT_BYTES: 'not-a-number' }),
+        'JSON_BODY_LIMIT_BYTES must be an integer',
+      );
+    });
+
+    it('default value equals exactly 100 KiB (102400 bytes)', () => {
+      // #788: README documents "100 KiB default"; 100 * 1024 === 102400.
+      const result = validateEnv(env());
+      expect(result.JSON_BODY_LIMIT_BYTES).toBe(100 * 1024);
+    });
+
+    it('accepts the exact minimum boundary of 1 byte', () => {
+      expect(
+        validateEnv(env({ JSON_BODY_LIMIT_BYTES: '1' })).JSON_BODY_LIMIT_BYTES,
+      ).toBe(1);
+    });
+
+    it('accepts the exact maximum boundary of 10 MiB (10485760 bytes)', () => {
+      expect(
+        validateEnv(env({ JSON_BODY_LIMIT_BYTES: '10485760' }))
+          .JSON_BODY_LIMIT_BYTES,
+      ).toBe(10_485_760);
+    });
   });
 
   describe('AUTH_RATE_LIMIT_MAX', () => {

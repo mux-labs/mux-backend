@@ -576,12 +576,44 @@ Contributions are welcome. Please open an issue before submitting large changes.
 
 ---
 
+## Wallet Cache Invalidation (#785)
+
+`WalletCacheService` provides an in-process TTL cache for wallet lookups. To prevent stale status or stale public-key data from being served after mutation:
+
+- **Key rotation** (`rotateWalletKey`): both the predecessor and successor cache entries (by ID and by user+network) are evicted immediately after the rotation completes.
+- **Status change** (`updateWalletStatus`): both the ID-keyed and user+network-keyed entries are evicted after any status transition (ACTIVE → SUSPENDED, ACTIVE → ARCHIVED, etc.).
+- **Activation** (`activateWallet`): the PROVISIONING entry is evicted so the next read fetches the freshly-ACTIVE record from the database.
+
+Cache entries are stored in `CacheService` (in-process `Map`) with a 5-minute TTL. Invalidation is additive (fail-safe via `@Optional()`): if `WalletCacheService` is not injected the operations proceed normally without cache calls.
+
+---
+
+## OpenAPI Drift Check (#786)
+
+The committed `openapi.json` is the source of truth for the published API spec. To prevent controllers from drifting silently from the spec:
+
+```bash
+# Regenerate the spec from live NestJS routes
+pnpm run openapi:generate
+
+# Check whether the live routes match the committed spec (fails on drift)
+pnpm run openapi:check-drift
+
+# Lint the committed spec
+pnpm run openapi:lint
+```
+
+`openapi:check-drift` is run automatically in CI after `openapi:lint`. If it fails, run `pnpm run openapi:generate` locally, review the diff, and commit the updated `openapi.json`.
+
+---
+
 Request Logging Middleware
 
 A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
 
 - Sets an `x-request-id` header (honors incoming `x-request-id` if present).
 - Logs method, URL, client IP and request id when requests start and when they finish.
+- **Redacts all sensitive headers** (`Authorization`, `X-API-Key`, `X-Internal-Api-Key`, `X-Maintenance-Secret`, `X-Recovery-Admin-Secret`, `cookie`, `set-cookie`, `proxy-authorization`) — raw header values are never written to any log line. (#787)
 - Is robust to stale/invalid request objects and will not crash the application.
 
 The middleware is registered in `src/main.ts` and runs for all incoming requests.
