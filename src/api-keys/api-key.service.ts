@@ -5,6 +5,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
+import type { ApiKey as PrismaApiKey } from '../generated/prisma/client';
 import * as crypto from 'crypto';
 import { SafeLogger } from '../common/safe-logger';
 import {
@@ -436,7 +437,7 @@ export class ApiKeyService implements OnModuleDestroy {
   /**
    * Maps Prisma ApiKey to domain model
    */
-  private mapPrismaApiKeyToDomain(prismaApiKey: any): ApiKey {
+  private mapPrismaApiKeyToDomain(prismaApiKey: PrismaApiKey): ApiKey {
     return {
       id: prismaApiKey.id,
       name: prismaApiKey.name,

@@ -6,6 +6,7 @@ import {
   HttpException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import type { User as PrismaUser } from '../generated/prisma/client';
 import { UserStatus } from './entities/user.entity';
 
 export interface FindOrCreateUserRequest {
@@ -270,7 +271,7 @@ export class IdempotentUserService {
   /**
    * Maps Prisma User to domain User model
    */
-  private mapPrismaUserToDomain(prismaUser: any): User {
+  private mapPrismaUserToDomain(prismaUser: PrismaUser): User {
     return {
       id: prismaUser.id,
       authId: prismaUser.authId,
@@ -322,7 +323,7 @@ export class IdempotentUserService {
    * Validates that a user is in a valid state for authentication
    * Throws error if user is in an invalid/stale state (e.g., SUSPENDED, DISABLED)
    */
-  private validateUserState(user: any): void {
+  private validateUserState(user: PrismaUser): void {
     const status = (user.status || UserStatus.ACTIVE) as UserStatus;
 
     if (status !== UserStatus.ACTIVE) {

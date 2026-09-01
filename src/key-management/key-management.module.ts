@@ -1,4 +1,5 @@
 import { Module } from '@nestjs/common';
+import { EventEmitterModule } from '@nestjs/event-emitter';
 import { makeCounterProvider, makeHistogramProvider } from '@willsoto/nestjs-prometheus';
 import { KeyManagementService } from './key-management.service';
 import { KeyManagementController } from './key-management.controller';
@@ -9,6 +10,7 @@ import { PrismaModule } from '../prisma/prisma.module';
 import { KeyManagementMetricsService } from './key-management-metrics.service';
 import { EncryptionMigrationService } from './encryption-migration.service';
 import { WalletKeyReEncryptionService } from './wallet-key-reencryption.service';
+import { KeyValidationCacheService } from './key-validation-cache/key-validation-cache.service';
 
 @Module({
   imports: [EncryptionModule, PrismaModule, EventEmitterModule.forRoot()],
@@ -18,6 +20,7 @@ import { WalletKeyReEncryptionService } from './wallet-key-reencryption.service'
     StellarKeyProvider,
     KeyRotationAuditService,
     KeyManagementMetricsService,
+    KeyValidationCacheService,
     EncryptionMigrationService,
     WalletKeyReEncryptionService,
     makeCounterProvider({
