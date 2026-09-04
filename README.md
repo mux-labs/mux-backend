@@ -544,6 +544,89 @@ Key authentication-related environment variables (when applicable):
 
 ---
 
+## Rate-Limit Record Cleanup
+
+The `RateLimitCleanupWorker` runs on a configurable interval and prunes expired
+`RateLimitRecord` rows from the database. Without this job the table grows
+unbounded as every API key × endpoint × time-window combination adds a row.
+
+The worker is automatically registered in `RateLimitModule` — no manual
+wiring is required.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run the cleanup job |
+| `RATE_LIMIT_CLEANUP_OLDER_THAN_MS` | `3600000` | Delete records with `windowStart` older than this age (ms) |
+
+---
+
+## Testnet Faucet
+
+The `TestnetFaucetService` proxies Stellar Friendbot funding requests for TESTNET wallets only.
+
+### Mainnet gate (fail-closed)
+
+When `STELLAR_NETWORK` is set to `MAINNET` or `PUBLIC` the service **refuses all funding requests** with `501 Not Implemented`, regardless of `NODE_ENV`. This is an unconditional safety gate — there is no override and no silent fallback.
+
+Set `STELLAR_NETWORK=TESTNET` (the default) to enable faucet funding.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STELLAR_NETWORK` | `TESTNET` | Target network. Set to `MAINNET`/`PUBLIC` to block faucet calls |
+| `TESTNET_FAUCET_URL` | `https://friendbot.stellar.org` | Faucet endpoint URL |
+| `TESTNET_FAUCET_MAX_REQUESTS` | `5` | Max faucet requests per wallet per window |
+| `TESTNET_FAUCET_WINDOW_MS` | `3600000` | Throttle window length (ms) |
+
+---
+
+## Webhook DLQ Ops Notifications
+
+`WebhookDlqAlertService` monitors the webhook dead-letter queue and can POST a
+structured JSON alert to an ops endpoint (Slack, PagerDuty, or any HTTP sink)
+whenever a threshold is breached.
+
+Notification failures are **non-fatal**: a Slack outage cannot disrupt the DLQ
+check loop or normal webhook delivery.
+
+### Payload shape
+
+```json
+{
+  "service": "mux-backend",
+  "event": "dlq.threshold_breached",
+  "text": "[mux-backend] DLQ threshold breached: ...",
+  "dlqDepth": 55,
+  "totalDeliveries": 500,
+  "dlqPercentage": 11.0,
+  "oldestDlqItemAgeMs": 7200000,
+  "alerts": [
+    { "type": "ABSOLUTE_THRESHOLD", "message": "...", "value": 55, "threshold": 50 }
+  ],
+  "checkedAt": "2026-08-31T23:00:00.000Z"
+}
+```
+
+The `text` field is Slack-compatible. For PagerDuty, wrap the payload in a
+[PagerDuty Events v2](https://developer.pagerduty.com/api-reference/YXBpOjI3NDgyNjU-pager-duty-v2-events-api)
+adapter or use a custom HTTP sink.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DLQ_OPS_WEBHOOK_URL` | _(unset)_ | HTTP(S) URL to POST alerts to. Leave unset for metrics-only mode |
+| `DLQ_OPS_WEBHOOK_TIMEOUT_MS` | `5000` | Timeout (ms) for outbound notification calls |
+| `DLQ_CHECK_INTERVAL_MS` | `60000` | How often (ms) to poll DLQ depth |
+| `DLQ_ABSOLUTE_THRESHOLD` | `50` | Alert when DLQ depth ≥ this value |
+| `DLQ_PERCENTAGE_THRESHOLD` | `10` | Alert when DLQ% of total deliveries ≥ this value |
+| `DLQ_AGE_THRESHOLD_MS` | `3600000` | Alert when oldest DLQ item is older than this (ms) |
+
+---
+
 ## Design Principles
 
 * **Crypto is infrastructure, not UX**
