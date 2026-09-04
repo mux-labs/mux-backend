@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
+import type { Wallet as PrismaWallet } from '../generated/prisma/client';
 import {
   Wallet,
   WalletNetwork,
@@ -925,7 +926,7 @@ export class WalletsService implements OnModuleDestroy {
     });
   }
 
-  private mapPrismaWalletToDomain(prismaWallet: any): Wallet {
+  private mapPrismaWalletToDomain(prismaWallet: PrismaWallet): Wallet {
     return {
       id: prismaWallet.id,
       userId: prismaWallet.userId,
