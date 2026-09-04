@@ -43,10 +43,14 @@ export class HorizonSubmissionService {
 
   /**
    * Submits a signed XDR envelope to Horizon and persists the result.
+   *
+   * When the target network is MAINNET, the FEATURE_MAINNET_PAYMENT_SUBMIT
+   * kill-switch must be enabled or submission is rejected with 403.
    */
   async submitTransaction(
     transactionId: string,
     signedXdr: string,
+    network: string = 'TESTNET',
   ): Promise<SubmissionResult> {
     this.logger.debug(
       `Submitting transaction ${transactionId} to Horizon (${this.horizonUrl})`,

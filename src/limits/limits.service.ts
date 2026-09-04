@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
 import { LimitUpdatedEvent } from './events/limit-updated.event';
 import { LimitExceededEvent } from './events/limit-exceeded.event';
@@ -540,5 +541,50 @@ export class LimitsService {
     }
 
     return result;
+  }
+
+  private emitLimitUpdatedSafe(
+    walletId: string,
+    limitType: string,
+    oldValue: number | null,
+    newValue: number,
+  ): void {
+    this.webhookEmitter
+      ?.emitLimitUpdated({ walletId, limitType, oldValue, newValue })
+      .catch((err) => {
+        this.logger.error(
+          `Failed to dispatch limit.updated webhook for wallet ${walletId}: ${(err as Error).message}`,
+        );
+      });
+  }
+
+  private emitLimitExceededSafe(
+    walletId: string,
+    limitType: string,
+    limit: number,
+    attempted: number,
+  ): void {
+    this.webhookEmitter
+      ?.emitLimitExceeded({ walletId, limitType, limit, attempted })
+      .catch((err) => {
+        this.logger.error(
+          `Failed to dispatch limit.exceeded webhook for wallet ${walletId}: ${(err as Error).message}`,
+        );
+      });
+  }
+
+  private emitLimitWarningSafe(
+    walletId: string,
+    limitType: string,
+    limit: number,
+    projected: number,
+  ): void {
+    this.webhookEmitter
+      ?.emitLimitWarning({ walletId, limitType, limit, projected })
+      .catch((err) => {
+        this.logger.error(
+          `Failed to dispatch limit.warning webhook for wallet ${walletId}: ${(err as Error).message}`,
+        );
+      });
   }
 }
