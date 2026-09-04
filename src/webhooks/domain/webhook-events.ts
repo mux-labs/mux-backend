@@ -28,6 +28,11 @@ export enum WebhookEventType {
   // User events
   USER_CREATED = 'user.created',
   USER_UPDATED = 'user.updated',
+
+  // Limit events
+  LIMIT_UPDATED = 'limit.updated',
+  LIMIT_EXCEEDED = 'limit.exceeded',
+  LIMIT_WARNING = 'limit.warning',
 }
 
 export interface WebhookEvent {

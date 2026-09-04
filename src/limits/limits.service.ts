@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
@@ -10,7 +10,7 @@ export class LimitsService {
 
   constructor(
     private readonly prisma: PrismaService,
-    private readonly webhookEmitter: WebhookEventEmitterService,
+    @Optional() private readonly webhookEmitter?: WebhookEventEmitterService,
   ) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
@@ -89,7 +89,7 @@ export class LimitsService {
     newValue: number,
   ): void {
     this.webhookEmitter
-      .emitLimitUpdated({ walletId, limitType, oldValue, newValue })
+      ?.emitLimitUpdated({ walletId, limitType, oldValue, newValue })
       .catch((err) => {
         this.logger.error(
           `Failed to dispatch limit.updated webhook for wallet ${walletId}: ${(err as Error).message}`,
@@ -104,7 +104,7 @@ export class LimitsService {
     attempted: number,
   ): void {
     this.webhookEmitter
-      .emitLimitExceeded({ walletId, limitType, limit, attempted })
+      ?.emitLimitExceeded({ walletId, limitType, limit, attempted })
       .catch((err) => {
         this.logger.error(
           `Failed to dispatch limit.exceeded webhook for wallet ${walletId}: ${(err as Error).message}`,
@@ -119,7 +119,7 @@ export class LimitsService {
     projected: number,
   ): void {
     this.webhookEmitter
-      .emitLimitWarning({ walletId, limitType, limit, projected })
+      ?.emitLimitWarning({ walletId, limitType, limit, projected })
       .catch((err) => {
         this.logger.error(
           `Failed to dispatch limit.warning webhook for wallet ${walletId}: ${(err as Error).message}`,
