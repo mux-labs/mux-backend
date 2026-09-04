@@ -97,6 +97,106 @@ describe('WebhookSignerService', () => {
 
       expect(isValid).toBe(false);
     });
+
+    it('should reject a tampered payload even with a structurally valid signature', () => {
+      const secret = 'test-secret';
+      const timestamp = Math.floor(Date.now() / 1000);
+      const originalPayload = JSON.stringify({ amount: 100 });
+      const tamperedPayload = JSON.stringify({ amount: 999999 });
+
+      // Signature was computed over the original payload...
+      const signature = service.signPayload(
+        originalPayload,
+        secret,
+        timestamp,
+      );
+
+      // ...but the attacker sends a different payload with that signature.
+      const isValid = service.verifySignature(
+        tamperedPayload,
+        signature,
+        secret,
+        timestamp,
+      );
+
+      expect(isValid).toBe(false);
+    });
+
+    it('should reject when signed with the wrong secret', () => {
+      const payload = JSON.stringify({ test: 'data' });
+      const timestamp = Math.floor(Date.now() / 1000);
+
+      const signature = service.signPayload(
+        payload,
+        'correct-secret',
+        timestamp,
+      );
+      const isValid = service.verifySignature(
+        payload,
+        signature,
+        'wrong-secret',
+        timestamp,
+      );
+
+      expect(isValid).toBe(false);
+    });
+
+    it('should reject signatures of a different length without throwing', () => {
+      const payload = JSON.stringify({ test: 'data' });
+      const secret = 'test-secret';
+      const timestamp = Math.floor(Date.now() / 1000);
+
+      expect(() =>
+        service.verifySignature(payload, 'short', secret, timestamp),
+      ).not.toThrow();
+      expect(
+        service.verifySignature(payload, 'short', secret, timestamp),
+      ).toBe(false);
+    });
+
+    it('should reject empty-string signatures', () => {
+      const payload = JSON.stringify({ test: 'data' });
+      const secret = 'test-secret';
+      const timestamp = Math.floor(Date.now() / 1000);
+
+      expect(
+        service.verifySignature(payload, '', secret, timestamp),
+      ).toBe(false);
+    });
+
+    it('should reject timestamps too far in the future (clock skew abuse)', () => {
+      const payload = JSON.stringify({ test: 'data' });
+      const secret = 'test-secret';
+      const futureTimestamp = Math.floor(Date.now() / 1000) + 600; // 10 min ahead
+
+      const signature = service.signPayload(payload, secret, futureTimestamp);
+      const isValid = service.verifySignature(
+        payload,
+        signature,
+        secret,
+        futureTimestamp,
+        300,
+      );
+
+      expect(isValid).toBe(false);
+    });
+
+    it('should accept a signature at the edge of the tolerance window', () => {
+      const payload = JSON.stringify({ test: 'data' });
+      const secret = 'test-secret';
+      const timestamp = Math.floor(Date.now() / 1000) - 299; // just inside 300s
+
+      const signature = service.signPayload(payload, secret, timestamp);
+      const isValid = service.verifySignature(
+        payload,
+        signature,
+        secret,
+        timestamp,
+        300,
+      );
+
+      expect(isValid).toBe(true);
+    });
   });
 
   describe('formatSignatureHeader', () => {
@@ -128,6 +228,70 @@ describe('WebhookSignerService', () => {
       const result = service.parseSignatureHeader(header);
 
       expect(result).toBeNull();
+    });
+
+    it('should return null when the header is an empty string', () => {
+      const result = service.parseSignatureHeader('');
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when the timestamp component is missing', () => {
+      const header = 'v1=abcdef123456';
+
+      const result = service.parseSignatureHeader(header);
+
+      expect(result).toBeNull();
+    });
+
+    it('should return null when the signature component is missing', () => {
+      const header = 't=1234567890';
+
+      const result = service.parseSignatureHeader(header);
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('end-to-end sign + verify', () => {
+    it('should accept a signature generated via generateSignatureHeaders and formatSignatureHeader', () => {
+      const secret = 'test-secret';
+      const payload = { walletId: 'wallet-1', amount: 42 };
+
+      const { timestamp, signature } = service.generateSignatureHeaders(
+        payload,
+        secret,
+      );
+      const header = service.formatSignatureHeader(timestamp, signature);
+      const parsed = service.parseSignatureHeader(header);
+
+      expect(parsed).not.toBeNull();
+      const isValid = service.verifySignature(
+        JSON.stringify(payload),
+        parsed!.signature,
+        secret,
+        parsed!.timestamp,
+      );
+
+      expect(isValid).toBe(true);
+    });
+
+    it('should reject when the receiver uses a different secret than the sender', () => {
+      const payload = { walletId: 'wallet-1', amount: 42 };
+
+      const { timestamp, signature } = service.generateSignatureHeaders(
+        payload,
+        'sender-secret',
+      );
+
+      const isValid = service.verifySignature(
+        JSON.stringify(payload),
+        signature,
+        'receiver-secret',
+        timestamp,
+      );
+
+      expect(isValid).toBe(false);
     });
   });
 });

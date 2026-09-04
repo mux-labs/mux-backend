@@ -30,6 +30,8 @@ export interface GeneratedKeyPair {
 export interface EncryptedKeyMaterial {
   encryptedData: string;
   encryptionVersion: number;
+  /** Key algorithm/derivation scheme version. Matches Wallet.keyVersion. */
+  keyVersion: number;
   keyType: KeyType;
   publicKey: string;
 }
@@ -55,4 +57,6 @@ export interface KeyOperationAudit {
   metadata?: Record<string, any>;
   success: boolean;
   errorMessage?: string;
+  /** Propagated from the inbound HTTP request via RequestContextService. */
+  requestId?: string;
 }

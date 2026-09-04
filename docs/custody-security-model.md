@@ -12,18 +12,84 @@ Users never see or manage private keys. Mux Backend generates, encrypts, and sto
 User / Client
      │  (no key material ever crosses this boundary)
      ▼
-Auth Layer (Clerk / Better Auth)
+Identity Provider (Clerk / Better Auth)
+     ├─ Authenticates user, issues signed JWT
+     │
+User / Client (presents JWT)
      │
      ▼
-Mux Backend API
+Mux Backend API  ← JwtVerificationService verifies JWT sig, extracts identity
+     │           ← Only trusts identity from verified JWT claims (sub, auth_provider)
+     │           ← Checks local user status (ACTIVE/INACTIVE/SUSPENDED)
+     │
+     ├── AuthOrchestrator  ← Orchestrates auth, wallet creation
      │
      ├── KeyManagementService  ← only layer that touches plaintext keys (briefly)
      │        │
      │        ├── StellarKeyProvider  (stellar-sdk Keypair generation + signing)
      │        └── EncryptionService   (AES-256-GCM envelope)
      │
-     └── PostgreSQL  ← stores only encrypted key material
+     └── PostgreSQL  ← stores encrypted key material + user status
 ```
+
+### Authentication Boundary
+
+The critical security boundary is at "Mux Backend API" where identity is verified:
+
+1. **Token Arrival**: Client sends Authorization header with a signed JWT token.
+2. **Signature Verification**: JwtVerificationService verifies the token signature cryptographically against the identity provider's public keys.
+3. **Identity Extraction**: User identity is extracted **only** from verified JWT claims (`sub` and `auth_provider`). Client-supplied identity fields in the request body are ignored.
+4. **Status Check**: Local user record is loaded and status is checked. Users with status other than `ACTIVE` are rejected.
+5. **Protected Access**: Only after both JWT verification and status check pass can the user access protected resources or have key operations performed on their behalf.
+
+At no point do any downstream layers (KeyManagementService, Stellar, database) trust identity directly. Identity is always passed through after verification by JwtVerificationService and AuthOrchestrator.
+
+---
+
+## Authentication & Trust Model
+
+Authentication is the foundation of custody security. If identity is not verified, an attacker could impersonate a legitimate user and access their keys and transactions.
+
+### Server-Side Verification Only
+
+Mux Backend verifies identity server-side using cryptographic JWT verification, not by trusting client-supplied claims:
+
+| Layer | What is Trusted | Why |
+|---|---|---|
+| **Client** (untrusted) | None. All client claims are ignored. | Clients can be compromised or malicious. |
+| **Identity Provider** (verified) | JWT token signature. User identity from verified token claims. | Provider's keys are rotated and managed by the provider. Signature proves the token came from them. |
+| **Mux Backend** | Verified JWT claims + local user status. | After cryptographic verification, we check our own records for user status. |
+
+### Verification Flow for Every Request
+
+1. **Request Arrives**: Client sends HTTP request with `Authorization: Bearer <jwt_token>`.
+
+2. **Token Extraction**: `JwtVerificationService.extractBearerToken()` extracts the token from the Authorization header. If missing, request fails with 400 Bad Request.
+
+3. **Signature Verification**: `JwtVerificationService.verifyToken()` verifies the JWT signature against the configured identity provider's public keys. If verification fails (invalid signature, expired token, wrong provider), request fails with 401 Unauthorized.
+
+4. **Identity Extraction**: From the verified token, extract:
+   - `sub` claim → becomes `authId` (user's unique ID in the identity provider)
+   - `auth_provider` claim → becomes `authProvider` (e.g., "CLERK", "BETTER_AUTH")
+
+5. **Status Check**: Look up the user in the local database by `authId`. If found, check the user's `status` field. If status is not `ACTIVE` (e.g., `SUSPENDED`, `INACTIVE`), reject with 403 Forbidden. If user not found, proceed (new user).
+
+6. **Protected Operation**: Only after verification and status check pass can the operation proceed. The now-verified identity is used throughout the request lifecycle.
+
+### What is NOT Trusted
+
+- **Client-supplied authId/authProvider**: These are ignored. Identity comes from the verified JWT token.
+- **Email address**: Optional metadata that may be passed in the request body. Used for record-keeping but not for identity.
+- **Display name**: Optional metadata.
+- **Token expiration**: Handled by the JWT library. Expired tokens are rejected at verification time.
+- **Provider profile fields**: Any data relayed from the identity provider (e.g., email stored in Clerk) is not used for access control.
+
+### Production Safety
+
+In production:
+- JWT verification library must be installed (currently requires manual add of `jsonwebtoken` package).
+- Identity provider configuration must be set (e.g., `CLERK_JWT_PUBLIC_KEY` or `BETTER_AUTH_JWKS_URL`).
+- If either is missing, startup fails or requests fail with 503 Service Unavailable. There is no fallback to trusting client-supplied identity.
 
 ---
 
@@ -110,6 +176,11 @@ Both fields together allow traversal of the full rotation history in either dire
 - Only `ACTIVE` or `ROTATING` wallets can be rotated.
 - A wallet that already has a `successorId` cannot be rotated again (prevents double-rotation).
 - All DB writes (create successor + update predecessor) are atomic via `prisma.$transaction`.
+- The `/internal/key-management/rotate` route is gated by `FeatureFlagGuard` **and**
+  `InternalServiceGuard` (`x-internal-api-key` header, issue #690).
+- `KeyManagementService.rotateKey` is the **only** rotation implementation.
+  `WalletsService.rotateWalletKey` delegates to it (issue #692) and rotation is
+  never exposed on the public `/v1/wallets` API (issue #691).
 
 ### Wallet status lifecycle
 

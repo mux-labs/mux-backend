@@ -1,10 +1,15 @@
-export class PaymentCreatedEvent {
+import { VersionedDomainEvent } from '../../common/events/versioned-domain.event';
+
+export class PaymentCreatedEvent extends VersionedDomainEvent {
+  readonly schemaVersion = 1;
+
   constructor(
-    public readonly paymentId: string,
-    public readonly walletId: string,
+    public readonly paymentId: number,
     public readonly amount: number,
     public readonly currency: string,
-    public readonly userId: string,
-    public readonly timestamp = new Date(),
-  ) {}
+    public readonly userId: number,
+    timestamp?: Date,
+  ) {
+    super(timestamp);
+  }
 }

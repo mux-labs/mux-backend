@@ -8,7 +8,9 @@ describe('EncryptionService', () => {
 
   beforeEach(async () => {
     const mockConfigService = {
-      get: jest.fn(),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-32-characters-long!!'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -251,6 +253,76 @@ describe('EncryptionService', () => {
     });
   });
 
+  describe('master-key rotation (#693)', () => {
+    const makeService = (current: string, previous?: string) => {
+      const cfg = {
+        get: jest.fn((key: string) =>
+          key === 'WALLET_ENCRYPTION_KEY_PREVIOUS' ? previous : current,
+        ),
+      } as unknown as ConfigService;
+      return new EncryptionService(cfg);
+    };
+
+    const OLD_KEY = 'old-encryption-key-32-characters-long!!';
+    const NEW_KEY = 'new-encryption-key-32-characters-long!!';
+
+    it('hasPreviousKey() reflects WALLET_ENCRYPTION_KEY_PREVIOUS', () => {
+      expect(makeService(NEW_KEY).hasPreviousKey()).toBe(false);
+      expect(makeService(NEW_KEY, OLD_KEY).hasPreviousKey()).toBe(true);
+    });
+
+    it('throws when the previous key is shorter than 32 characters', () => {
+      expect(() => makeService(NEW_KEY, 'short')).toThrow(
+        'WALLET_ENCRYPTION_KEY_PREVIOUS must be at least 32 characters long',
+      );
+    });
+
+    it('re-encrypts ciphertext written under the previous key', () => {
+      const oldService = makeService(OLD_KEY);
+      const stored = oldService.encryptAndSerialize('S-SECRET-SEED');
+
+      const rotatingService = makeService(NEW_KEY, OLD_KEY);
+      const { data, rotated } = rotatingService.reEncryptWithCurrentKey(stored);
+
+      expect(rotated).toBe(true);
+      expect(data).not.toEqual(stored);
+      expect(rotatingService.deserializeAndDecrypt(data)).toBe('S-SECRET-SEED');
+      // The new service on its own (no previous key) can now read it.
+      expect(makeService(NEW_KEY).deserializeAndDecrypt(data)).toBe(
+        'S-SECRET-SEED',
+      );
+    });
+
+    it('is a no-op when ciphertext is already under the current key', () => {
+      const rotatingService = makeService(NEW_KEY, OLD_KEY);
+      const stored =
+        makeService(NEW_KEY).encryptAndSerialize('already-current');
+
+      const { data, rotated } = rotatingService.reEncryptWithCurrentKey(stored);
+
+      expect(rotated).toBe(false);
+      expect(data).toBe(stored);
+    });
+
+    it('throws DecryptionError when neither key can decrypt', () => {
+      const stored = makeService(
+        'unrelated-key-32-characters-long!!!!',
+      ).encryptAndSerialize('x');
+      const rotatingService = makeService(NEW_KEY, OLD_KEY);
+
+      expect(() => rotatingService.reEncryptWithCurrentKey(stored)).toThrow(
+        DecryptionError,
+      );
+    });
+
+    it('throws when no previous key is configured and the current key fails', () => {
+      const stored = makeService(OLD_KEY).encryptAndSerialize('x');
+      expect(() =>
+        makeService(NEW_KEY).reEncryptWithCurrentKey(stored),
+      ).toThrow(DecryptionError);
+    });
+  });
+
   describe('key derivation', () => {
     it('should derive same key from same input', () => {
       const key1 = 'test-encryption-key-12345-long-enough-32-chars';
@@ -274,7 +346,7 @@ describe('EncryptionService', () => {
 
     it('should derive different keys from different inputs', () => {
       const key1 = 'test-encryption-key-12345-long-enough-32-chars';
-      const key2 = 'different-encryption-key-67890';
+      const key2 = 'different-encryption-key-32-chars-long!!';
 
       jest.spyOn(configService, 'get').mockReturnValue(key1);
       const service1 = new EncryptionService(configService);

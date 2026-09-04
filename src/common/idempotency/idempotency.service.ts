@@ -1,18 +1,40 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { PrismaClient } from '../../generated/prisma/client';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { PrismaService } from '../../prisma/prisma.service';
 
 export interface IdempotencyCacheOptions {
   ttlMs?: number; // Time to live in milliseconds, defaults to 60 seconds
 }
 
 @Injectable()
-export class IdempotencyService {
+export class IdempotencyService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(IdempotencyService.name);
   private readonly defaultTTLMs = 60000; // 60 seconds default
-  private prisma: PrismaClient;
+  private cleanupTimer: NodeJS.Timeout | null = null;
+  private readonly cleanupIntervalMs = 60_000; // 60 seconds
 
-  constructor() {
-    this.prisma = new PrismaClient({} as any);
+  constructor(private readonly prisma: PrismaService) {}
+
+  onModuleInit(): void {
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupExpiredRecords().catch((error) => {
+        this.logger.error('Scheduled idempotency record cleanup failed:', error);
+      });
+    }, this.cleanupIntervalMs);
+    this.logger.log(
+      `Idempotency record cleanup scheduled (interval: ${this.cleanupIntervalMs}ms)`,
+    );
+  }
+
+  onModuleDestroy(): void {
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = null;
+    }
+    this.logger.log('Idempotency record cleanup scheduler stopped');
   }
 
   /**
@@ -44,7 +66,12 @@ export class IdempotencyService {
         `Error retrieving idempotency record for key ${key}:`,
         error,
       );
-      return null;
+      // Fail closed: if the idempotency cache cannot be queried (e.g. DB
+      // outage), an absent key must NOT be assumed — otherwise duplicate
+      // auth/wallet operations could be executed during an outage.
+      throw new ServiceUnavailableException(
+        'Idempotency cache is temporarily unavailable',
+      );
     }
   }
 

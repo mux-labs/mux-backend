@@ -33,6 +33,8 @@ These test files were updated to use the new `/v1` prefix:
 
 4. **test/wallets.e2e-spec.ts**
    - Tests wallet endpoint: `GET /v1/wallets/protected`
+   - Tests wallet creation and wallet status paths
+   - Verifies `x-request-id` propagation in headers
    - Verifies API key authentication with prefix
 
 ### New Test File

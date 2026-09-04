@@ -47,6 +47,16 @@ export interface BalanceUpdate {
   balance: string;
   ledgerSequence: number;
   timestamp: Date;
+  transactionHash?: string;
+}
+
+export interface BalanceChangeEvent {
+  walletId: string;
+  asset: Asset;
+  balance: string;
+  ledgerSequence: number;
+  transactionHash: string;
+  timestamp?: Date;
 }
 
 export interface ReconciliationResult {

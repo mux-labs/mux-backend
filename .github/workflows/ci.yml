@@ -1,0 +1,155 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - staging
+  pull_request:
+    branches:
+      - main
+      - staging
+
+jobs:
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm lint
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Run unit tests
+        run: pnpm test
+        env:
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+          WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mux_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Run database migrations
+        run: pnpm prisma:migrate:prod
+
+      - name: Run e2e tests
+        run: pnpm test:e2e
+      - name: Check Prisma migration naming
+        run: pnpm run prisma:check-migrations
+
+      - name: Build
+        run: pnpm run build
+
+      - name: Generate OpenAPI spec
+        run: pnpm run openapi:generate
+        env:
+          DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
+          WALLET_ENCRYPTION_KEY: ${{ secrets.WALLET_ENCRYPTION_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
+          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+          STELLAR_NETWORK: TESTNET
+          STELLAR_HORIZON_TESTNET_URL: https://horizon-testnet.stellar.org
+          STELLAR_HORIZON_MAINNET_URL: https://horizon.stellar.org
+          STELLAR_HORIZON_MAX_RETRIES: 3
+          STELLAR_HORIZON_RETRY_BACKOFF_MS: 500
+          STELLAR_HORIZON_RETRY_JITTER_MS: 250
+          BALANCE_STALE_THRESHOLD_MS: 300000
+          WEBHOOK_MAX_RETRIES: 5
+          WEBHOOK_RETRY_BACKOFF_MS: 1000
+          WEBHOOK_TIMEOUT_MS: 10000
+          WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10
+          AUTH_RATE_LIMIT_MAX: 10
+          AUTH_RATE_LIMIT_WINDOW_MS: 60000
+
+      - name: Lint OpenAPI spec
+        run: pnpm run openapi:lint
+
+      - name: Test
+        run: pnpm test
+
+      - name: Test scripts
+        run: pnpm run test:scripts

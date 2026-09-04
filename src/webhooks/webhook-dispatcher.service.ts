@@ -1,14 +1,15 @@
-import { Injectable, Logger } from '@nestjs/common';
-import { PrismaClient } from '../generated/prisma/client';
-import { ConfigService } from '@nestjs/config';
-import { WebhookSignerService } from './webhook-signer.service';
+import { Injectable } from '@nestjs/common';
+import { PrismaService } from '../prisma/prisma.service';
+import { WebhookDispatchService } from './webhook-dispatch.service';
+import { WebhookRetryService } from './webhook-retry.service';
+import { MetricsService } from '../common/metrics/metrics.service';
+import { SafeLogger } from '../common/safe-logger';
 import {
   WebhookEvent,
-  WebhookEventType,
   DeliveryStatus,
   EndpointStatus,
 } from './domain/webhook-events';
-import axios, { AxiosError } from 'axios';
+import { AxiosError } from 'axios';
 
 export interface DispatchEventRequest {
   event: WebhookEvent;
@@ -18,42 +19,35 @@ export interface DispatchEventRequest {
 /**
  * Webhook Dispatcher Service
  *
- * Responsibilities:
- * - Dispatch events to registered webhook endpoints
- * - Retry failed deliveries with exponential backoff
- * - Sign payloads for verification
- * - Track delivery attempts and status
- * - Disable failing endpoints automatically
+ * Orchestrates webhook dispatch by coordinating between:
+ * - WebhookDispatchService: handles HTTP delivery
+ * - WebhookRetryService: handles retry scheduling and dead letter
  */
 @Injectable()
 export class WebhookDispatcherService {
-  private readonly logger = new Logger(WebhookDispatcherService.name);
-  private prisma: PrismaClient;
-
-  private readonly maxRetries: number;
-  private readonly retryBackoffMs: number;
-  private readonly requestTimeoutMs: number;
-  private readonly maxConsecutiveFailures: number;
+  private readonly logger = new SafeLogger(WebhookDispatcherService.name);
 
   constructor(
-    private readonly webhookSigner: WebhookSignerService,
-    private readonly configService: ConfigService,
-  ) {
-    this.prisma = new PrismaClient({} as any);
+    private readonly prisma: PrismaService,
+    private readonly dispatchService: WebhookDispatchService,
+    private readonly retryService: WebhookRetryService,
+    private readonly metrics: MetricsService,
+  ) {}
 
-    this.maxRetries = this.configService.get<number>('WEBHOOK_MAX_RETRIES', 5);
-    this.retryBackoffMs = this.configService.get<number>(
-      'WEBHOOK_RETRY_BACKOFF_MS',
-      1000,
-    );
-    this.requestTimeoutMs = this.configService.get<number>(
-      'WEBHOOK_TIMEOUT_MS',
-      10000,
-    );
-    this.maxConsecutiveFailures = this.configService.get<number>(
-      'WEBHOOK_MAX_CONSECUTIVE_FAILURES',
-      10,
-    );
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
+  }
+
+  /**
+   * Structured logging helper: routes to the matching SafeLogger level with
+   * a redacted metadata payload attached.
+   */
+  private log(
+    level: 'log' | 'warn' | 'error',
+    message: string,
+    meta?: Record<string, unknown>,
+  ): void {
+    this.logger[level](message, meta ?? {});
   }
 
   /**
@@ -62,17 +56,29 @@ export class WebhookDispatcherService {
   async dispatchEvent(request: DispatchEventRequest): Promise<void> {
     const { event, projectId } = request;
 
-    this.logger.log(`Dispatching event ${event.type} (${event.id})`);
+    this.log('log', 'Dispatching webhook event', {
+      eventType: event.type,
+      eventId: event.id,
+    });
+
+    this.metrics.incrementCounter('webhooks_dispatched_total', {
+      event_type: event.type,
+    });
 
     // Find all endpoints subscribed to this event type
     const endpoints = await this.findSubscribedEndpoints(event.type, projectId);
 
     if (endpoints.length === 0) {
-      this.logger.log(`No endpoints subscribed to ${event.type}`);
+      this.log('log', 'No endpoints subscribed to event type', {
+        eventType: event.type,
+      });
       return;
     }
 
-    this.logger.log(`Found ${endpoints.length} endpoints for ${event.type}`);
+    this.log('log', 'Found subscribed endpoints', {
+      eventType: event.type,
+      endpointCount: endpoints.length,
+    });
 
     // Create delivery records for each endpoint
     for (const endpoint of endpoints) {
@@ -81,7 +87,9 @@ export class WebhookDispatcherService {
 
     // Attempt immediate delivery (async)
     this.processDeliveries().catch((err) =>
-      this.logger.error('Background delivery processing failed:', err),
+      this.log('error', 'Background delivery processing failed', {
+        error: err?.message ?? String(err),
+      }),
     );
   }
 
@@ -105,7 +113,7 @@ export class WebhookDispatcherService {
             nextRetryAt: { lte: new Date() },
           },
         ],
-        attempts: { lt: this.maxRetries },
+        attempts: { lt: this.retryService.getMaxRetries() },
       },
       include: {
         endpoint: true,
@@ -129,16 +137,22 @@ export class WebhookDispatcherService {
           retrying++;
         }
       } catch (error) {
-        this.logger.error(`Delivery attempt failed for ${delivery.id}:`, error);
+        this.log('error', 'Delivery attempt failed', {
+          deliveryId: delivery.id,
+          error: (error as Error)?.message ?? String(error),
+        });
         failed++;
       }
     }
 
     const duration = Date.now() - startTime;
-    this.logger.log(
-      `Processed ${deliveries.length} deliveries in ${duration}ms ` +
-        `(delivered: ${delivered}, failed: ${failed}, retrying: ${retrying})`,
-    );
+    this.log('log', 'Processed webhook deliveries', {
+      total: deliveries.length,
+      delivered,
+      failed,
+      retrying,
+      durationMs: duration,
+    });
 
     return { delivered, failed, retrying };
   }
@@ -151,126 +165,105 @@ export class WebhookDispatcherService {
 
     // Skip disabled endpoints
     if (endpoint.status !== EndpointStatus.ACTIVE) {
-      this.logger.warn(`Skipping delivery to disabled endpoint ${endpoint.id}`);
+      this.log('warn', 'Skipping delivery to disabled endpoint', {
+        endpointId: endpoint.id,
+        deliveryId: delivery.id,
+      });
       return DeliveryStatus.FAILED;
     }
 
     const attemptNumber = delivery.attempts + 1;
-    const startTime = Date.now();
+    const maxRetries = this.retryService.getMaxRetries();
 
     this.logger.log(
-      `Attempting delivery ${delivery.id} to ${endpoint.url} (attempt ${attemptNumber}/${this.maxRetries})`,
+      `Attempting delivery ${delivery.id} to ${endpoint.url} (attempt ${attemptNumber}/${maxRetries})`,
     );
 
-    try {
-      // Sign the payload
-      const { timestamp, signature } =
-        this.webhookSigner.generateSignatureHeaders(
-          delivery.payload,
-          endpoint.secret,
-        );
+    // Dispatch the webhook
+    const dispatchResult = await this.dispatchService.deliverWebhook(
+      endpoint.url,
+      delivery.payload,
+      delivery.eventType,
+      delivery.eventId,
+      endpoint.secret,
+    );
 
-      // Make HTTP request
-      const response = await axios.post(endpoint.url, delivery.payload, {
-        headers: {
-          'Content-Type': 'application/json',
-          'X-Webhook-Event-Type': delivery.eventType,
-          'X-Webhook-Event-Id': delivery.eventId,
-          'X-Webhook-Signature': this.webhookSigner.formatSignatureHeader(
-            timestamp,
-            signature,
-          ),
-          'User-Agent': 'Mux-Webhooks/1.0',
-        },
-        timeout: this.requestTimeoutMs,
-        validateStatus: (status) => status >= 200 && status < 300,
-      });
+    const responseTimeSeconds = dispatchResult.responseTime / 1000;
 
-      const responseTime = Date.now() - startTime;
-
+    if (dispatchResult.success) {
       // Success!
       await this.markDelivered(
         delivery.id,
-        response.status,
-        response.data,
-        responseTime,
+        dispatchResult.responseStatus!,
+        dispatchResult.responseBody,
+        dispatchResult.responseTime,
       );
-      await this.markEndpointSuccess(endpoint.id);
+      await this.retryService.markEndpointSuccess(endpoint.id);
 
-      this.logger.log(
-        `Successfully delivered ${delivery.id} in ${responseTime}ms`,
+      this.metrics.incrementCounter('webhooks_delivered_total', {
+        event_type: delivery.eventType,
+        result: 'success',
+      });
+      this.metrics.recordHistogram(
+        'webhook_delivery_duration_seconds',
+        responseTimeSeconds,
+        { event_type: delivery.eventType },
       );
+
       return DeliveryStatus.DELIVERED;
-    } catch (error) {
-      const responseTime = Date.now() - startTime;
-      const axiosError = error as AxiosError;
+    }
 
-      const responseStatus = axiosError.response?.status;
-      const responseBody = axiosError.response?.data
-        ? JSON.stringify(axiosError.response.data).substring(0, 500)
-        : axiosError.message;
+    // Delivery failed - determine if we should retry
+    const axiosError = new AxiosError(
+      dispatchResult.errorMessage,
+      '',
+      undefined,
+      null,
+      { status: dispatchResult.responseStatus } as any,
+    );
 
-      this.logger.warn(
-        `Delivery ${delivery.id} failed (attempt ${attemptNumber}): ${axiosError.message}`,
+    const shouldRetry =
+      attemptNumber < maxRetries &&
+      this.dispatchService.isRetryableError(axiosError);
+
+    if (shouldRetry) {
+      const nextRetryAt = this.retryService.calculateNextRetry(attemptNumber);
+      await this.retryService.markRetrying(
+        delivery.id,
+        attemptNumber,
+        nextRetryAt,
+        dispatchResult.responseStatus,
+        dispatchResult.responseBody || '',
+        dispatchResult.responseTime,
+        dispatchResult.errorMessage || '',
+        delivery.eventType,
       );
-
-      // Determine if we should retry
-      const shouldRetry =
-        attemptNumber < this.maxRetries && this.isRetryableError(axiosError);
-
-      if (shouldRetry) {
-        const nextRetryAt = this.calculateNextRetry(attemptNumber);
-        await this.markRetrying(
-          delivery.id,
-          attemptNumber,
-          nextRetryAt,
-          responseStatus,
-          responseBody,
-          responseTime,
-          axiosError.message,
-        );
-        return DeliveryStatus.RETRYING;
-      } else {
-        await this.markFailed(
-          delivery.id,
-          attemptNumber,
-          responseStatus,
-          responseBody,
-          responseTime,
-          axiosError.message,
-        );
-        await this.markEndpointFailure(endpoint.id, axiosError.message);
-        return DeliveryStatus.FAILED;
-      }
-    }
-  }
-
-  /**
-   * Determines if an error is retryable
-   */
-  private isRetryableError(error: AxiosError): boolean {
-    if (
-      error.code === 'ECONNREFUSED' ||
-      error.code === 'ETIMEDOUT' ||
-      error.code === 'ENOTFOUND'
-    ) {
-      return true;
+      this.metrics.recordHistogram(
+        'webhook_delivery_duration_seconds',
+        responseTimeSeconds,
+        { event_type: delivery.eventType },
+      );
+      return DeliveryStatus.RETRYING;
     }
 
-    const status = error.response?.status;
-    if (!status) return true; // Network errors are retryable
+    // Failed and no more retries
+    await this.retryService.handleDeliveryFailure(
+      delivery.id,
+      endpoint.id,
+      attemptNumber,
+      dispatchResult.responseStatus,
+      dispatchResult.responseBody || '',
+      dispatchResult.responseTime,
+      dispatchResult.errorMessage || '',
+      delivery.eventType,
+    );
+    this.metrics.recordHistogram(
+      'webhook_delivery_duration_seconds',
+      responseTimeSeconds,
+      { event_type: delivery.eventType },
+    );
 
-    // Retry on server errors, not client errors
-    return status >= 500;
-  }
-
-  /**
-   * Calculates next retry time with exponential backoff
-   */
-  private calculateNextRetry(attemptNumber: number): Date {
-    // Exponential backoff: 1s, 2s, 4s, 8s, 16s
-    const delayMs = this.retryBackoffMs * Math.pow(2, attemptNumber - 1);
-    return new Date(Date.now() + delayMs);
+    return DeliveryStatus.FAILED;
   }
 
   /**
@@ -298,10 +291,10 @@ export class WebhookDispatcherService {
         endpointId: endpoint.id,
         eventId: event.id,
         eventType: event.type,
-        payload: event,
+        payload: JSON.parse(JSON.stringify(event)),
         status: DeliveryStatus.PENDING,
         attempts: 0,
-        maxAttempts: this.maxRetries,
+        maxAttempts: this.retryService.getMaxRetries(),
       },
     });
   }
@@ -326,104 +319,5 @@ export class WebhookDispatcherService {
         responseTime,
       },
     });
-  }
-
-  /**
-   * Marks delivery as retrying
-   */
-  private async markRetrying(
-    deliveryId: string,
-    attempts: number,
-    nextRetryAt: Date,
-    responseStatus: number | undefined,
-    responseBody: string,
-    responseTime: number,
-    errorMessage: string,
-  ): Promise<void> {
-    await this.prisma.webhookDelivery.update({
-      where: { id: deliveryId },
-      data: {
-        status: DeliveryStatus.RETRYING,
-        attempts,
-        nextRetryAt,
-        lastAttemptAt: new Date(),
-        firstAttemptAt: attempts === 1 ? new Date() : undefined,
-        responseStatus,
-        responseBody: responseBody.substring(0, 1000),
-        responseTime,
-        errorMessage: errorMessage.substring(0, 500),
-      },
-    });
-  }
-
-  /**
-   * Marks delivery as failed
-   */
-  private async markFailed(
-    deliveryId: string,
-    attempts: number,
-    responseStatus: number | undefined,
-    responseBody: string,
-    responseTime: number,
-    errorMessage: string,
-  ): Promise<void> {
-    await this.prisma.webhookDelivery.update({
-      where: { id: deliveryId },
-      data: {
-        status: DeliveryStatus.FAILED,
-        attempts,
-        lastAttemptAt: new Date(),
-        responseStatus,
-        responseBody: responseBody.substring(0, 1000),
-        responseTime,
-        errorMessage: errorMessage.substring(0, 500),
-      },
-    });
-  }
-
-  /**
-   * Marks endpoint success
-   */
-  private async markEndpointSuccess(endpointId: string): Promise<void> {
-    await this.prisma.webhookEndpoint.update({
-      where: { id: endpointId },
-      data: {
-        consecutiveFailures: 0,
-        lastSuccessAt: new Date(),
-      },
-    });
-  }
-
-  /**
-   * Marks endpoint failure and disables if needed
-   */
-  private async markEndpointFailure(
-    endpointId: string,
-    reason: string,
-  ): Promise<void> {
-    const endpoint = await this.prisma.webhookEndpoint.findUnique({
-      where: { id: endpointId },
-    });
-
-    if (!endpoint) return;
-
-    const newFailureCount = endpoint.consecutiveFailures + 1;
-    const shouldDisable = newFailureCount >= this.maxConsecutiveFailures;
-
-    await this.prisma.webhookEndpoint.update({
-      where: { id: endpointId },
-      data: {
-        consecutiveFailures: newFailureCount,
-        lastFailureAt: new Date(),
-        lastFailureReason: reason.substring(0, 500),
-        status: shouldDisable ? EndpointStatus.FAILED : endpoint.status,
-      },
-    });
-
-    if (shouldDisable) {
-      this.logger.warn(
-        `Disabled endpoint ${endpointId} after ${newFailureCount} consecutive failures`,
-      );
-    }
   }
 }

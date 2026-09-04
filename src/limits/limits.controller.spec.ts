@@ -4,6 +4,7 @@ import { LimitsController } from './limits.controller';
 import { LimitsService } from './limits.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { LimitPeriod } from './dto/create-limit.dto';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 const mockLimit = {
   id: 'uuid-limit-1',
@@ -33,10 +34,12 @@ describe('LimitsController', () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [LimitsController],
       providers: [{ provide: LimitsService, useValue: limitsService }],
-    }).compile();
+    })
+      .overrideGuard(FeatureFlagGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<LimitsController>(LimitsController);
-    service = module.get(LimitsService);
   });
 
   it('should be defined', () => {
@@ -57,5 +60,37 @@ describe('LimitsController', () => {
   it('removeLimits should delegate to service', async () => {
     await controller.removeLimits(walletId);
     expect(limitsService.removeLimits).toHaveBeenCalledWith(walletId);
+  });
+
+  describe('swagger decorators', () => {
+    it('should have @ApiResponse decorators on all routes', () => {
+      const routes = ['setLimits', 'getLimits', 'removeLimits'];
+
+      routes.forEach((route) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          LimitsController.prototype,
+          route,
+        );
+        expect(descriptor).toBeDefined();
+
+        const metadata = Reflect.getMetadata('swagger/apiResponse', descriptor.value);
+        expect(metadata).toBeDefined();
+      });
+    });
+
+    it('should have @ApiOperation on all routes', () => {
+      const routes = ['setLimits', 'getLimits', 'removeLimits'];
+
+      routes.forEach((route) => {
+        const descriptor = Object.getOwnPropertyDescriptor(
+          LimitsController.prototype,
+          route,
+        );
+        expect(descriptor).toBeDefined();
+
+        const metadata = Reflect.getMetadata('swagger/apiOperation', descriptor.value);
+        expect(metadata).toBeDefined();
+      });
+    });
   });
 });

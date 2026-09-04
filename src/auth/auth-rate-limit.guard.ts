@@ -7,12 +7,16 @@ import {
   Logger,
 } from '@nestjs/common';
 import { AuthRateLimitService } from './auth-rate-limit.service';
+import { AuthMetricsService } from './auth-metrics.service';
 
 @Injectable()
 export class AuthRateLimitGuard implements CanActivate {
   private readonly logger = new Logger(AuthRateLimitGuard.name);
 
-  constructor(private readonly authRateLimitService: AuthRateLimitService) {}
+  constructor(
+    private readonly authRateLimitService: AuthRateLimitService,
+    private readonly authMetrics: AuthMetricsService,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const request = context.switchToHttp().getRequest();
@@ -36,6 +40,9 @@ export class AuthRateLimitGuard implements CanActivate {
       this.logger.warn(
         `Auth rate limit exceeded for IP ${ipAddress}: ${result.limit} requests per ${this.authRateLimitService.getConfig().windowMs}ms`,
       );
+
+      // Record the rate-limit hit in metrics
+      this.authMetrics.recordRateLimitHit();
 
       // Set Retry-After header
       if (result.retryAfterSeconds) {
@@ -70,9 +77,9 @@ export class AuthRateLimitGuard implements CanActivate {
 
     // Fall back to request connection address
     return (
-      request.connection.remoteAddress ||
-      request.socket.remoteAddress ||
-      request.connection.socket?.remoteAddress ||
+      request.connection?.remoteAddress ||
+      request.socket?.remoteAddress ||
+      request.connection?.socket?.remoteAddress ||
       'unknown'
     );
   }

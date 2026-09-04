@@ -48,7 +48,8 @@ describe('StrKeyHelper', () => {
 
   describe('encodeEd25519SecretSeed', () => {
     it('should encode a valid 32-byte secret seed buffer', () => {
-      const encoded = StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
+      const encoded =
+        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
 
       expect(encoded).toBeDefined();
       expect(typeof encoded).toBe('string');
@@ -71,8 +72,10 @@ describe('StrKeyHelper', () => {
     });
 
     it('should produce consistent encoding for same input', () => {
-      const encoded1 = StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
-      const encoded2 = StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
+      const encoded1 =
+        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
+      const encoded2 =
+        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
 
       expect(encoded1).toBe(encoded2);
     });
@@ -97,7 +100,9 @@ describe('StrKeyHelper', () => {
 
     it('should throw error for key not starting with G', () => {
       expect(() => {
-        StrKeyHelper.decodeEd25519PublicKey('SABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQR');
+        StrKeyHelper.decodeEd25519PublicKey(
+          'SABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQR',
+        );
       }).toThrow("Invalid public key format: expected key to start with 'G'");
     });
 
@@ -134,7 +139,9 @@ describe('StrKeyHelper', () => {
 
     it('should throw error for seed not starting with S', () => {
       expect(() => {
-        StrKeyHelper.decodeEd25519SecretSeed('GABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQR');
+        StrKeyHelper.decodeEd25519SecretSeed(
+          'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQR',
+        );
       }).toThrow("Invalid secret seed format: expected seed to start with 'S'");
     });
 
@@ -145,7 +152,8 @@ describe('StrKeyHelper', () => {
     });
 
     it('should round-trip encode/decode correctly', () => {
-      const encoded = StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
+      const encoded =
+        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
       const decoded = StrKeyHelper.decodeEd25519SecretSeed(encoded);
 
       expect(decoded).toEqual(testSecretSeedBuffer);
@@ -172,7 +180,9 @@ describe('StrKeyHelper', () => {
     it('should return false for non-string input', () => {
       expect(StrKeyHelper.isValidEd25519PublicKey(123 as any)).toBe(false);
       expect(StrKeyHelper.isValidEd25519PublicKey(null as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519PublicKey(undefined as any)).toBe(false);
+      expect(StrKeyHelper.isValidEd25519PublicKey(undefined as any)).toBe(
+        false,
+      );
     });
   });
 
@@ -196,7 +206,9 @@ describe('StrKeyHelper', () => {
     it('should return false for non-string input', () => {
       expect(StrKeyHelper.isValidEd25519SecretSeed([] as any)).toBe(false);
       expect(StrKeyHelper.isValidEd25519SecretSeed(null as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(undefined as any)).toBe(false);
+      expect(StrKeyHelper.isValidEd25519SecretSeed(undefined as any)).toBe(
+        false,
+      );
     });
   });
 
@@ -249,7 +261,7 @@ describe('StrKeyHelper', () => {
 
   describe('encodeSha256Hash', () => {
     it('should encode a 32-byte SHA256 hash', () => {
-      const hash = Buffer.alloc(32).fill(0xAB);
+      const hash = Buffer.alloc(32).fill(0xab);
       const encoded = StrKeyHelper.encodeSha256Hash(hash);
 
       expect(encoded).toBeDefined();
@@ -274,7 +286,7 @@ describe('StrKeyHelper', () => {
 
   describe('decodeSha256Hash', () => {
     it('should decode a valid SHA256 hash', () => {
-      const hash = Buffer.alloc(32).fill(0xAB);
+      const hash = Buffer.alloc(32).fill(0xab);
       const encoded = StrKeyHelper.encodeSha256Hash(hash);
       const decoded = StrKeyHelper.decodeSha256Hash(encoded);
 
@@ -321,7 +333,7 @@ describe('StrKeyHelper', () => {
     });
 
     it('should identify SHA256 hash', () => {
-      const hash = Buffer.alloc(32).fill(0xAB);
+      const hash = Buffer.alloc(32).fill(0xab);
       const encoded = StrKeyHelper.encodeSha256Hash(hash);
       const result = StrKeyHelper.getStrKeyType(encoded);
 

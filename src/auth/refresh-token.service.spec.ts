@@ -1,6 +1,6 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { RefreshTokenService } from './refresh-token.service';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { RefreshTokenStatus } from '../generated/prisma';
 
 describe('RefreshTokenService', () => {

@@ -9,16 +9,12 @@ import {
 import { Reflector } from '@nestjs/core';
 import { ApiKeyService } from './api-key.service';
 import { Request } from 'express';
+import { IS_PUBLIC } from '../auth/public.decorator';
 
 /**
  * Metadata key for marking routes as requiring API key auth
  */
 export const REQUIRE_API_KEY = 'requireApiKey';
-
-/**
- * Metadata key for marking routes as public (no auth required)
- */
-export const IS_PUBLIC = 'isPublic';
 
 /**
  * Guard that validates API key authentication

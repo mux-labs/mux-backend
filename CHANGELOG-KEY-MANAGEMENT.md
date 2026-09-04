@@ -4,6 +4,24 @@
 
 ### Added
 
+#### Master-key rotation & response hardening (#693, #694, #695, #696)
+- **`WALLET_ENCRYPTION_KEY` rotation job** — `WalletKeyReEncryptionService` +
+  internal endpoint `POST /v1/internal/key-management/re-encrypt-wallet-keys`
+  (`FeatureFlagGuard` + `InternalServiceGuard`). Reads a wallet's ciphertext
+  with the current key, falling back to `WALLET_ENCRYPTION_KEY_PREVIOUS`, and
+  re-encrypts under the current key. Idempotent, id-cursor paginated, emits a
+  structured summary log with the request id. `EncryptionService` gains
+  `hasPreviousKey()` and `reEncryptWithCurrentKey()`.
+- **`validateEnv()` rejects placeholder `WALLET_ENCRYPTION_KEY`** — the documented
+  placeholder strings now fail startup in `validateEnv()`, not only in
+  `EncryptionService`. New optional `WALLET_ENCRYPTION_KEY_PREVIOUS` is validated
+  (min length, not a placeholder, must differ from the current key).
+- **Global `ResponseSanitizerInterceptor`** — registered via `APP_INTERCEPTOR` so
+  `privateKey` / `encryptedSecret` are redacted from every response, not just the
+  orchestration controller.
+- **`loadTestMode` gated** — `GET /v1/wallets?loadTestMode=true` returns `403`
+  when `NODE_ENV=production`; synthetic data stays available for local testing.
+
 #### Key Management Consolidation
 - **Centralized KeyManagementService** for all cryptographic key operations
 - **Provider abstraction pattern** via `IKeyProvider` interface

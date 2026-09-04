@@ -2,14 +2,23 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { HttpStatus, HttpException } from '@nestjs/common';
 import { AuthRateLimitGuard } from './auth-rate-limit.guard';
 import { AuthRateLimitService } from './auth-rate-limit.service';
+import { AuthMetricsService } from './auth-metrics.service';
 
 describe('AuthRateLimitGuard', () => {
   let guard: AuthRateLimitGuard;
   let authRateLimitService: jest.Mocked<AuthRateLimitService>;
+  let authMetrics: jest.Mocked<AuthMetricsService>;
 
   const mockAuthRateLimitService = {
     checkRateLimit: jest.fn(),
     getConfig: jest.fn(),
+  };
+
+  const mockAuthMetrics = {
+    recordAttempt: jest.fn(),
+    recordRateLimitHit: jest.fn(),
+    getSnapshot: jest.fn(),
+    reset: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -20,11 +29,16 @@ describe('AuthRateLimitGuard', () => {
           provide: AuthRateLimitService,
           useValue: mockAuthRateLimitService,
         },
+        {
+          provide: AuthMetricsService,
+          useValue: mockAuthMetrics,
+        },
       ],
     }).compile();
 
     guard = module.get<AuthRateLimitGuard>(AuthRateLimitGuard);
     authRateLimitService = module.get(AuthRateLimitService);
+    authMetrics = module.get(AuthMetricsService);
 
     jest.clearAllMocks();
   });
@@ -187,6 +201,63 @@ describe('AuthRateLimitGuard', () => {
         expect(error).toBeInstanceOf(HttpException);
         expect(error.getStatus()).toBe(HttpStatus.TOO_MANY_REQUESTS);
       }
+    });
+
+    it('should call authMetrics.recordRateLimitHit() when rate limit is exceeded', async () => {
+      const mockRequest = {
+        headers: {},
+        connection: { remoteAddress: '10.0.0.1' },
+      };
+      const mockResponse = { setHeader: jest.fn() };
+      const mockExecutionContext = {
+        switchToHttp: jest.fn().mockReturnValue({
+          getRequest: jest.fn().mockReturnValue(mockRequest),
+          getResponse: jest.fn().mockReturnValue(mockResponse),
+        }),
+      } as any;
+
+      mockAuthRateLimitService.checkRateLimit.mockResolvedValue({
+        allowed: false,
+        remaining: 0,
+        resetTime: new Date(Date.now() + 30000),
+        limit: 10,
+        retryAfterSeconds: 30,
+      });
+      mockAuthRateLimitService.getConfig.mockReturnValue({
+        maxRequests: 10,
+        windowMs: 60000,
+      });
+
+      await expect(guard.canActivate(mockExecutionContext)).rejects.toThrow(
+        HttpException,
+      );
+
+      expect(mockAuthMetrics.recordRateLimitHit).toHaveBeenCalledTimes(1);
+    });
+
+    it('should NOT call authMetrics.recordRateLimitHit() when request is allowed', async () => {
+      const mockRequest = {
+        headers: {},
+        connection: { remoteAddress: '10.0.0.2' },
+      };
+      const mockResponse = { setHeader: jest.fn() };
+      const mockExecutionContext = {
+        switchToHttp: jest.fn().mockReturnValue({
+          getRequest: jest.fn().mockReturnValue(mockRequest),
+          getResponse: jest.fn().mockReturnValue(mockResponse),
+        }),
+      } as any;
+
+      mockAuthRateLimitService.checkRateLimit.mockResolvedValue({
+        allowed: true,
+        remaining: 5,
+        resetTime: new Date(),
+        limit: 10,
+      });
+
+      await guard.canActivate(mockExecutionContext);
+
+      expect(mockAuthMetrics.recordRateLimitHit).not.toHaveBeenCalled();
     });
   });
 });

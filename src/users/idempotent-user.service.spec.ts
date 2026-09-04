@@ -4,7 +4,7 @@ import {
   IdempotentUserService,
   FindOrCreateUserRequest,
 } from './idempotent-user.service';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 
 // Mock Prisma Client
 const mockPrisma = {
@@ -19,21 +19,21 @@ const mockPrisma = {
 
 describe('IdempotentUserService', () => {
   let service: IdempotentUserService;
-  let prismaClient: jest.Mocked<PrismaClient>;
+  let prismaClient: jest.Mocked<PrismaService>;
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IdempotentUserService,
         {
-          provide: PrismaClient,
+          provide: PrismaService,
           useValue: mockPrisma,
         },
       ],
     }).compile();
 
     service = module.get<IdempotentUserService>(IdempotentUserService);
-    prismaClient = module.get(PrismaClient);
+    prismaClient = module.get(PrismaService);
 
     // Reset all mocks
     jest.clearAllMocks();

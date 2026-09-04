@@ -15,6 +15,9 @@ export class Transaction {
   senderWalletId: string;
   receiverWalletId?: string | null;
 
+  /** Optional memo attached at creation (max 28 bytes, Stellar text memo limit) */
+  memo?: string | null;
+
   status: TransactionStatus;
 
   stellarHash?: string | null;

@@ -1,5 +1,8 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import axios from 'axios';
 import { HorizonSubmissionService } from './horizon-submission.service';
@@ -9,9 +12,13 @@ import { TransactionStatus } from './domain/transaction.model';
 jest.mock('axios');
 const mockedAxios = axios as jest.Mocked<typeof axios>;
 
-jest.mock('../generated/prisma/client', () => ({
-  PrismaClient: jest.fn().mockImplementation(() => ({})),
-}), { virtual: true });
+jest.mock(
+  '../generated/prisma/client',
+  () => ({
+    PrismaClient: jest.fn().mockImplementation(() => ({})),
+  }),
+  { virtual: true },
+);
 
 describe('HorizonSubmissionService', () => {
   let service: HorizonSubmissionService;
@@ -30,7 +37,9 @@ describe('HorizonSubmissionService', () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn().mockReturnValue('https://horizon-testnet.stellar.org'),
+            get: jest
+              .fn()
+              .mockReturnValue('https://horizon-testnet.stellar.org'),
           },
         },
         {

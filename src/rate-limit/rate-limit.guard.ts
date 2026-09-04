@@ -69,13 +69,21 @@ export class RateLimitGuard implements CanActivate {
       this.logger.warn(
         `Rate limit exceeded for API key ${apiKeyInfo.id} on ${endpoint}`,
       );
+
+      const retryAfterSeconds = Math.ceil(
+        (result.resetTime.getTime() - Date.now()) / 1000,
+      );
+
+      // Set Retry-After header for standards-compliant clients
+      if (retryAfterSeconds > 0) {
+        response.setHeader('Retry-After', retryAfterSeconds.toString());
+      }
+
       throw new HttpException(
         {
           statusCode: HttpStatus.TOO_MANY_REQUESTS,
           message: 'Rate limit exceeded. Please try again later.',
-          retryAfter: Math.ceil(
-            (result.resetTime.getTime() - Date.now()) / 1000,
-          ),
+          retryAfter: retryAfterSeconds,
         },
         HttpStatus.TOO_MANY_REQUESTS,
       );

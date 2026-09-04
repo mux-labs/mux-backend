@@ -1,4 +1,4 @@
-import { Injectable, Logger, TooManyRequestsException } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 
@@ -126,15 +126,19 @@ export class AuthRateLimitService {
       };
     } catch (error) {
       this.logger.error(
-        `Error checking auth rate limit for IP ${ipAddress}:`,
-        error,
+        `Error checking auth rate limit for IP ${ipAddress}: ${(error as Error)?.message ?? error}`,
       );
-      // On error, allow the request (fail open) but log the error
+      // Fail closed: when the DB is unavailable we cannot verify how many
+      // auth attempts this IP has already made, so we deny rather than allow
+      // unlimited authentication attempts. This prevents a DB outage from
+      // bypassing brute-force protection on POST /auth/authenticate.
+      const resetTime = new Date(now.getTime() + this.windowMs);
       return {
-        allowed: true,
-        remaining: this.maxRequests,
-        resetTime: new Date(now.getTime() + this.windowMs),
+        allowed: false,
+        remaining: 0,
+        resetTime,
         limit: this.maxRequests,
+        retryAfterSeconds: Math.ceil(this.windowMs / 1000),
       };
     }
   }

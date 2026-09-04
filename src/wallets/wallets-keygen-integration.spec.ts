@@ -6,20 +6,13 @@ import { KeyManagementService } from '../key-management/key-management.service';
 import { EncryptionService } from '../encryption/encryption.service';
 import { WalletNetwork } from './domain/wallet.model';
 import { KeyType } from '../key-management/domain/key-types';
-import { PrismaClient } from '../generated/prisma/client';
+import { PrismaService } from '../prisma/prisma.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
+import { KeyRotationAuditService } from '../key-management/key-rotation-audit.service';
+import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { PrismaClient } from '../generated/prisma/client';
 
-/**
- * Integration test to verify that WalletsService and WalletCreationOrchestrator
- * are properly using the consolidated KeyManagementService for key generation.
- */
-describe('Wallets KeyGen Integration', () => {
-  let walletsService: WalletsService;
-  let walletCreationOrchestrator: WalletCreationOrchestrator;
-  let keyManagementService: KeyManagementService;
-  let encryptionService: EncryptionService;
-
-  const mockPrisma = {
+const mockPrisma = {
     wallet: {
       findFirst: jest.fn(),
       findUnique: jest.fn(),
@@ -30,6 +23,20 @@ describe('Wallets KeyGen Integration', () => {
     },
     $transaction: jest.fn(),
   };
+
+jest.mock('../generated/prisma/client', () => ({
+  PrismaClient: jest.fn(() => mockPrisma),
+}));
+
+/**
+ * Integration test to verify that WalletsService and WalletCreationOrchestrator
+ * are properly using the consolidated KeyManagementService for key generation.
+ */
+describe('Wallets KeyGen Integration', () => {
+  let walletsService: WalletsService;
+  let walletCreationOrchestrator: WalletCreationOrchestrator;
+  let keyManagementService: KeyManagementService;
+  let encryptionService: EncryptionService;
 
   const mockIdempotentUserService = {
     findUserById: jest.fn(),
@@ -46,17 +53,34 @@ describe('Wallets KeyGen Integration', () => {
         {
           provide: ConfigService,
           useValue: {
-            get: jest.fn().mockReturnValue('test-encryption-key-32-chars!!'),
+            get: jest
+              .fn()
+              .mockReturnValue('test-encryption-key-32-characters-long!!'),
           },
         },
         {
-          provide: PrismaClient,
+          provide: PrismaService,
           useValue: mockPrisma,
         },
         {
           provide: IdempotentUserService,
           useValue: mockIdempotentUserService,
         },
+        {
+          provide: KeyRotationAuditService,
+          useValue: {
+            persistAuditLog: jest.fn().mockResolvedValue(undefined),
+            convertToPersistentFormat: jest.fn().mockReturnValue({}),
+          },
+        },
+        {
+          provide: IdempotencyService,
+          useValue: {
+            getCachedResponse: jest.fn().mockResolvedValue(null),
+            cacheResponse: jest.fn().mockResolvedValue(undefined),
+          },
+        },
+        { provide: PrismaClient, useValue: mockPrisma },
       ],
     }).compile();
 
@@ -64,13 +88,16 @@ describe('Wallets KeyGen Integration', () => {
     walletCreationOrchestrator = module.get<WalletCreationOrchestrator>(
       WalletCreationOrchestrator,
     );
-    keyManagementService = module.get<KeyManagementService>(
-      KeyManagementService,
-    );
+    keyManagementService =
+      module.get<KeyManagementService>(KeyManagementService);
     encryptionService = module.get<EncryptionService>(EncryptionService);
 
     // Setup common mocks
     jest.clearAllMocks();
+    mockPrisma.$transaction.mockImplementation(
+      async (cb: (tx: any) => Promise<any>) =>
+        cb({ wallet: mockPrisma.wallet }),
+    );
   });
 
   describe('WalletsService - KeyManagementService Integration', () => {
@@ -109,48 +136,63 @@ describe('Wallets KeyGen Integration', () => {
       expect(generateKeySpy).toHaveBeenCalledTimes(1);
     });
 
-    it('should use KeyManagementService during wallet key rotation', async () => {
-      const generateKeySpy = jest.spyOn(keyManagementService, 'generateKey');
+    it('should delegate wallet key rotation to KeyManagementService.rotateKey (#692)', async () => {
+      const rotateKeySpy = jest
+        .spyOn(keyManagementService, 'rotateKey')
+        .mockResolvedValue({
+          predecessorWalletId: 'wallet-123',
+          successorWalletId: 'wallet-456',
+          successorPublicKey: 'new-public-key',
+          successorKeyVersion: 1,
+        });
 
-      mockPrisma.wallet.findUnique.mockResolvedValue({
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'old-public-key',
-        encryptedSecret: 'old-encrypted-secret',
-        secretVersion: 1,
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      mockPrisma.wallet.findUnique.mockImplementation(
+        ({ where: { id } }: { where: { id: string } }) => {
+          if (id === 'wallet-123') {
+            return Promise.resolve({
+              id: 'wallet-123',
+              userId: 'user-123',
+              publicKey: 'old-public-key',
+              encryptedSecret: 'old-encrypted-secret',
+              secretVersion: 1,
+              network: WalletNetwork.TESTNET,
+              status: 'ROTATING',
+              encryptionVersion: 1,
+              statusReason: 'Key rotation initiated',
+              statusChangedAt: new Date(),
+              rotatedFromId: null,
+              successorId: 'wallet-456',
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          }
+          if (id === 'wallet-456') {
+            return Promise.resolve({
+              id: 'wallet-456',
+              userId: 'user-123',
+              publicKey: 'new-public-key',
+              encryptedSecret: 'new-encrypted-secret',
+              secretVersion: 2,
+              network: WalletNetwork.TESTNET,
+              status: 'ACTIVE',
+              encryptionVersion: 1,
+              statusReason: null,
+              statusChangedAt: new Date(),
+              rotatedFromId: 'wallet-123',
+              successorId: null,
+              createdAt: new Date(),
+              updatedAt: new Date(),
+            });
+          }
+          return Promise.resolve(null);
+        },
+      );
 
-      mockPrisma.wallet.update.mockResolvedValue({
-        id: 'wallet-123',
-        userId: 'user-123',
-        publicKey: 'new-public-key',
-        encryptedSecret: 'new-encrypted-secret',
-        secretVersion: 2,
-        network: WalletNetwork.TESTNET,
-        status: 'ACTIVE',
-        encryptionVersion: 1,
-        statusReason: null,
-        statusChangedAt: new Date(),
-        rotatedFromId: null,
-        createdAt: new Date(),
-        updatedAt: new Date(),
-      });
+      const result = await walletsService.rotateWalletKey('wallet-123');
 
-      await walletsService.rotateWalletKey('wallet-123');
-
-      // Verify KeyManagementService.generateKey was called
-      expect(generateKeySpy).toHaveBeenCalledWith({
-        keyType: KeyType.STELLAR_ED25519,
-        metadata: { walletId: 'wallet-123', operation: 'rotation' },
-      });
+      expect(rotateKeySpy).toHaveBeenCalledWith('wallet-123');
+      expect(result.successor.id).toBe('wallet-456');
+      expect(result.predecessor.id).toBe('wallet-123');
     });
   });
 
@@ -312,7 +354,7 @@ describe('Wallets KeyGen Integration', () => {
           userId: 'user-error',
           network: WalletNetwork.TESTNET,
         }),
-      ).rejects.toThrow('Wallet creation failed');
+      ).rejects.toThrow('Key generation failed');
 
       // Verify database create was not called due to early failure
       expect(mockPrisma.wallet.create).not.toHaveBeenCalled();

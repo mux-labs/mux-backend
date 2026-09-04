@@ -278,6 +278,31 @@ async rotateAllKeys(reason: string): Promise<RotationSummary> {
 }
 ```
 
+## Rotation Consolidation (issue #692)
+
+Key **rotation** previously had two divergent implementations:
+
+| Implementation | Model |
+| --- | --- |
+| `WalletsService.rotateWalletKey` | Overwrote `publicKey` / `encryptedSecret` on the existing wallet row in place. |
+| `KeyManagementService.rotateKey` | Successor model — created a new wallet, set `rotatedFromId`, and transitioned the predecessor to `ROTATING` with `successorId`. |
+
+These are now unified on the **successor model**:
+
+- `WalletsService.rotateWalletKey` delegates to `KeyManagementService.rotateKey`
+  and returns `{ predecessor, successor }` (`WalletKeyRotationResult`). It no
+  longer performs an in-place update and no longer returns a decrypted private
+  key.
+- There is a single code path, a single audit event (`ROTATE`), and a single
+  status machine (`ACTIVE → ROTATING`, successor `ACTIVE`).
+
+### Exposure (issue #691)
+
+Rotation is **internal-only**. It is reachable through
+`POST /v1/internal/key-management/rotate` (guarded by `FeatureFlagGuard` +
+`InternalServiceGuard`) and is intentionally absent from the public
+`/v1/wallets` API — API-key holders cannot self-service a rotation.
+
 ## References
 
 - `src/key-management/key-management.service.ts` - Core service

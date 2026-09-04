@@ -336,18 +336,44 @@ describe('HttpExceptionFilter', () => {
       expect(jsonCall.requestId).toBe('req-123-456');
     });
 
-    it('should not include request ID if not present', () => {
+    it('should generate a requestId when X-Request-ID header is absent', () => {
+      // No header set — middleware-generated or fallback UUID should appear.
       const exception = new NotFoundException();
 
       filter.catch(exception, mockArgumentsHost);
 
       const jsonCall = mockResponse.json.mock.calls[0][0];
-      expect(jsonCall.requestId).toBeUndefined();
+      // requestId must always be present, even when the client omits the header.
+      expect(jsonCall.requestId).toBeDefined();
+      expect(typeof jsonCall.requestId).toBe('string');
+      expect(jsonCall.requestId.length).toBeGreaterThan(0);
+    });
+
+    it('should use req.requestId (middleware-generated) when header is absent', () => {
+      // Simulate the middleware having already attached a UUID to the request object.
+      mockRequest.requestId = 'middleware-generated-uuid-789';
+      const exception = new NotFoundException();
+
+      filter.catch(exception, mockArgumentsHost);
+
+      const jsonCall = mockResponse.json.mock.calls[0][0];
+      expect(jsonCall.requestId).toBe('middleware-generated-uuid-789');
+    });
+
+    it('should prefer X-Request-ID header over req.requestId when both are present', () => {
+      mockRequest.headers['x-request-id'] = 'client-supplied-id';
+      mockRequest.requestId = 'middleware-id';
+      const exception = new NotFoundException();
+
+      filter.catch(exception, mockArgumentsHost);
+
+      const jsonCall = mockResponse.json.mock.calls[0][0];
+      expect(jsonCall.requestId).toBe('client-supplied-id');
     });
   });
 
   describe('Error response structure', () => {
-    it('should always include required fields', () => {
+    it('should always include required fields including requestId', () => {
       const exception = new NotFoundException('Test error');
 
       filter.catch(exception, mockArgumentsHost);
@@ -359,6 +385,10 @@ describe('HttpExceptionFilter', () => {
       expect(jsonCall).toHaveProperty('method');
       expect(jsonCall).toHaveProperty('message');
       expect(jsonCall).toHaveProperty('error');
+      // requestId is always present — generated when client omits X-Request-ID.
+      expect(jsonCall).toHaveProperty('requestId');
+      expect(typeof jsonCall.requestId).toBe('string');
+      expect(jsonCall.requestId.length).toBeGreaterThan(0);
     });
 
     it('should include details field when provided', () => {
@@ -387,6 +417,27 @@ describe('HttpExceptionFilter', () => {
 
       const jsonCall = mockResponse.json.mock.calls[0][0];
       expect(jsonCall.details).toBeUndefined();
+    });
+
+    it('should include errorCode field when provided on the exception body', () => {
+      const exception = new HttpException(
+        { errorCode: 'LIMIT_PER_TX_EXCEEDED', message: 'Per-transaction limit exceeded' },
+        HttpStatus.UNPROCESSABLE_ENTITY,
+      );
+
+      filter.catch(exception, mockArgumentsHost);
+
+      const jsonCall = mockResponse.json.mock.calls[0][0];
+      expect(jsonCall.errorCode).toBe('LIMIT_PER_TX_EXCEEDED');
+    });
+
+    it('should not include errorCode field when not provided', () => {
+      const exception = new NotFoundException('Not found');
+
+      filter.catch(exception, mockArgumentsHost);
+
+      const jsonCall = mockResponse.json.mock.calls[0][0];
+      expect(jsonCall.errorCode).toBeUndefined();
     });
   });
 

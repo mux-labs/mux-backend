@@ -6,12 +6,15 @@ import {
   Patch,
   Param,
   Delete,
+  UseGuards,
 } from '@nestjs/common';
 import { DevelopersService } from './developers.service';
 import { CreateDeveloperDto } from './dto/create-developer.dto';
 import { UpdateDeveloperDto } from './dto/update-developer.dto';
+import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
 
 @Controller('developers')
+@UseGuards(TenantScopeGuard)
 export class DevelopersController {
   constructor(private readonly developersService: DevelopersService) {}
 

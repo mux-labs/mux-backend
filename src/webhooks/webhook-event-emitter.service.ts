@@ -57,6 +57,18 @@ export class WebhookEventEmitterService {
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 
+  /** Emits a wallet.rotated event after new key material is persisted. */
+  async emitWalletRotated(data: {
+    walletId: string;
+    userId: string;
+    publicKey: string;
+    network: string;
+    secretVersion: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.WALLET_ROTATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
   /**
    * Emits a transaction.created event
    */
@@ -256,6 +268,90 @@ export class WebhookEventEmitterService {
     changes: Record<string, any>;
   }): Promise<void> {
     const event = this.createEvent(WebhookEventType.USER_UPDATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits an auth.user_authenticated event for a returning user login
+   */
+  async emitUserAuthenticated(data: {
+    userId: string;
+    authId: string;
+    authProvider: string;
+    isNewWallet: boolean;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.AUTH_USER_AUTHENTICATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits an auth.new_user_registered event for first-time authentication
+   */
+  async emitNewUserRegistered(data: {
+    userId: string;
+    authId: string;
+    authProvider: string;
+    walletId: string;
+    walletNetwork: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.AUTH_NEW_USER_REGISTERED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits an auth.authentication_failed event
+   */
+  async emitAuthenticationFailed(data: {
+    authId: string;
+    reason: string;
+    errorCode?: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.AUTH_AUTHENTICATION_FAILED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.created event
+   */
+  async emitPaymentCreated(data: {
+    paymentId: number;
+    amount: number;
+    currency: string;
+    assetCode?: string | null;
+    userId: number;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_CREATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.completed event
+   */
+  async emitPaymentCompleted(data: {
+    paymentId: number;
+    amount: number;
+    currency: string;
+    assetCode?: string | null;
+    userId: number;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_COMPLETED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.failed event
+   */
+  async emitPaymentFailed(data: {
+    paymentId: number;
+    amount: number;
+    currency: string;
+    assetCode?: string | null;
+    userId: number;
+    status: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_FAILED, data);
     await this.webhookDispatcher.dispatchEvent({ event });
   }
 

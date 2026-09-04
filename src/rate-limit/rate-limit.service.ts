@@ -60,10 +60,14 @@ export class RateLimitService {
     projectRateLimitRpm?: number,
     isSensitive: boolean = false,
   ): Promise<RateLimitResult> {
-    const windowMs = isSensitive ? this.sensitiveConfig.windowMs : this.defaultConfig.windowMs;
+    const windowMs = isSensitive
+      ? this.sensitiveConfig.windowMs
+      : this.defaultConfig.windowMs;
     const maxRequests =
       projectRateLimitRpm ??
-      (isSensitive ? this.sensitiveConfig.maxRequests : this.defaultConfig.maxRequests);
+      (isSensitive
+        ? this.sensitiveConfig.maxRequests
+        : this.defaultConfig.maxRequests);
     const now = new Date();
 
     // Calculate window start by rounding down to the nearest window boundary
@@ -145,13 +149,15 @@ export class RateLimitService {
       };
     } catch (error) {
       this.logger.error(
-        `Error checking rate limit for API key ${apiKeyId} on ${endpoint}:`,
-        error,
+        `Error checking rate limit for API key ${apiKeyId.substring(0, 8)}... on ${endpoint}: ${(error as Error)?.message ?? error}`,
       );
-      // On error, allow the request (fail open) but log the error
+      // Fail closed: when the DB is unavailable we cannot verify how many
+      // requests this key has already made, so we deny rather than allow
+      // unlimited traffic. This prevents a DB outage from bypassing rate
+      // limits on the API.
       return {
-        allowed: true,
-        remaining: maxRequests,
+        allowed: false,
+        remaining: 0,
         resetTime: new Date(now.getTime() + windowMs),
         limit: maxRequests,
       };

@@ -1,4 +1,4 @@
-import { IsEnum, IsString, MinLength } from 'class-validator';
+import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
 import { WalletNetwork } from '../domain/wallet.model';
 
 export class CreateWalletDto {
@@ -8,4 +8,9 @@ export class CreateWalletDto {
 
   @IsEnum(WalletNetwork)
   network: WalletNetwork;
+
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  idempotencyKey?: string;
 }

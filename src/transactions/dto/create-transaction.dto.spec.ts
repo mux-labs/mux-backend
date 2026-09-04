@@ -4,7 +4,8 @@ import { plainToInstance } from 'class-transformer';
 import { CreateTransactionDto } from './create-transaction.dto';
 import { AssetType } from '../../balance-indexer/domain/balance.model';
 
-const VALID_PUBLIC_KEY = 'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN';
+const VALID_PUBLIC_KEY =
+  'GAAZI4TCR3TY5OJHCTJC2A4QSY6CJWJH5IAJTGKIN2ER7LBNVKOCCWN';
 const VALID_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 const VALID_UUID = '550e8400-e29b-41d4-a716-446655440000';
 
@@ -28,7 +29,11 @@ describe('CreateTransactionDto', () => {
 
   it('passes for a valid credit asset transaction', async () => {
     const dto = build({
-      asset: { type: AssetType.CREDIT_ALPHANUM4, code: 'USDC', issuer: VALID_ISSUER },
+      asset: {
+        type: AssetType.CREDIT_ALPHANUM4,
+        code: 'USDC',
+        issuer: VALID_ISSUER,
+      },
       receiverWalletId: VALID_UUID,
     });
     expect(await errors(dto)).toHaveLength(0);
@@ -63,38 +68,54 @@ describe('CreateTransactionDto', () => {
 
   // credit asset — code required
   it('fails when code is missing for a credit asset', async () => {
-    const dto = build({ asset: { type: AssetType.CREDIT_ALPHANUM4, issuer: VALID_ISSUER } });
+    const dto = build({
+      asset: { type: AssetType.CREDIT_ALPHANUM4, issuer: VALID_ISSUER },
+    });
     expect(await errors(dto)).not.toHaveLength(0);
   });
 
   it('fails when code exceeds 12 characters', async () => {
     const dto = build({
-      asset: { type: AssetType.CREDIT_ALPHANUM12, code: 'TOOLONGASSETCODE', issuer: VALID_ISSUER },
+      asset: {
+        type: AssetType.CREDIT_ALPHANUM12,
+        code: 'TOOLONGASSETCODE',
+        issuer: VALID_ISSUER,
+      },
     });
     expect(await errors(dto)).not.toHaveLength(0);
   });
 
   // issuer
   it('fails when issuer is missing for a credit asset', async () => {
-    const dto = build({ asset: { type: AssetType.CREDIT_ALPHANUM4, code: 'USDC' } });
+    const dto = build({
+      asset: { type: AssetType.CREDIT_ALPHANUM4, code: 'USDC' },
+    });
     expect(await errors(dto)).not.toHaveLength(0);
   });
 
   it('fails for an invalid Stellar public key as issuer', async () => {
     const dto = build({
-      asset: { type: AssetType.CREDIT_ALPHANUM4, code: 'USDC', issuer: 'not-a-key' },
+      asset: {
+        type: AssetType.CREDIT_ALPHANUM4,
+        code: 'USDC',
+        issuer: 'not-a-key',
+      },
     });
     expect(await errors(dto)).not.toHaveLength(0);
   });
 
   // senderWalletId
   it('fails for a non-UUID senderWalletId', async () => {
-    expect(await errors(build({ senderWalletId: 'not-a-uuid' }))).not.toHaveLength(0);
+    expect(
+      await errors(build({ senderWalletId: 'not-a-uuid' })),
+    ).not.toHaveLength(0);
   });
 
   // receiverWalletId
   it('fails for a non-UUID receiverWalletId', async () => {
-    expect(await errors(build({ receiverWalletId: 'bad-id' }))).not.toHaveLength(0);
+    expect(
+      await errors(build({ receiverWalletId: 'bad-id' })),
+    ).not.toHaveLength(0);
   });
 
   // memo

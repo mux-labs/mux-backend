@@ -5,7 +5,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
+import { WalletsService } from '../wallets/wallets.service';
 import {
   RecoveryStatus,
   canTransitionRecoveryStatus,
@@ -28,7 +29,10 @@ export interface AdminRejectionRequest {
 export class AdminRecoveryService {
   private readonly logger = new Logger(AdminRecoveryService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly walletsService: WalletsService,
+  ) {}
 
   async approveRecovery(request: AdminApprovalRequest) {
     this.logger.log(
@@ -58,16 +62,22 @@ export class AdminRecoveryService {
       );
     }
 
-    // Update recovery status to APPROVED
+    // Rotate custody material before completing the approval. If rotation fails,
+    // the request remains IN_REVIEW and can be retried safely.
+    const rotation = await this.walletsService.rotateWalletKey(recovery.walletId);
+
     const updated = await this.prisma.recoveryRequest.update({
       where: { id: request.recoveryId },
       data: {
-        status: RecoveryStatus.APPROVED,
+        status: RecoveryStatus.COMPLETED,
         metadata: {
           ...recovery.metadata,
           approvedBy: request.adminId,
           approvedAt: new Date().toISOString(),
           approvalNotes: request.approvalNotes,
+          recoveryAction: 'KEY_ROTATED',
+          successorPublicKey: rotation.wallet.publicKey,
+          secretVersion: rotation.wallet.secretVersion,
         },
       },
     });

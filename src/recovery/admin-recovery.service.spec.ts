@@ -4,12 +4,14 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { AdminRecoveryService } from './admin-recovery.service';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { RecoveryStatus } from './domain/recovery.model';
+import { WalletsService } from '../wallets/wallets.service';
 
 describe('AdminRecoveryService', () => {
   let service: AdminRecoveryService;
   let prismaMock: any;
+  let walletsMock: any;
 
   beforeEach(async () => {
     prismaMock = {
@@ -19,11 +21,15 @@ describe('AdminRecoveryService', () => {
         update: jest.fn(),
       },
     };
+    walletsMock = { rotateWalletKey: jest.fn().mockResolvedValue({
+      wallet: { publicKey: 'GROTATED', secretVersion: 2 },
+    }) };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         AdminRecoveryService,
         { provide: PrismaService, useValue: prismaMock },
+        { provide: WalletsService, useValue: walletsMock },
       ],
     }).compile();
 
@@ -61,8 +67,9 @@ describe('AdminRecoveryService', () => {
         approvalNotes: 'Looks good',
       });
 
-      expect(result.status).toBe(RecoveryStatus.APPROVED);
+      expect(result.status).toBe(RecoveryStatus.COMPLETED);
       expect(result.approvedBy).toBe(adminId);
+      expect(walletsMock.rotateWalletKey).toHaveBeenCalledWith('wallet-1');
       expect(prismaMock.recoveryRequest.update).toHaveBeenCalled();
     });
 

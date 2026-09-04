@@ -5,12 +5,16 @@ import {
   AuthenticationRequest,
   AuthenticationResult,
 } from './auth-orchestrator.service';
+import { RefreshTokenService } from './refresh-token.service';
+import { AuthRateLimitGuard } from './auth-rate-limit.guard';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 import { Reflector } from '@nestjs/core';
 import { IS_PUBLIC } from './public.decorator';
 
 describe('AuthOrchestratorController', () => {
   let controller: AuthOrchestratorController;
   let authOrchestrator: AuthOrchestrator;
+  let refreshTokenService: RefreshTokenService;
   let reflector: Reflector;
 
   const mockAuthenticationResult: AuthenticationResult = {
@@ -48,19 +52,36 @@ describe('AuthOrchestratorController', () => {
             validateAuthentication: jest.fn(),
           },
         },
+        {
+          provide: RefreshTokenService,
+          useValue: {
+            createRefreshToken: jest.fn(),
+          },
+        },
         Reflector,
       ],
-    }).compile();
+    })
+      .overrideGuard(AuthRateLimitGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(FeatureFlagGuard)
+      .useValue({ canActivate: () => true })
+      .compile();
 
     controller = module.get<AuthOrchestratorController>(
       AuthOrchestratorController,
     );
     authOrchestrator = module.get<AuthOrchestrator>(AuthOrchestrator);
+    refreshTokenService = module.get<RefreshTokenService>(RefreshTokenService);
     reflector = module.get<Reflector>(Reflector);
   });
 
   it('should be defined', () => {
     expect(controller).toBeDefined();
+  });
+
+  const mockResponse = () => ({
+    json: jest.fn(),
+    setHeader: jest.fn(),
   });
 
   describe('authenticate', () => {
@@ -76,26 +97,80 @@ describe('AuthOrchestratorController', () => {
       jest
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(mockAuthenticationResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockResolvedValue({ id: 'token-123' } as any);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await controller.authenticate(authRequest, undefined, mockReq, response as any);
 
-      expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith(
-        authRequest,
+      expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith({
+        ...authRequest,
+        idempotencyKey: undefined,
+        ipAddress: '127.0.0.1',
+        userAgent: 'test',
+      });
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: mockAuthenticationResult.user,
+          wallet: mockAuthenticationResult.wallet,
+          refreshToken: expect.any(String),
+        }),
       );
-      expect(result).toEqual(mockAuthenticationResult);
     });
 
-    it('should return authentication result with user and wallet', async () => {
+    it('should return authentication result with user, wallet, and refresh token', async () => {
       jest
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(mockAuthenticationResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockResolvedValue({ id: 'token-123' } as any);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await controller.authenticate(authRequest, undefined, mockReq, response as any);
 
-      expect(result).toHaveProperty('user');
-      expect(result).toHaveProperty('wallet');
-      expect(result).toHaveProperty('isNewUser');
-      expect(result).toHaveProperty('isNewWallet');
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          user: expect.any(Object),
+          wallet: expect.any(Object),
+          refreshToken: expect.any(String),
+          isNewUser: expect.any(Boolean),
+          isNewWallet: expect.any(Boolean),
+        }),
+      );
+    });
+
+    it('should issue refresh token with correct expiration', async () => {
+      jest
+        .spyOn(authOrchestrator, 'handleAuthentication')
+        .mockResolvedValue(mockAuthenticationResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockResolvedValue({ id: 'token-123' } as any);
+
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await controller.authenticate(authRequest, undefined, mockReq, response as any);
+
+      expect(refreshTokenService.createRefreshToken).toHaveBeenCalledWith(
+        expect.objectContaining({
+          userId: 'user-123',
+          tokenHash: expect.any(String),
+          expiresAt: expect.any(Date),
+        }),
+      );
+
+      // Verify expiration is approximately 7 days in the future
+      const callArgs = (refreshTokenService.createRefreshToken as jest.Mock)
+        .mock.calls[0][0];
+      const expirationTime =
+        callArgs.expiresAt.getTime() - new Date().getTime();
+      const sevenDaysInMs = 7 * 24 * 60 * 60 * 1000;
+      expect(expirationTime).toBeGreaterThan(sevenDaysInMs - 1000);
+      expect(expirationTime).toBeLessThan(sevenDaysInMs + 1000);
     });
 
     it('should be marked as public endpoint', () => {
@@ -118,11 +193,17 @@ describe('AuthOrchestratorController', () => {
       jest
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(newUserResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockResolvedValue({ id: 'token-123' } as any);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await controller.authenticate(authRequest, undefined, mockReq, response as any);
 
-      expect(result.isNewUser).toBe(true);
-      expect(result.isNewWallet).toBe(true);
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({ isNewUser: true, isNewWallet: true }),
+      );
     });
 
     it('should handle returning user authentication', async () => {
@@ -135,11 +216,17 @@ describe('AuthOrchestratorController', () => {
       jest
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(returningUserResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockResolvedValue({ id: 'token-123' } as any);
 
-      const result = await controller.authenticate(authRequest);
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await controller.authenticate(authRequest, undefined, mockReq, response as any);
 
-      expect(result.isNewUser).toBe(false);
-      expect(result.isNewWallet).toBe(false);
+      expect(response.json).toHaveBeenCalledWith(
+        expect.objectContaining({ isNewUser: false, isNewWallet: false }),
+      );
     });
 
     it('should handle authentication with minimal request data', async () => {
@@ -152,13 +239,21 @@ describe('AuthOrchestratorController', () => {
       jest
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockResolvedValue(mockAuthenticationResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockResolvedValue({ id: 'token-123' } as any);
 
-      const result = await controller.authenticate(minimalRequest);
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await controller.authenticate(minimalRequest, undefined, mockReq, response as any);
 
       expect(authOrchestrator.handleAuthentication).toHaveBeenCalledWith(
-        minimalRequest,
+        expect.objectContaining({
+          ...minimalRequest,
+          idempotencyKey: undefined,
+        }),
       );
-      expect(result).toBeDefined();
+      expect(response.json).toHaveBeenCalled();
     });
 
     it('should propagate errors from authOrchestrator', async () => {
@@ -167,9 +262,29 @@ describe('AuthOrchestratorController', () => {
         .spyOn(authOrchestrator, 'handleAuthentication')
         .mockRejectedValue(error);
 
-      await expect(controller.authenticate(authRequest)).rejects.toThrow(
-        'Authentication failed',
-      );
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await expect(
+        controller.authenticate(authRequest, undefined, mockReq, response as any),
+      ).rejects.toThrow('Authentication failed');
+    });
+
+    it('should fail if refresh token issuance fails (fail-closed)', async () => {
+      jest
+        .spyOn(authOrchestrator, 'handleAuthentication')
+        .mockResolvedValue(mockAuthenticationResult);
+      jest
+        .spyOn(refreshTokenService, 'createRefreshToken')
+        .mockRejectedValue(new Error('Token issuance failed'));
+
+      const response = mockResponse();
+      const mockReq = { ip: '127.0.0.1', headers: { 'user-agent': 'test' } } as any;
+      await expect(
+        controller.authenticate(authRequest, undefined, mockReq, response as any),
+      ).rejects.toThrow('Token issuance failed');
+
+      // Verify the response was NOT sent
+      expect(response.json).not.toHaveBeenCalled();
     });
   });
 

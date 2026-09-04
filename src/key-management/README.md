@@ -150,6 +150,53 @@ async validateWalletKey(walletId: string) {
 
 ## Security Features
 
+### Internal-only HTTP access (issue #690)
+
+`KeyManagementController` (`/v1/internal/key-management/*`) is protected by **two**
+independent guards:
+
+| Guard | Purpose | Failure |
+| --- | --- | --- |
+| `FeatureFlagGuard` (`key_management_api`) | Master on/off switch (`FEATURE_KEY_MANAGEMENT_API=true`) | `403` when the flag is off |
+| `InternalServiceGuard` | Authorises the caller as an internal service | `503` when `KEY_MANAGEMENT_INTERNAL_API_KEY` is unset; `401` when the `x-internal-api-key` header is missing or wrong |
+
+The secret comparison is constant-time and the guard fails **closed** — there is
+no default credential and no implicit allow path. These application-layer checks
+sit behind, not instead of, network/service-mesh restrictions.
+
+```bash
+curl -X POST https://internal.mux/v1/internal/key-management/validate \
+  -H "x-internal-api-key: $KEY_MANAGEMENT_INTERNAL_API_KEY" \
+  -H 'content-type: application/json' \
+  -d '{ "publicKey": "G...", "encryptedKeyMaterial": "...", "keyType": "STELLAR_ED25519" }'
+```
+
+### Key-validation cache backend (issue #689)
+
+`KeyValidationCacheService` short-circuits repeated validations of the same
+keypair. Its backend is chosen by `KEY_VALIDATION_CACHE_MODE`:
+
+| Mode | Behaviour |
+| --- | --- |
+| `memory` | In-process `Map`. Per-replica, lost on restart. Default outside production. |
+| `disabled` | No cache — every validation is recomputed (fail-closed; a rotated/revoked key can never be masked). |
+
+In `NODE_ENV=production` the variable **must** be set explicitly; the service
+throws on construction otherwise, so a silent in-process stub can never run in
+production. A shared Redis-backed store plugs in behind the same switch once the
+infrastructure exists.
+
+### Wallet key rotation (issues #691, #692)
+
+Rotation uses a single implementation — the **successor model**
+(`KeyManagementService.rotateKey`): a new wallet is created with fresh key
+material and the predecessor is transitioned to `ROTATING` with its
+`successorId` set. `WalletsService.rotateWalletKey` now delegates here instead of
+overwriting keys in place, and never returns private-key material. Rotation is
+internal-only (`POST /v1/internal/key-management/rotate`) and is not exposed on
+the public `/v1/wallets` API. See
+[docs/key-management-consolidation.md](../../docs/key-management-consolidation.md).
+
 ### Audit Logging
 
 All operations are automatically logged:

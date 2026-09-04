@@ -1,0 +1,15 @@
+# Redocly OpenAPI linting configuration
+# Docs: https://redocly.com/docs/cli/configuration/
+apis:
+  main:
+    root: openapi.json
+
+rules:
+  # Enforce all operations have summaries
+  operation-summary: error
+  # Ensure every path has at least one tag
+  operation-operationId: warn
+  # No empty descriptions
+  no-empty-enum-description: warn
+  # Require info.description
+  info-description: warn

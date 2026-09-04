@@ -105,11 +105,13 @@ describe('ApiKeyGuard', () => {
     });
 
     const req: any = {
-      headers: { authorization: 'ApiKey mux_test_abc' },
+      headers: {
+        authorization: 'ApiKey mux_test_abc',
+        'user-agent': 'jest',
+      },
       path: '/wallets/protected',
       method: 'GET',
       ip: '127.0.0.1',
-      headers: { 'user-agent': 'jest' },
     };
 
     const context: any = {

@@ -1,6 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
+import { SafeLogger } from '../common/safe-logger';
 
 export interface EncryptionResult {
   encryptedData: string;
@@ -10,21 +11,32 @@ export interface EncryptionResult {
 
 export class DecryptionError extends Error {
   code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA';
-  constructor(message: string, code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA') {
+  constructor(
+    message: string,
+    code: 'DECRYPTION_FAILED' | 'INVALID_KEY' | 'INVALID_DATA',
+  ) {
     super(message);
     this.name = 'DecryptionError';
     this.code = code;
   }
 }
 
+export type DecryptionErrorCode = DecryptionError['code'];
+
 @Injectable()
 export class EncryptionService {
-  private readonly logger = new Logger(EncryptionService.name);
+  private readonly logger = new SafeLogger(EncryptionService.name);
   private readonly algorithm = 'aes-256-gcm';
   private readonly keyLength = 32; // 256 bits
   private readonly ivLength = 16; // 128 bits
   private readonly tagLength = 16; // 128 bits
   private encryptionKey: Buffer;
+  /**
+   * Optional predecessor key, derived from `WALLET_ENCRYPTION_KEY_PREVIOUS`.
+   * Only set while a master-key rotation is in flight so the re-encryption job
+   * (#693) can read ciphertext written under the old key. Never used to encrypt.
+   */
+  private previousEncryptionKey: Buffer | null = null;
 
   constructor(private configService: ConfigService) {
     const key = this.configService.get<string>('WALLET_ENCRYPTION_KEY');
@@ -48,7 +60,32 @@ export class EncryptionService {
     // Ensure key is exactly 32 bytes (256 bits)
     this.encryptionKey = crypto.createHash('sha256').update(key).digest();
 
+    const previousKey = this.configService.get<string>(
+      'WALLET_ENCRYPTION_KEY_PREVIOUS',
+    );
+    if (previousKey && previousKey.trim() !== '') {
+      if (previousKey.trim().length < 32) {
+        throw new Error(
+          'WALLET_ENCRYPTION_KEY_PREVIOUS must be at least 32 characters long',
+        );
+      }
+      this.previousEncryptionKey = crypto
+        .createHash('sha256')
+        .update(previousKey)
+        .digest();
+      this.logger.log(
+        'Encryption service loaded a previous key for re-encryption',
+      );
+    }
+
     this.logger.log('Encryption service initialized with secure key');
+  }
+
+  /**
+   * Whether a predecessor key (`WALLET_ENCRYPTION_KEY_PREVIOUS`) is configured.
+   */
+  hasPreviousKey(): boolean {
+    return this.previousEncryptionKey !== null;
   }
 
   /**
@@ -91,12 +128,19 @@ export class EncryptionService {
    * @throws DecryptionError if decryption fails
    */
   decrypt(encryptionResult: EncryptionResult): string {
+    return this.decryptWithKey(encryptionResult, this.encryptionKey);
+  }
+
+  private decryptWithKey(
+    encryptionResult: EncryptionResult,
+    key: Buffer,
+  ): string {
     try {
       const { encryptedData, iv, tag } = encryptionResult;
 
       const decipher = crypto.createDecipheriv(
         this.algorithm,
-        this.encryptionKey,
+        key,
         Buffer.from(iv, 'hex'),
       );
       decipher.setAAD(Buffer.from('wallet-secret', 'utf8'));
@@ -171,6 +215,38 @@ export class EncryptionService {
   deserializeAndDecrypt(storedData: string): string {
     const encrypted = this.deserializeFromStorage(storedData);
     return this.decrypt(encrypted);
+  }
+
+  /**
+   * Re-encrypts stored ciphertext under the CURRENT `WALLET_ENCRYPTION_KEY`
+   * (#693, master-key rotation).
+   *
+   * The current key is tried first; if it cannot decrypt and a previous key
+   * (`WALLET_ENCRYPTION_KEY_PREVIOUS`) is configured, the previous key is used.
+   *
+   * @returns `data` — serialized ciphertext under the current key.
+   *          `rotated` — true when the input was decrypted with the previous
+   *          key and therefore actually re-wrapped; false when it was already
+   *          readable under the current key (no write needed).
+   * @throws DecryptionError when neither the current nor the previous key can
+   *         decrypt the payload.
+   */
+  reEncryptWithCurrentKey(storedData: string): {
+    data: string;
+    rotated: boolean;
+  } {
+    const parsed = this.deserializeFromStorage(storedData);
+
+    try {
+      this.decryptWithKey(parsed, this.encryptionKey);
+      return { data: storedData, rotated: false };
+    } catch (error) {
+      if (!this.previousEncryptionKey) {
+        throw error;
+      }
+      const plaintext = this.decryptWithKey(parsed, this.previousEncryptionKey);
+      return { data: this.encryptAndSerialize(plaintext), rotated: true };
+    }
   }
 
   /**

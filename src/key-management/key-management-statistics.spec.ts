@@ -5,13 +5,23 @@ import { EncryptionService } from '../encryption/encryption.service';
 import { KeyType } from './domain/key-types';
 import { KeyStatisticsQuery } from './domain/key-statistics';
 
+import { KeyRotationAuditService } from './key-rotation-audit.service';
+
+jest.mock('../prisma/prisma.service', () => ({
+  PrismaService: jest.fn(),
+}));
+
+import { PrismaService } from '../prisma/prisma.service';
+
 describe('KeyManagementService - Statistics', () => {
   let service: KeyManagementService;
   let encryptionService: EncryptionService;
 
   beforeEach(async () => {
     const mockConfigService = {
-      get: jest.fn().mockReturnValue('test-encryption-key-12345'),
+      get: jest
+        .fn()
+        .mockReturnValue('test-encryption-key-32-characters-long!!'),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -21,6 +31,24 @@ describe('KeyManagementService - Statistics', () => {
         {
           provide: ConfigService,
           useValue: mockConfigService,
+        },
+        {
+          provide: PrismaService,
+          useValue: {
+            wallet: {
+              findUnique: jest.fn(),
+              create: jest.fn(),
+              update: jest.fn(),
+            },
+            $transaction: jest.fn(),
+          },
+        },
+        {
+          provide: KeyRotationAuditService,
+          useValue: {
+            persistAuditLog: jest.fn().mockResolvedValue(undefined),
+            convertToPersistentFormat: jest.fn().mockReturnValue({}),
+          },
         },
       ],
     }).compile();

@@ -1,14 +1,17 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import { IKeyProvider } from '../interfaces/key-provider.interface';
 import {
   GeneratedKeyPair,
   SignatureResult,
   KeyType,
 } from '../domain/key-types';
-import { EncryptionService } from '../../encryption/encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+} from '../../encryption/encryption.service';
+import { SafeLogger } from '../../common/safe-logger';
 import { Keypair } from 'stellar-sdk';
 import { StrKeyHelper } from '../utils/strkey.helper';
-
 
 /**
  * Stellar Ed25519 key provider implementation
@@ -17,7 +20,7 @@ import { StrKeyHelper } from '../utils/strkey.helper';
  */
 @Injectable()
 export class StellarKeyProvider implements IKeyProvider {
-  private readonly logger = new Logger(StellarKeyProvider.name);
+  private readonly logger = new SafeLogger(StellarKeyProvider.name);
 
   constructor(private readonly encryptionService: EncryptionService) {}
 
@@ -33,7 +36,9 @@ export class StellarKeyProvider implements IKeyProvider {
       const publicKey = keypair.publicKey();
       const privateKey = keypair.secret();
 
-      this.logger.log('Generated new Stellar Ed25519 keypair using stellar-sdk');
+      this.logger.log(
+        'Generated new Stellar Ed25519 keypair using stellar-sdk',
+      );
 
       return {
         publicKey,

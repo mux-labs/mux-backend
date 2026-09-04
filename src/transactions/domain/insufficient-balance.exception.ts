@@ -13,3 +13,18 @@ export class InsufficientBalanceException extends UnprocessableEntityException {
     );
   }
 }
+
+/**
+ * Raised when Stellar Horizon itself rejects a submitted transaction because
+ * the source account can't cover the payment or fee (tx_insufficient_balance,
+ * op_underfunded). Kept distinct from other Horizon rejections (bad sequence,
+ * bad auth, malformed envelope, ...) so callers can tell "you need more funds"
+ * apart from a generic 400.
+ */
+export class HorizonInsufficientBalanceException extends UnprocessableEntityException {
+  constructor(transactionId: string, horizonResultCode: string) {
+    super(
+      `Transaction ${transactionId} rejected by Horizon due to insufficient balance (${horizonResultCode})`,
+    );
+  }
+}

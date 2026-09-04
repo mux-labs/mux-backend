@@ -3,6 +3,7 @@ import {
   Logger,
   ConflictException,
   BadRequestException,
+  HttpException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { UserStatus } from './entities/user.entity';
@@ -12,6 +13,8 @@ export interface FindOrCreateUserRequest {
   email?: string;
   displayName?: string;
   authProvider?: string;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
 }
 
 export interface User {
@@ -22,6 +25,8 @@ export interface User {
   status?: UserStatus;
   authProvider: string;
   lastLoginAt?: Date;
+  lastLoginIp?: string;
+  lastLoginUserAgent?: string;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -29,6 +34,23 @@ export interface User {
 export interface FindOrCreateUserResult {
   user: User;
   isNewUser: boolean;
+}
+
+export interface SessionListOptions {
+  page?: number;
+  limit?: number;
+  status?: string;
+  authProvider?: string;
+  dateFrom?: Date;
+  dateTo?: Date;
+  userId?: string;
+}
+
+export interface SessionListResult {
+  data: User[];
+  total: number;
+  page: number;
+  limit: number;
 }
 
 @Injectable()
@@ -49,13 +71,28 @@ export class IdempotentUserService {
   async findOrCreateUser(
     request: FindOrCreateUserRequest,
   ): Promise<FindOrCreateUserResult> {
-    const { authId, email, displayName, authProvider = 'UNKNOWN' } = request;
+    const {
+      authId,
+      email,
+      displayName,
+      authProvider = 'UNKNOWN',
+      lastLoginIp,
+      lastLoginUserAgent,
+    } = request;
 
     this.logger.log(`Looking up user with authId: ${authId}`);
 
+    // Validate and normalize the request the same way UsersService.create does,
+    // so both paths agree on authId uniqueness (trimmed) and reject invalid input.
+    this.validateRequest(request);
+
+    const normalizedAuthId = authId.trim();
+    const normalizedEmail = email?.trim() || null;
+    const normalizedDisplayName = displayName?.trim() || null;
+
     try {
       const existingUser = await this.prisma.user.findUnique({
-        where: { authId },
+        where: { authId: normalizedAuthId },
       });
 
       if (existingUser) {
@@ -63,7 +100,11 @@ export class IdempotentUserService {
 
         const updatedUser = await this.prisma.user.update({
           where: { id: existingUser.id },
-          data: { lastLoginAt: new Date() },
+          data: {
+            lastLoginAt: new Date(),
+            lastLoginIp,
+            lastLoginUserAgent,
+          },
         });
 
         this.logger.log(
@@ -78,12 +119,14 @@ export class IdempotentUserService {
 
       const newUser = await this.prisma.user.create({
         data: {
-          authId,
-          email,
-          displayName,
+          authId: normalizedAuthId,
+          email: normalizedEmail,
+          displayName: normalizedDisplayName,
           authProvider,
           lastLoginAt: new Date(),
-          status: 'ACTIVE',
+          lastLoginIp,
+          lastLoginUserAgent,
+          status: UserStatus.ACTIVE,
         },
       });
 
@@ -99,19 +142,27 @@ export class IdempotentUserService {
         error,
       );
 
+      if (error instanceof HttpException) {
+        throw error;
+      }
+
       if (error?.code === 'P2002') {
         this.logger.log(
           `Race condition detected, retrying find for authId: ${authId}`,
         );
 
         const retryUser = await this.prisma.user.findUnique({
-          where: { authId },
+          where: { authId: normalizedAuthId },
         });
 
         if (retryUser) {
           const updatedRetryUser = await this.prisma.user.update({
             where: { id: retryUser.id },
-            data: { lastLoginAt: new Date() },
+            data: {
+              lastLoginAt: new Date(),
+              lastLoginIp,
+              lastLoginUserAgent,
+            },
           });
 
           return {
@@ -123,6 +174,44 @@ export class IdempotentUserService {
 
       throw new Error(`User creation failed for authId: ${authId}`);
     }
+  }
+
+  /**
+   * Lists authenticated sessions (users with lastLoginAt) with optional filters.
+   * If userId is provided, scopes results to only that user's session (self-scoped).
+   * Filters: status, authProvider, dateFrom/dateTo against lastLoginAt.
+   * Results are ordered by lastLoginAt descending, with pagination.
+   */
+  async listSessions(options: SessionListOptions = {}): Promise<SessionListResult> {
+    const { page = 1, status, authProvider, dateFrom, dateTo, userId } = options;
+    const limit = Math.min(options.limit ?? 20, 100);
+
+    const where: Record<string, any> = { deletedAt: null };
+    if (userId) where.id = userId;
+    if (status) where.status = status;
+    if (authProvider) where.authProvider = authProvider;
+    if (dateFrom || dateTo) {
+      where.lastLoginAt = {};
+      if (dateFrom) where.lastLoginAt.gte = dateFrom;
+      if (dateTo) where.lastLoginAt.lte = dateTo;
+    }
+
+    const [users, total] = await Promise.all([
+      this.prisma.user.findMany({
+        where,
+        orderBy: { lastLoginAt: 'desc' },
+        take: limit,
+        skip: (page - 1) * limit,
+      }),
+      this.prisma.user.count({ where }),
+    ]);
+
+    return {
+      data: users.map((u) => this.mapPrismaUserToDomain(u)),
+      total,
+      page,
+      limit,
+    };
   }
 
   /**
@@ -190,6 +279,8 @@ export class IdempotentUserService {
       status: prismaUser.status,
       authProvider: prismaUser.authProvider,
       lastLoginAt: prismaUser.lastLoginAt,
+      lastLoginIp: prismaUser.lastLoginIp,
+      lastLoginUserAgent: prismaUser.lastLoginUserAgent,
       createdAt: prismaUser.createdAt,
       updatedAt: prismaUser.updatedAt,
     };

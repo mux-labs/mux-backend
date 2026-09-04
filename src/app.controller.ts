@@ -1,4 +1,4 @@
-import { Controller, Get, HttpStatus, HttpCode } from '@nestjs/common';
+import { Controller, Get, HttpStatus, HttpCode, ServiceUnavailableException } from '@nestjs/common';
 import { AppService } from './app.service';
 import { Public } from './auth/public.decorator';
 
@@ -33,7 +33,11 @@ export class AppController {
 
     // If database is not connected, return 503 Service Unavailable
     if (!result.database.connected) {
-      throw new Error('Service not ready: Database connection failed');
+      throw new ServiceUnavailableException({
+        status: 'unavailable',
+        message: 'Service not ready: Database connection failed',
+        database: result.database,
+      });
     }
 
     return result;

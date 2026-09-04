@@ -56,12 +56,30 @@ describe('Error Handling (e2e)', () => {
       expect(response.body).toHaveProperty('requestId', requestId);
     });
 
-    it('should not include request ID when not provided', async () => {
+    it('should generate request ID when not provided by client', async () => {
       const response = await request(app.getHttpServer())
         .get('/v1/non-existent-endpoint')
         .expect(HttpStatus.NOT_FOUND);
 
-      expect(response.body.requestId).toBeUndefined();
+      // Request ID should be generated (not undefined)
+      expect(response.body).toHaveProperty('requestId');
+      expect(typeof response.body.requestId).toBe('string');
+      expect(response.body.requestId.length).toBeGreaterThan(0);
+
+      // Should look like a UUID (v4 format)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+      expect(response.body.requestId).toMatch(uuidRegex);
+    });
+
+    it('should include generated request ID in response headers', async () => {
+      const response = await request(app.getHttpServer())
+        .get('/v1/non-existent-endpoint')
+        .expect(HttpStatus.NOT_FOUND);
+
+      // Request ID should be in response headers too
+      expect(response.headers['x-request-id']).toBeDefined();
+      expect(typeof response.headers['x-request-id']).toBe('string');
+      expect(response.headers['x-request-id']).toBe(response.body.requestId);
     });
   });
 

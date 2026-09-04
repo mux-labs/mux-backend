@@ -7,6 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
+import { randomUUID } from 'crypto';
 
 /**
  * Structured error response format
@@ -18,6 +19,7 @@ export interface ErrorResponse {
   method: string;
   message: string | string[];
   error?: string;
+  errorCode?: string;
   details?: Record<string, any>;
   requestId?: string;
 }
@@ -53,6 +55,31 @@ export class HttpExceptionFilter implements ExceptionFilter {
   }
 
   /**
+   * Resolves the request ID for the current request.
+   *
+   * Priority order:
+   *  1. Incoming `X-Request-ID` header supplied by the client (echoed as-is).
+   *  2. `req.requestId` attached by the request-logging middleware when it
+   *     generated a UUID on the client's behalf.
+   *  3. A freshly generated UUID as a last-resort fallback (e.g. the filter
+   *     is invoked before the middleware has run — unlikely in production but
+   *     possible in tests).
+   *
+   * This ensures every error response carries a stable, traceable `requestId`
+   * even when the client omits the `X-Request-ID` header.
+   */
+  private resolveRequestId(request: Request & { requestId?: string }): string {
+    const fromHeader = request.headers?.['x-request-id'];
+    if (typeof fromHeader === 'string' && fromHeader.length > 0) {
+      return fromHeader;
+    }
+    if (typeof request.requestId === 'string' && request.requestId.length > 0) {
+      return request.requestId;
+    }
+    return randomUUID();
+  }
+
+  /**
    * Build a structured error response from any exception type
    */
   private buildErrorResponse(
@@ -62,6 +89,10 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const timestamp = new Date().toISOString();
     const path = request.url;
     const method = request.method;
+    // Always include requestId — generated when the client omits the header.
+    const requestId = this.resolveRequestId(
+      request as Request & { requestId?: string },
+    );
 
     // Handle HttpException (NestJS exceptions)
     if (exception instanceof HttpException) {
@@ -69,10 +100,8 @@ export class HttpExceptionFilter implements ExceptionFilter {
       const exceptionResponse = exception.getResponse();
 
       // Extract message and details from exception response
-      const { message, error, details } = this.parseHttpExceptionResponse(
-        exceptionResponse,
-        status,
-      );
+      const { message, error, errorCode, details } =
+        this.parseHttpExceptionResponse(exceptionResponse, status);
 
       return {
         statusCode: status,
@@ -81,10 +110,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
         method,
         message,
         error,
+        ...(errorCode && { errorCode }),
         ...(details && { details }),
-        ...(request.headers['x-request-id'] && {
-          requestId: request.headers['x-request-id'] as string,
-        }),
+        requestId,
       };
     }
 
@@ -97,9 +125,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
         method,
         message: this.sanitizeErrorMessage(exception.message),
         error: 'Internal Server Error',
-        ...(request.headers['x-request-id'] && {
-          requestId: request.headers['x-request-id'] as string,
-        }),
+        requestId,
       };
     }
 
@@ -111,9 +137,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
       method,
       message: 'An unexpected error occurred',
       error: 'Internal Server Error',
-      ...(request.headers['x-request-id'] && {
-        requestId: request.headers['x-request-id'] as string,
-      }),
+      requestId,
     };
   }
 
@@ -126,6 +150,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
   ): {
     message: string | string[];
     error: string;
+    errorCode?: string;
     details?: Record<string, any>;
   } {
     // If response is a string, use it as the message
@@ -142,6 +167,7 @@ export class HttpExceptionFilter implements ExceptionFilter {
     return {
       message: responseObj.message || 'An error occurred',
       error: responseObj.error || this.getErrorNameFromStatus(status),
+      ...(responseObj.errorCode && { errorCode: responseObj.errorCode }),
       ...(responseObj.details && { details: responseObj.details }),
     };
   }
@@ -195,12 +221,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     request: Request,
     errorResponse: ErrorResponse,
   ): void {
-    const { statusCode, path, method, message } = errorResponse;
-    const requestId = request.headers['x-request-id'] || 'N/A';
+    const { statusCode, path, method, message, requestId } = errorResponse;
 
     // Build log context
     const logContext = {
-      requestId,
+      requestId: requestId ?? 'N/A',
       method,
       path,
       statusCode,

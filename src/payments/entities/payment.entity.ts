@@ -8,6 +8,7 @@ export class Payment {
   id: number;
   amount: number;
   currency: string;
+  assetCode?: string;
   status: PaymentStatus;
   description?: string;
   fromId: number;

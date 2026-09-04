@@ -1,9 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException } from '@nestjs/common';
-import { AuthOrchestrator } from './auth-orchestrator.service';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
+import { AuthOrchestrator, AuthPayloadValidator } from './auth-orchestrator.service';
 import { IdempotentUserService } from '../users/idempotent-user.service';
 import { WalletCreationOrchestrator } from '../wallets/wallet-creation-orchestrator.service';
 import { IdempotencyService } from '../common/idempotency/idempotency.service';
+import { AuthMetricsService } from './auth-metrics.service';
 import { WalletNetwork } from '../wallets/domain/wallet.model';
 
 describe('AuthPayloadValidator', () => {
@@ -175,6 +176,13 @@ describe('AuthOrchestrator', () => {
     cacheResponse: jest.fn(),
   };
 
+  const mockAuthMetrics = {
+    recordAttempt: jest.fn(),
+    recordRateLimitHit: jest.fn(),
+    getSnapshot: jest.fn(),
+    reset: jest.fn(),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -190,6 +198,10 @@ describe('AuthOrchestrator', () => {
         {
           provide: IdempotencyService,
           useValue: mockIdempotencyService,
+        },
+        {
+          provide: AuthMetricsService,
+          useValue: mockAuthMetrics,
         },
       ],
     }).compile();
@@ -391,6 +403,7 @@ describe('AuthOrchestrator', () => {
         displayName: 'Test User',
         status: 'ACTIVE',
         authProvider: 'GOOGLE',
+        lastLoginAt: new Date(),
         createdAt: new Date(),
         updatedAt: new Date(),
       };

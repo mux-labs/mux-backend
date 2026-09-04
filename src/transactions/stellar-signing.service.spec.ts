@@ -1,6 +1,9 @@
 import 'reflect-metadata';
 import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, InternalServerErrorException } from '@nestjs/common';
+import {
+  BadRequestException,
+  InternalServerErrorException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { StellarSigningService } from './stellar-signing.service';
 import {

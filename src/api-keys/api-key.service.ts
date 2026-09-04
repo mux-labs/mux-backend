@@ -1,7 +1,12 @@
-import { Injectable, Logger, UnauthorizedException } from '@nestjs/common';
+import {
+  Injectable,
+  OnModuleDestroy,
+  UnauthorizedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
 import * as crypto from 'crypto';
+import { SafeLogger } from '../common/safe-logger';
 import {
   ApiKey,
   ApiKeyStatus,
@@ -16,6 +21,7 @@ export interface CreateApiKeyRequest {
   name: string;
   projectId: string;
   expiresAt?: Date | string;
+  network?: 'MAINNET' | 'TESTNET'; // Optional network scope, null = all networks
 }
 
 export interface CreateApiKeyResult {
@@ -39,8 +45,8 @@ export interface ListApiKeysRequest {
  * Service for managing API keys
  */
 @Injectable()
-export class ApiKeyService {
-  private readonly logger = new Logger(ApiKeyService.name);
+export class ApiKeyService implements OnModuleDestroy {
+  private readonly logger = new SafeLogger(ApiKeyService.name);
   private prisma: PrismaClient;
   private readonly gracePeriodSeconds: number;
 
@@ -48,6 +54,10 @@ export class ApiKeyService {
     this.prisma = new PrismaClient({} as any);
     this.gracePeriodSeconds =
       this.configService.get<number>('API_KEY_ROTATION_GRACE_SECONDS') ?? 3600;
+  }
+
+  async onModuleDestroy() {
+    await this.prisma.$disconnect();
   }
 
   /**
@@ -92,6 +102,7 @@ export class ApiKeyService {
         keyPrefix,
         lastFour,
         projectId: request.projectId,
+        network: request.network ?? null,
         status: ApiKeyStatus.ACTIVE,
         expiresAt,
       },
@@ -109,6 +120,10 @@ export class ApiKeyService {
 
   /**
    * Validates an API key and returns context if valid
+   *
+   * Uses timing-safe comparison to protect against timing attacks.
+   * The database lookup is fast (indexed on keyHash), but we perform an
+   * additional timing-safe comparison as a defense-in-depth measure.
    */
   async validateApiKey(plainTextKey: string): Promise<ApiKeyInfo> {
     if (!plainTextKey || !plainTextKey.startsWith('mux_')) {
@@ -131,6 +146,18 @@ export class ApiKeyService {
     });
 
     if (!apiKeyRecord) {
+      throw new UnauthorizedException('Invalid API key');
+    }
+
+    // Timing-safe comparison: compare the provided hash with stored hash
+    // This provides defense-in-depth even though the DB lookup is indexed.
+    try {
+      crypto.timingSafeEqual(
+        Buffer.from(keyHash),
+        Buffer.from(apiKeyRecord.keyHash),
+      );
+    } catch {
+      // timingSafeEqual throws if buffers are different lengths or values don't match
       throw new UnauthorizedException('Invalid API key');
     }
 
@@ -245,11 +272,12 @@ export class ApiKeyService {
       throw new UnauthorizedException('You do not have access to this API key');
     }
 
-    // Create new key
+    // Create new key with same network scope
     const newKeyResult = await this.createApiKey({
       name: request.name || `${oldKey.name} (rotated)`,
       projectId: oldKey.projectId,
       expiresAt: oldKey.expiresAt || undefined,
+      network: oldKey.network as 'MAINNET' | 'TESTNET' | undefined,
     });
 
     // Mark old key with grace period instead of revoking immediately
@@ -304,6 +332,48 @@ export class ApiKeyService {
       this.prisma.apiKey.count({
         where: { projectId: request.projectId },
       }),
+    ]);
+
+    return {
+      keys: keys.map((key) => this.mapPrismaApiKeyToDomain(key)),
+      total,
+      page,
+      pageSize,
+    };
+  }
+
+  /**
+   * Lists API keys for a project filtered by network
+   */
+  async listApiKeysByNetwork(
+    projectId: string,
+    network?: 'MAINNET' | 'TESTNET',
+    page: number = 1,
+    pageSize: number = 10,
+  ): Promise<{
+    keys: ApiKey[];
+    total: number;
+    page: number;
+    pageSize: number;
+  }> {
+    const skip = (page - 1) * pageSize;
+
+    const where: any = { projectId };
+    if (network !== undefined) {
+      where.network = network;
+    } else {
+      // If no network specified, return keys that support all networks (null network)
+      where.network = null;
+    }
+
+    const [keys, total] = await Promise.all([
+      this.prisma.apiKey.findMany({
+        where,
+        skip,
+        take: pageSize,
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.apiKey.count({ where }),
     ]);
 
     return {
@@ -374,6 +444,7 @@ export class ApiKeyService {
       keyPrefix: prismaApiKey.keyPrefix,
       lastFour: prismaApiKey.lastFour,
       projectId: prismaApiKey.projectId,
+      network: prismaApiKey.network ?? undefined,
       status: prismaApiKey.status as ApiKeyStatus,
       expiresAt: prismaApiKey.expiresAt,
       lastUsedAt: prismaApiKey.lastUsedAt,

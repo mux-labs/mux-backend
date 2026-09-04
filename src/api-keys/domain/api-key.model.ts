@@ -16,6 +16,7 @@ export interface ApiKey {
   keyPrefix: string;
   lastFour: string;
   projectId: string;
+  network?: 'MAINNET' | 'TESTNET'; // Network scope, undefined = all networks
   status: ApiKeyStatus;
   expiresAt?: Date | null;
   lastUsedAt?: Date | null;

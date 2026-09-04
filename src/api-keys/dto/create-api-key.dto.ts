@@ -1,4 +1,9 @@
-import { IsString, IsNotEmpty, IsOptional, IsDateString } from 'class-validator';
+import {
+  IsString,
+  IsNotEmpty,
+  IsOptional,
+  IsDateString,
+} from 'class-validator';
 
 export class CreateApiKeyDto {
   @IsString()

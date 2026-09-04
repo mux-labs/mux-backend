@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../common/prisma/prisma.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { RefreshTokenStatus } from '../generated/prisma';
 import * as crypto from 'crypto';
 

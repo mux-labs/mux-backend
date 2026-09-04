@@ -45,11 +45,7 @@ describe('RateLimitService', () => {
       windowStart: new Date(),
     });
 
-    const result = await service.checkRateLimit(
-      'api-key-id',
-      'GET /test',
-      42,
-    );
+    const result = await service.checkRateLimit('api-key-id', 'GET /test', 42);
 
     expect(result.allowed).toBe(true);
     expect(result.limit).toBe(42);
@@ -72,10 +68,7 @@ describe('RateLimitService', () => {
       windowStart: new Date(),
     });
 
-    const result = await service.checkRateLimit(
-      'api-key-id',
-      'POST /test',
-    );
+    const result = await service.checkRateLimit('api-key-id', 'POST /test');
 
     expect(result.allowed).toBe(true);
     expect(result.limit).toBe(100);

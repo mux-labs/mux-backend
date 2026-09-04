@@ -1,6 +1,9 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { Keypair } from 'stellar-sdk';
 import { StellarTransactionBuildService } from './stellar-transaction-build.service';
 
@@ -23,8 +26,11 @@ jest.mock('stellar-sdk', () => {
 });
 
 // Pull the mock reference after jest.mock is hoisted
-// eslint-disable-next-line @typescript-eslint/no-require-imports
-const { __mockLoadAccount: mockLoadAccount, Keypair: RealKeypair } = require('stellar-sdk');
+
+const {
+  __mockLoadAccount: mockLoadAccount,
+  Keypair: RealKeypair,
+} = require('stellar-sdk');
 
 describe('StellarTransactionBuildService', () => {
   let service: StellarTransactionBuildService;
@@ -58,7 +64,9 @@ describe('StellarTransactionBuildService', () => {
       ],
     }).compile();
 
-    service = module.get<StellarTransactionBuildService>(StellarTransactionBuildService);
+    service = module.get<StellarTransactionBuildService>(
+      StellarTransactionBuildService,
+    );
   });
 
   describe('buildPayment', () => {
@@ -150,7 +158,9 @@ describe('StellarTransactionBuildService', () => {
     });
 
     it('should throw BadRequestException when source account does not exist (404)', async () => {
-      mockLoadAccount.mockRejectedValue(new Error('Request failed with status code 404'));
+      mockLoadAccount.mockRejectedValue(
+        new Error('Request failed with status code 404'),
+      );
 
       await expect(
         service.buildPayment({
