@@ -146,19 +146,20 @@ Main authentication endpoint for user onboarding and wallet creation.
 
 Mux Backend supports Stellar fee-bump transactions, allowing a platform sponsor account to pay transaction fees on behalf of users. The `FeeBumpService` wraps signed inner transactions in a fee-bump envelope before submission to Horizon.
 
-#### `FEATURE_MAINNET_PAYMENT_SUBMIT` Kill-Switch
+### Mainnet Payment Submit Kill-Switch
 
-A **fail-closed** feature flag gates all payment submissions to Stellar mainnet. When the flag is absent or set to anything other than `"true"`, mainnet submission is rejected with HTTP 403. Testnet transactions are never affected.
+The `FEATURE_MAINNET_PAYMENT_SUBMIT` environment variable gates mainnet fee-bump
+submissions (`POST /transactions/fee-bump` with `network: "MAINNET"`):
 
-| `FEATURE_MAINNET_PAYMENT_SUBMIT` | Testnet | Mainnet |
-|----------------------------------|---------|---------|
-| _(unset / missing)_             | Allowed | **Blocked (403)** |
-| `"false"`                        | Allowed | **Blocked (403)** |
-| `"true"`                         | Allowed | Allowed |
+| Value | Behavior |
+|-------|----------|
+| `true` | Mainnet submissions proceed normally |
+| `false` / unset (default) | Mainnet submissions are rejected with `403 Forbidden` |
 
-Set `FEATURE_MAINNET_PAYMENT_SUBMIT=true` in your production environment only after confirming the sponsor account is funded and security policies are reviewed. To emergency-halt mainnet payments, set the flag back to `false` and restart.
-
-See [Mainnet Payment Feature Flag](docs/MAINNET-PAYMENT-FEATURE-FLAG.md) for full operational guidance.
+TESTNET submissions are unaffected — the flag is only consulted when `network === "MAINNET"`.
+The check runs inside `FeeBumpService.submitFeeBump` before any wallet key material is
+decrypted or any call to Horizon is made. See [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md)
+for operational guidance.
 
 ### Webhook-Delivered Payment Events
 
