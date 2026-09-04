@@ -160,6 +160,22 @@ Set `FEATURE_MAINNET_PAYMENT_SUBMIT=true` in your production environment only af
 
 See [Mainnet Payment Feature Flag](docs/MAINNET-PAYMENT-FEATURE-FLAG.md) for full operational guidance.
 
+### Webhook-Delivered Payment Events
+
+Payment domain events are bridged to the outbound webhook system via
+`PaymentWebhookListener`. When the `PaymentsService` emits an internal event,
+the listener forwards it to `WebhookEventEmitterService` for delivery to
+registered webhook endpoints.
+
+| Internal event     | Webhook event type   | Trigger |
+|--------------------|----------------------|---------|
+| `payment.created`  | `payment.created`    | New payment created |
+| `payment.completed`| `payment.completed`  | Payment confirmed |
+| `payment.failed`   | `payment.failed`     | Payment failed |
+
+Webhook dispatch errors are logged but never propagated to the caller, so
+payment operations are not blocked by downstream webhook failures.
+
 ### 🧠 Account Abstraction Layer
 
 * User identity mapped to blockchain accounts
