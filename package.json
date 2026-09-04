@@ -26,6 +26,7 @@
     "preinstall": "npx only-allow pnpm",
     "openapi:generate": "ts-node -r tsconfig-paths/register scripts/generate-openapi.ts",
     "openapi:lint": "npx @redocly/cli@latest lint openapi.json --config redocly.yaml",
+    "openapi:check-drift": "ts-node -r tsconfig-paths/register scripts/check-openapi-drift.ts",
     "prisma:check-migrations": "ts-node -r tsconfig-paths/register scripts/check-migration-naming.ts",
     "test:scripts": "jest --config scripts/jest.config.js"
   },
