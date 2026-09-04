@@ -47,6 +47,12 @@ export interface ValidatedEnv {
   RATE_LIMIT_SENSITIVE_WINDOW_MS: number;
   RATE_LIMIT_SENSITIVE_MAX_REQUESTS: number;
   API_KEY_ROTATION_GRACE_SECONDS: number;
+  /**
+   * Optional default lifetime (in whole days) applied to every newly created
+   * API key when the caller does not supply an explicit `expiresAt`.
+   * `0` means no expiry (non-expiring keys). Defaults to `0`.
+   */
+  API_KEY_DEFAULT_EXPIRY_DAYS: number;
   KEY_MGMT_MAX_RETRIES: number;
   KEY_MGMT_RETRY_BACKOFF_MS: number;
   BLOCK_SELF_PAYMENTS: boolean;
@@ -511,6 +517,15 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     { min: 0 },
     violations,
   );
+  // Optional default lifetime for newly created API keys (in whole days).
+  // 0 means non-expiring (the historical default).
+  const API_KEY_DEFAULT_EXPIRY_DAYS = optionalInt(
+    env,
+    'API_KEY_DEFAULT_EXPIRY_DAYS',
+    0,
+    { min: 0, max: 3650 }, // cap at 10 years
+    violations,
+  );
   const KEY_MGMT_MAX_RETRIES = optionalInt(
     env,
     'KEY_MGMT_MAX_RETRIES',
@@ -685,6 +700,7 @@ export function validateEnv(env: NodeJS.ProcessEnv): ValidatedEnv {
     RATE_LIMIT_SENSITIVE_WINDOW_MS,
     RATE_LIMIT_SENSITIVE_MAX_REQUESTS,
     API_KEY_ROTATION_GRACE_SECONDS,
+    API_KEY_DEFAULT_EXPIRY_DAYS,
     KEY_MGMT_MAX_RETRIES,
     KEY_MGMT_RETRY_BACKOFF_MS,
     BLOCK_SELF_PAYMENTS,

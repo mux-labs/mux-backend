@@ -20,6 +20,11 @@ export enum WebhookEventType {
   BALANCE_LOW = 'balance.low',
   BALANCE_MISMATCH = 'balance.mismatch',
 
+  // Payment events
+  PAYMENT_CREATED = 'payment.created',
+  PAYMENT_COMPLETED = 'payment.completed',
+  PAYMENT_FAILED = 'payment.failed',
+
   // User events
   USER_CREATED = 'user.created',
   USER_UPDATED = 'user.updated',
