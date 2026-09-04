@@ -1,7 +1,13 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { TooManyRequestsException } from '@nestjs/common';
+import { HttpException, HttpStatus } from '@nestjs/common';
 import { TestnetFaucetService, FaucetRequest } from './testnet-faucet.service';
+import axios from 'axios';
+
+jest.mock('axios');
+const mockedAxios = axios as jest.Mocked<typeof axios>;
+// Default happy-path mock — tests that care about specific responses override this
+mockedAxios.get.mockResolvedValue({ data: { hash: 'test_tx_hash' } });
 
 describe('TestnetFaucetService', () => {
   let service: TestnetFaucetService;
@@ -58,7 +64,7 @@ describe('TestnetFaucetService', () => {
 
       const response = await service.requestFunds(request);
 
-      expect(response.amountSent).toBe(100); // default
+      expect(response.amountSent).toBe(10_000); // default (Friendbot default)
     });
 
     it('should allow multiple requests within throttle window', async () => {
@@ -82,7 +88,7 @@ describe('TestnetFaucetService', () => {
       expect(request3.transactionId).toBeDefined();
     });
 
-    it('should throw TooManyRequestsException when throttle limit exceeded', async () => {
+    it('should throw HttpException when throttle limit exceeded', async () => {
       const walletAddress = 'GXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX';
       const request: FaucetRequest = {
         walletAddress,
@@ -95,7 +101,7 @@ describe('TestnetFaucetService', () => {
 
       // Fourth request should fail
       await expect(service.requestFunds(request)).rejects.toThrow(
-        TooManyRequestsException,
+        HttpException,
       );
     });
 
@@ -112,9 +118,9 @@ describe('TestnetFaucetService', () => {
 
       try {
         await service.requestFunds(request);
-        fail('Should have thrown TooManyRequestsException');
+        expect('should have thrown').toBe('HttpException');
       } catch (error) {
-        expect(error).toBeInstanceOf(TooManyRequestsException);
+        expect(error).toBeInstanceOf(HttpException);
         expect((error as any).message).toContain('Retry after');
       }
     });
@@ -237,7 +243,7 @@ describe('TestnetFaucetService', () => {
           walletAddress,
           network: 'TESTNET',
         }),
-      ).rejects.toThrow(TooManyRequestsException);
+      ).rejects.toThrow(HttpException);
     });
 
     it('should track first and last request times', async () => {

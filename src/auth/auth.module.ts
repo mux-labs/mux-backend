@@ -16,7 +16,7 @@ import { FeatureFlagService } from '../common/feature-flags/feature-flag.service
 import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
 
 @Module({
-  imports: [IdempotentUserModule, WalletsModule],
+  imports: [IdempotentUserModule, WalletsModule, PrismaModule],
   controllers: [AuthOrchestratorController, AuthMetricsController],
   providers: [
     AuthOrchestrator,

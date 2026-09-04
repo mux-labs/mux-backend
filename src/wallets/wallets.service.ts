@@ -8,6 +8,7 @@ import {
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
+import type { Wallet as PrismaWallet } from '../generated/prisma/client';
 import {
   Wallet,
   WalletNetwork,
@@ -28,6 +29,7 @@ import {
   type WalletApiOperation,
 } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
+import { WalletCacheService } from './wallet-cache.service';
 import * as crypto from 'crypto';
 import { TransactionBuilder, Keypair } from 'stellar-sdk';
 import {
@@ -98,6 +100,7 @@ export class WalletsService implements OnModuleDestroy {
     private encryptionService: EncryptionService,
     private configService: ConfigService,
     private keyManagementService: KeyManagementService,
+    @Optional() private walletCacheService?: WalletCacheService,
     @Optional() private webhookEventEmitter?: WebhookEventEmitterService,
     @Optional() private walletRetryService?: WalletRetryService,
     @Optional() private walletApiMetrics?: WalletApiMetricsService,
@@ -364,6 +367,17 @@ export class WalletsService implements OnModuleDestroy {
       const successor = this.mapPrismaWalletToDomain(successorRecord);
       const predecessor = this.mapPrismaWalletToDomain(predecessorRecord);
 
+      // #785: Invalidate both predecessor and successor cache entries so any
+      // stale cached view (old public key, ACTIVE status) is evicted immediately.
+      this.walletCacheService?.invalidateWalletById(predecessor.id);
+      this.walletCacheService?.invalidateWalletById(successor.id);
+      if (predecessor.userId) {
+        this.walletCacheService?.invalidateWalletByUser(
+          predecessor.userId,
+          predecessor.network,
+        );
+      }
+
       this.emitDomainEvent('wallet.rotated', () =>
         this.webhookEventEmitter?.emitWalletRotated({
           walletId: successor.id,
@@ -435,6 +449,14 @@ export class WalletsService implements OnModuleDestroy {
           }),
         );
       }
+      // #785: Evict stale cached wallet data after any status transition.
+      this.walletCacheService?.invalidateWalletById(mapped.id);
+      if (mapped.userId) {
+        this.walletCacheService?.invalidateWalletByUser(
+          mapped.userId,
+          mapped.network,
+        );
+      }
       this.recordMetric('status_update', 'success', startedAt, mapped.network);
       return mapped;
     } catch (error) {
@@ -500,6 +522,15 @@ export class WalletsService implements OnModuleDestroy {
           publicKey: mapped.publicKey,
         }),
       );
+      // #785: Evict stale PROVISIONING cache entry so the next read fetches
+      // the ACTIVE wallet from the database, not a cached stale view.
+      this.walletCacheService?.invalidateWalletById(mapped.id);
+      if (mapped.userId) {
+        this.walletCacheService?.invalidateWalletByUser(
+          mapped.userId,
+          mapped.network,
+        );
+      }
       this.recordMetric('activate', 'success', startedAt, mapped.network);
       return mapped;
     } catch (error) {
@@ -895,7 +926,7 @@ export class WalletsService implements OnModuleDestroy {
     });
   }
 
-  private mapPrismaWalletToDomain(prismaWallet: any): Wallet {
+  private mapPrismaWalletToDomain(prismaWallet: PrismaWallet): Wallet {
     return {
       id: prismaWallet.id,
       userId: prismaWallet.userId,

@@ -64,6 +64,29 @@ describe('Webhooks (e2e)', () => {
       expect(response.body.createdAt).toBeDefined();
     });
 
+    it('persists only a hash of the signing secret, never the plaintext', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const returnedSecret = createRes.body.secret as string;
+      expect(returnedSecret).toMatch(/^whsec_/);
+
+      const row: any = await prisma.webhookEndpoint.findUnique({
+        where: { id: createRes.body.id },
+      });
+
+      // No plaintext secret at rest — only a SHA-256 hash of the derived secret.
+      expect(row).not.toHaveProperty('secret');
+      expect(row.secretHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(row.secretHash).not.toContain('whsec_');
+    });
+
     it('should not return secret in list endpoints', async () => {
       // Create endpoint
       const createRes = await request(app.getHttpServer())

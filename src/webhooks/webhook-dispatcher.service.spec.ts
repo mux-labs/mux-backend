@@ -3,6 +3,7 @@ import { WebhookDispatcherService } from './webhook-dispatcher.service';
 import { WebhookDispatchService } from './webhook-dispatch.service';
 import { WebhookRetryService } from './webhook-retry.service';
 import { WebhookSignerService } from './webhook-signer.service';
+import { WebhookService } from './webhook.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ConfigService } from '@nestjs/config';
@@ -71,12 +72,17 @@ describe('WebhookDispatcherService', () => {
       get: jest.fn((key: string, defaultValue: any) => defaultValue),
     };
 
+    const mockWebhookService = {
+      resolveSigningSecret: jest.fn().mockResolvedValue('whsec_test'),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookDispatcherService,
         WebhookDispatchService,
         WebhookRetryService,
         WebhookSignerService,
+        { provide: WebhookService, useValue: mockWebhookService },
         { provide: PrismaService, useValue: mockPrisma },
         { provide: MetricsService, useValue: mockMetrics },
         { provide: ConfigService, useValue: mockConfigService },

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WebhookDispatchService } from './webhook-dispatch.service';
 import { WebhookRetryService } from './webhook-retry.service';
+import { WebhookService } from './webhook.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { SafeLogger } from '../common/safe-logger';
 import {
@@ -17,11 +18,29 @@ export interface DispatchEventRequest {
 }
 
 /**
- * Webhook Dispatcher Service
+ * Webhook Dispatcher Service — CANONICAL HIGH-LEVEL ORCHESTRATOR
  *
- * Orchestrates webhook dispatch by coordinating between:
- * - WebhookDispatchService: handles HTTP delivery
- * - WebhookRetryService: handles retry scheduling and dead letter
+ * This is the entry-point for all webhook fan-out logic. It coordinates:
+ *   - Endpoint discovery: finds subscribed WebhookEndpoint records from the DB
+ *   - Delivery record creation: persists a WebhookDelivery per endpoint
+ *   - HTTP dispatch delegation: calls WebhookDispatchService.deliverWebhook()
+ *   - Retry/DLQ delegation: calls WebhookRetryService for scheduling and dead-letter
+ *
+ * ### Naming disambiguation
+ *
+ * The codebase contains two similarly-named services — this is deliberate:
+ *
+ *   webhook-dispatch.service.ts   (WebhookDispatchService)
+ *     → LOW-LEVEL HTTP primitive: signs payload, makes outbound HTTP call.
+ *       No DB access. No knowledge of endpoints, retries, or deliveries.
+ *
+ *   webhook-dispatcher.service.ts (WebhookDispatcherService) ← YOU ARE HERE
+ *     → HIGH-LEVEL orchestrator: owns the full delivery lifecycle from event
+ *       receipt to final delivery / dead-letter.
+ *
+ * External callers (controllers, event emitters, workers) MUST use
+ * WebhookDispatcherService. WebhookDispatchService is an internal implementation
+ * detail and should never be injected outside the webhook module.
  */
 @Injectable()
 export class WebhookDispatcherService {
@@ -31,6 +50,7 @@ export class WebhookDispatcherService {
     private readonly prisma: PrismaService,
     private readonly dispatchService: WebhookDispatchService,
     private readonly retryService: WebhookRetryService,
+    private readonly webhookService: WebhookService,
     private readonly metrics: MetricsService,
   ) {}
 
@@ -179,13 +199,20 @@ export class WebhookDispatcherService {
       `Attempting delivery ${delivery.id} to ${endpoint.url} (attempt ${attemptNumber}/${maxRetries})`,
     );
 
+    // Resolve the plaintext signing secret (re-derived from the master key;
+    // never read from the database, which holds only a hash). This also
+    // promotes a pending rotation once its grace window has elapsed.
+    const signingSecret = await this.webhookService.resolveSigningSecret(
+      endpoint.id,
+    );
+
     // Dispatch the webhook
     const dispatchResult = await this.dispatchService.deliverWebhook(
       endpoint.url,
       delivery.payload,
       delivery.eventType,
       delivery.eventId,
-      endpoint.secret,
+      signingSecret,
     );
 
     const responseTimeSeconds = dispatchResult.responseTime / 1000;

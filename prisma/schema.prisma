@@ -90,6 +90,21 @@ enum WalletNetwork {
   TESTNET
 }
 
+/// Internal lifecycle states for a domain user.
+/// Keep in sync with UserStatus in src/users/entities/user.entity.ts.
+enum UserStatus {
+  /// Created but not yet usable (e.g. awaiting first wallet provisioning).
+  PROVISIONING
+  /// Fully operational; the default for healthy accounts.
+  ACTIVE
+  /// Account is undergoing recovery (e.g. lost device, wallet rotation).
+  RECOVERY_PENDING
+  /// Operationally paused (e.g. risk hold). Reversible.
+  SUSPENDED
+  /// Permanently disabled. No further use.
+  DISABLED
+}
+
 /// User account for authentication and wallet ownership.
 model User {
   id String @id @default(uuid())
@@ -103,8 +118,8 @@ model User {
   /// User's display name (optional)
   displayName String?
 
-  /// Account status
-  status String @default("ACTIVE")
+  /// Account status — enforced by the UserStatus enum; defaults to ACTIVE.
+  status UserStatus @default(ACTIVE)
 
   /// Authentication provider type
   authProvider String @default("UNKNOWN")
@@ -552,9 +567,27 @@ model WebhookEndpoint {
   /// Endpoint configuration
   url         String
   description String?
-  
-  /// Secret for HMAC signature verification
-  secret      String
+
+  /// Version of the derived signing secret currently used to sign outbound
+  /// deliveries. The secret itself is never stored — it is re-derived from
+  /// WEBHOOK_SIGNING_KEY via HMAC-SHA256 at dispatch time.
+  secretVersion Int @default(1)
+
+  /// SHA-256 hash of derived(secretVersion). The only representation of the
+  /// signing secret persisted at rest (never the plaintext), mirroring how
+  /// API keys are stored.
+  secretHash String @default("")
+
+  /// Version staged by rotate-secret while the established secret keeps
+  /// signing during the grace window (rotation without downtime).
+  pendingSecretVersion Int?
+
+  /// SHA-256 hash of derived(pendingSecretVersion).
+  pendingSecretHash String?
+
+  /// When pendingSecretVersion becomes the active signing version. Null when
+  /// there is no rotation in progress.
+  secretGracePeriodEndsAt DateTime?
   
   /// Event types to listen for
   events      String[] // e.g., ["wallet.created", "transaction.confirmed"]

@@ -24,12 +24,26 @@ export interface WebhookDispatchResult {
 }
 
 /**
- * Webhook Dispatch Service
+ * Webhook Dispatch Service — CANONICAL LOW-LEVEL HTTP PRIMITIVE
  *
- * Responsible only for:
- * - Building the webhook payload
- * - Signing the payload
- * - Making the outbound HTTP call (with optional mTLS)
+ * Responsible ONLY for:
+ *   1. Building the webhook payload
+ *   2. Signing the payload (HMAC-SHA256 via WebhookSignerService)
+ *   3. Making the outbound HTTP POST (with optional mTLS)
+ *
+ * This service has NO database access and NO knowledge of:
+ *   - WebhookEndpoint or WebhookDelivery records
+ *   - Retry logic or dead-letter queues
+ *   - Which endpoints are subscribed to which events
+ *
+ * ### Naming disambiguation
+ *
+ *   webhook-dispatch.service.ts   (WebhookDispatchService) ← YOU ARE HERE
+ *     → LOW-LEVEL HTTP primitive. No DB. No retry. No orchestration.
+ *
+ *   webhook-dispatcher.service.ts (WebhookDispatcherService)
+ *     → HIGH-LEVEL orchestrator. Owns endpoint fan-out, delivery records,
+ *       retries, and DLQ. This is what external code should inject.
  *
  * mTLS is opt-in per delivery: pass a {@link WebhookMtlsConfig} to enable
  * mutual TLS for endpoints that require client certificate authentication.

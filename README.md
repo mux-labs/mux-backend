@@ -392,6 +392,7 @@ Copy `.env.example` to `.env` (or create `.env`) and set:
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
 WALLET_ENCRYPTION_KEY="your-secure-encryption-key-min-32-chars-long"
 EXPORT_SIGNING_SECRET="your-secure-export-signing-secret-min-32-chars-long"
+WEBHOOK_SIGNING_KEY="your-secure-webhook-signing-key-min-32-chars-long"
 ```
 
 #### Boot-Time Configuration Validation
@@ -411,6 +412,11 @@ To guarantee security, the application validates critical environment variables 
   - **Required in production**: Must be defined and not empty.
   - **Length**: Must be at least **32 characters** long.
   - **Security**: No hardcoded fallback secret is allowed; startup fails closed when it is missing.
+* **`WEBHOOK_SIGNING_KEY`**: Master key used to derive outbound webhook signing secrets (only SHA-256 hashes are stored at rest).
+  - **Required in production**: Must be defined and not empty.
+  - **Length**: Must be at least **32 characters** long.
+  - **Security**: No hardcoded fallback or placeholder is allowed; startup fails closed when it is missing. Never log this value.
+* **`WEBHOOK_SECRET_GRACE_SECONDS`**: Grace window for `rotate-secret` (default `3600`). During this window deliveries keep being signed with the previous secret so consumers are not cut off.
 
 **Examples:**
 
@@ -578,6 +584,89 @@ Key authentication-related environment variables (when applicable):
 
 ---
 
+## Rate-Limit Record Cleanup
+
+The `RateLimitCleanupWorker` runs on a configurable interval and prunes expired
+`RateLimitRecord` rows from the database. Without this job the table grows
+unbounded as every API key × endpoint × time-window combination adds a row.
+
+The worker is automatically registered in `RateLimitModule` — no manual
+wiring is required.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run the cleanup job |
+| `RATE_LIMIT_CLEANUP_OLDER_THAN_MS` | `3600000` | Delete records with `windowStart` older than this age (ms) |
+
+---
+
+## Testnet Faucet
+
+The `TestnetFaucetService` proxies Stellar Friendbot funding requests for TESTNET wallets only.
+
+### Mainnet gate (fail-closed)
+
+When `STELLAR_NETWORK` is set to `MAINNET` or `PUBLIC` the service **refuses all funding requests** with `501 Not Implemented`, regardless of `NODE_ENV`. This is an unconditional safety gate — there is no override and no silent fallback.
+
+Set `STELLAR_NETWORK=TESTNET` (the default) to enable faucet funding.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STELLAR_NETWORK` | `TESTNET` | Target network. Set to `MAINNET`/`PUBLIC` to block faucet calls |
+| `TESTNET_FAUCET_URL` | `https://friendbot.stellar.org` | Faucet endpoint URL |
+| `TESTNET_FAUCET_MAX_REQUESTS` | `5` | Max faucet requests per wallet per window |
+| `TESTNET_FAUCET_WINDOW_MS` | `3600000` | Throttle window length (ms) |
+
+---
+
+## Webhook DLQ Ops Notifications
+
+`WebhookDlqAlertService` monitors the webhook dead-letter queue and can POST a
+structured JSON alert to an ops endpoint (Slack, PagerDuty, or any HTTP sink)
+whenever a threshold is breached.
+
+Notification failures are **non-fatal**: a Slack outage cannot disrupt the DLQ
+check loop or normal webhook delivery.
+
+### Payload shape
+
+```json
+{
+  "service": "mux-backend",
+  "event": "dlq.threshold_breached",
+  "text": "[mux-backend] DLQ threshold breached: ...",
+  "dlqDepth": 55,
+  "totalDeliveries": 500,
+  "dlqPercentage": 11.0,
+  "oldestDlqItemAgeMs": 7200000,
+  "alerts": [
+    { "type": "ABSOLUTE_THRESHOLD", "message": "...", "value": 55, "threshold": 50 }
+  ],
+  "checkedAt": "2026-08-31T23:00:00.000Z"
+}
+```
+
+The `text` field is Slack-compatible. For PagerDuty, wrap the payload in a
+[PagerDuty Events v2](https://developer.pagerduty.com/api-reference/YXBpOjI3NDgyNjU-pager-duty-v2-events-api)
+adapter or use a custom HTTP sink.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DLQ_OPS_WEBHOOK_URL` | _(unset)_ | HTTP(S) URL to POST alerts to. Leave unset for metrics-only mode |
+| `DLQ_OPS_WEBHOOK_TIMEOUT_MS` | `5000` | Timeout (ms) for outbound notification calls |
+| `DLQ_CHECK_INTERVAL_MS` | `60000` | How often (ms) to poll DLQ depth |
+| `DLQ_ABSOLUTE_THRESHOLD` | `50` | Alert when DLQ depth ≥ this value |
+| `DLQ_PERCENTAGE_THRESHOLD` | `10` | Alert when DLQ% of total deliveries ≥ this value |
+| `DLQ_AGE_THRESHOLD_MS` | `3600000` | Alert when oldest DLQ item is older than this (ms) |
+
+---
+
 ## Design Principles
 
 * **Crypto is infrastructure, not UX**
@@ -610,12 +699,44 @@ Contributions are welcome. Please open an issue before submitting large changes.
 
 ---
 
+## Wallet Cache Invalidation (#785)
+
+`WalletCacheService` provides an in-process TTL cache for wallet lookups. To prevent stale status or stale public-key data from being served after mutation:
+
+- **Key rotation** (`rotateWalletKey`): both the predecessor and successor cache entries (by ID and by user+network) are evicted immediately after the rotation completes.
+- **Status change** (`updateWalletStatus`): both the ID-keyed and user+network-keyed entries are evicted after any status transition (ACTIVE → SUSPENDED, ACTIVE → ARCHIVED, etc.).
+- **Activation** (`activateWallet`): the PROVISIONING entry is evicted so the next read fetches the freshly-ACTIVE record from the database.
+
+Cache entries are stored in `CacheService` (in-process `Map`) with a 5-minute TTL. Invalidation is additive (fail-safe via `@Optional()`): if `WalletCacheService` is not injected the operations proceed normally without cache calls.
+
+---
+
+## OpenAPI Drift Check (#786)
+
+The committed `openapi.json` is the source of truth for the published API spec. To prevent controllers from drifting silently from the spec:
+
+```bash
+# Regenerate the spec from live NestJS routes
+pnpm run openapi:generate
+
+# Check whether the live routes match the committed spec (fails on drift)
+pnpm run openapi:check-drift
+
+# Lint the committed spec
+pnpm run openapi:lint
+```
+
+`openapi:check-drift` is run automatically in CI after `openapi:lint`. If it fails, run `pnpm run openapi:generate` locally, review the diff, and commit the updated `openapi.json`.
+
+---
+
 Request Logging Middleware
 
 A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
 
 - Sets an `x-request-id` header (honors incoming `x-request-id` if present).
 - Logs method, URL, client IP and request id when requests start and when they finish.
+- **Redacts all sensitive headers** (`Authorization`, `X-API-Key`, `X-Internal-Api-Key`, `X-Maintenance-Secret`, `X-Recovery-Admin-Secret`, `cookie`, `set-cookie`, `proxy-authorization`) — raw header values are never written to any log line. (#787)
 - Is robust to stale/invalid request objects and will not crash the application.
 
 The middleware is registered in `src/main.ts` and runs for all incoming requests.
@@ -697,6 +818,13 @@ Webhooks allow your application to receive real-time notifications when events o
 ### Payload Signing
 
 All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
+
+### Signing Secret Storage & Rotation
+
+* **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
+* **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-secret` (rotation). Store it immediately; it is never returned again.
+* **Downtime-free rotation**: `rotate-secret` stages a new secret version. Outbound deliveries keep being signed with the previous (established) secret until the grace window (`WEBHOOK_SECRET_GRACE_SECONDS`, default `3600`s) elapses, then the new secret is promoted automatically on the next dispatch. Consumers still verifying with the old secret are never cut off.
+* **Fails closed**: In production the server refuses to boot without `WEBHOOK_SIGNING_KEY`; there is no silent default or mock.
 
 ### Supported Events
 
