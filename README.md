@@ -325,6 +325,41 @@ requires `X-Recovery-Admin-Secret` and `X-Admin-ID`; production requires
 * Internal user-to-user transfers
 * Support for batching and relaying
 
+#### Fee-Bump Transactions
+
+Mux Backend supports Stellar fee-bump transactions, allowing a platform sponsor account to pay transaction fees on behalf of users. The `FeeBumpService` wraps signed inner transactions in a fee-bump envelope before submission to Horizon.
+
+### Mainnet Payment Submit Kill-Switch
+
+The `FEATURE_MAINNET_PAYMENT_SUBMIT` environment variable gates mainnet fee-bump
+submissions (`POST /transactions/fee-bump` with `network: "MAINNET"`):
+
+| Value | Behavior |
+|-------|----------|
+| `true` | Mainnet submissions proceed normally |
+| `false` / unset (default) | Mainnet submissions are rejected with `403 Forbidden` |
+
+TESTNET submissions are unaffected — the flag is only consulted when `network === "MAINNET"`.
+The check runs inside `FeeBumpService.submitFeeBump` before any wallet key material is
+decrypted or any call to Horizon is made. See [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md)
+for operational guidance.
+
+### Webhook-Delivered Payment Events
+
+Payment domain events are bridged to the outbound webhook system via
+`PaymentWebhookListener`. When the `PaymentsService` emits an internal event,
+the listener forwards it to `WebhookEventEmitterService` for delivery to
+registered webhook endpoints.
+
+| Internal event     | Webhook event type   | Trigger |
+|--------------------|----------------------|---------|
+| `payment.created`  | `payment.created`    | New payment created |
+| `payment.completed`| `payment.completed`  | Payment confirmed |
+| `payment.failed`   | `payment.failed`     | Payment failed |
+
+Webhook dispatch errors are logged but never propagated to the caller, so
+payment operations are not blocked by downstream webhook failures.
+
 ### 🧠 Account Abstraction Layer
 
 * User identity mapped to blockchain accounts

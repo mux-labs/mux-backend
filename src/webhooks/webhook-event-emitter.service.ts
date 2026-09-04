@@ -167,6 +167,88 @@ export class WebhookEventEmitterService {
   }
 
   /**
+   * Emits a payment.created event
+   */
+  async emitPaymentCreated(data: {
+    paymentId: string;
+    walletId: string;
+    amount: number;
+    currency: string;
+    userId: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_CREATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.completed event
+   */
+  async emitPaymentCompleted(data: {
+    paymentId: string;
+    walletId: string;
+    amount: number;
+    currency: string;
+    userId: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_COMPLETED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a payment.failed event
+   */
+  async emitPaymentFailed(data: {
+    paymentId: string;
+    walletId: string;
+    amount: number;
+    currency: string;
+    userId: string;
+    reason: string;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.PAYMENT_FAILED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a limit.updated event
+   */
+  async emitLimitUpdated(data: {
+    walletId: string;
+    limitType: string;
+    oldValue: number | null;
+    newValue: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.LIMIT_UPDATED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a limit.exceeded event
+   */
+  async emitLimitExceeded(data: {
+    walletId: string;
+    limitType: string;
+    limit: number;
+    attempted: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.LIMIT_EXCEEDED, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
+   * Emits a limit.warning event
+   */
+  async emitLimitWarning(data: {
+    walletId: string;
+    limitType: string;
+    limit: number;
+    projected: number;
+  }): Promise<void> {
+    const event = this.createEvent(WebhookEventType.LIMIT_WARNING, data);
+    await this.webhookDispatcher.dispatchEvent({ event });
+  }
+
+  /**
    * Emits a user.created event
    */
   async emitUserCreated(data: {
