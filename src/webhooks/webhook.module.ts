@@ -5,6 +5,7 @@ import { WebhookDispatcherService } from './webhook-dispatcher.service';
 import { WebhookDispatchService } from './webhook-dispatch.service';
 import { WebhookRetryService } from './webhook-retry.service';
 import { WebhookSignerService } from './webhook-signer.service';
+import { WebhookSecretService } from './webhook-secret.service';
 import { WebhookSignatureGuard } from './webhook-signature.guard';
 import { WebhookEventEmitterService } from './webhook-event-emitter.service';
 import { WebhookDeliveryQueueWorker } from './webhook-delivery-queue.worker';
@@ -28,6 +29,7 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
     WebhookDispatchService,
     WebhookRetryService,
     WebhookSignerService,
+    WebhookSecretService,
     WebhookSignatureGuard,
     WebhookEventEmitterService,
     WebhookDeliveryQueueWorker,

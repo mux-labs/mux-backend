@@ -33,11 +33,28 @@ describe('WebhookConfigService', () => {
           WEBHOOK_RETRY_BACKOFF_MS: 1000,
           WEBHOOK_TIMEOUT_MS: 10000,
           WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10,
+          WEBHOOK_SIGNING_KEY: 'unit-test-webhook-signing-key-min-32-chars!!',
         };
         return values[key];
       });
 
       await expect(service.onModuleInit()).resolves.not.toThrow();
+    });
+
+    it('should throw error when WEBHOOK_SIGNING_KEY is missing', async () => {
+      mockConfigService.get.mockImplementation((key: string) => {
+        const values: Record<string, any> = {
+          WEBHOOK_MAX_RETRIES: 5,
+          WEBHOOK_RETRY_BACKOFF_MS: 1000,
+          WEBHOOK_TIMEOUT_MS: 10000,
+          WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10,
+        };
+        return values[key];
+      });
+
+      await expect(service.onModuleInit()).rejects.toThrow(
+        /WEBHOOK_SIGNING_KEY/,
+      );
     });
 
     it('should throw error when WEBHOOK_MAX_RETRIES is missing', async () => {
@@ -46,6 +63,7 @@ describe('WebhookConfigService', () => {
           WEBHOOK_RETRY_BACKOFF_MS: 1000,
           WEBHOOK_TIMEOUT_MS: 10000,
           WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10,
+          WEBHOOK_SIGNING_KEY: 'unit-test-webhook-signing-key-min-32-chars!!',
         };
         return values[key];
       });
@@ -61,6 +79,7 @@ describe('WebhookConfigService', () => {
           WEBHOOK_MAX_RETRIES: 5,
           WEBHOOK_TIMEOUT_MS: 10000,
           WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10,
+          WEBHOOK_SIGNING_KEY: 'unit-test-webhook-signing-key-min-32-chars!!',
         };
         return values[key];
       });
@@ -76,6 +95,7 @@ describe('WebhookConfigService', () => {
           WEBHOOK_MAX_RETRIES: 5,
           WEBHOOK_RETRY_BACKOFF_MS: 1000,
           WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10,
+          WEBHOOK_SIGNING_KEY: 'unit-test-webhook-signing-key-min-32-chars!!',
         };
         return values[key];
       });
@@ -91,6 +111,7 @@ describe('WebhookConfigService', () => {
           WEBHOOK_MAX_RETRIES: 5,
           WEBHOOK_RETRY_BACKOFF_MS: 1000,
           WEBHOOK_TIMEOUT_MS: 10000,
+          WEBHOOK_SIGNING_KEY: 'unit-test-webhook-signing-key-min-32-chars!!',
         };
         return values[key];
       });
@@ -107,6 +128,7 @@ describe('WebhookConfigService', () => {
           WEBHOOK_RETRY_BACKOFF_MS: 1000,
           WEBHOOK_TIMEOUT_MS: 10000,
           WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10,
+          WEBHOOK_SIGNING_KEY: 'unit-test-webhook-signing-key-min-32-chars!!',
         };
         return values[key];
       });

@@ -67,6 +67,7 @@ jobs:
           NODE_ENV: test
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
           WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+          WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
 
   e2e-tests:
     name: E2E Tests
@@ -91,6 +92,7 @@ jobs:
       NODE_ENV: test
       DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
       WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
       STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
 
     steps:
@@ -142,6 +144,7 @@ jobs:
           WEBHOOK_RETRY_BACKOFF_MS: 1000
           WEBHOOK_TIMEOUT_MS: 10000
           WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10
+          WEBHOOK_SIGNING_KEY: ci-openapi-webhook-signing-key-min-32-chars
           AUTH_RATE_LIMIT_MAX: 10
           AUTH_RATE_LIMIT_WINDOW_MS: 60000
 

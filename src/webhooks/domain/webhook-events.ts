@@ -48,7 +48,16 @@ export interface WebhookEndpoint {
   projectId: string;
   url: string;
   description?: string | null;
-  secret: string;
+  /** SHA-256 hash of the derived signing secret — the plaintext is never stored. */
+  secretHash: string;
+  /** Version of the derived signing secret currently used to sign deliveries. */
+  secretVersion: number;
+  /** Version staged by rotate-secret while the previous one stays active. */
+  pendingSecretVersion?: number | null;
+  /** SHA-256 hash of the pending derived signing secret. */
+  pendingSecretHash?: string | null;
+  /** When the pending secret becomes active (null = no rotation in progress). */
+  secretGracePeriodEndsAt?: Date | null;
   events: string[];
   status: string;
   consecutiveFailures: number;

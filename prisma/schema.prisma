@@ -567,9 +567,27 @@ model WebhookEndpoint {
   /// Endpoint configuration
   url         String
   description String?
-  
-  /// Secret for HMAC signature verification
-  secret      String
+
+  /// Version of the derived signing secret currently used to sign outbound
+  /// deliveries. The secret itself is never stored — it is re-derived from
+  /// WEBHOOK_SIGNING_KEY via HMAC-SHA256 at dispatch time.
+  secretVersion Int @default(1)
+
+  /// SHA-256 hash of derived(secretVersion). The only representation of the
+  /// signing secret persisted at rest (never the plaintext), mirroring how
+  /// API keys are stored.
+  secretHash String @default("")
+
+  /// Version staged by rotate-secret while the established secret keeps
+  /// signing during the grace window (rotation without downtime).
+  pendingSecretVersion Int?
+
+  /// SHA-256 hash of derived(pendingSecretVersion).
+  pendingSecretHash String?
+
+  /// When pendingSecretVersion becomes the active signing version. Null when
+  /// there is no rotation in progress.
+  secretGracePeriodEndsAt DateTime?
   
   /// Event types to listen for
   events      String[] // e.g., ["wallet.created", "transaction.confirmed"]

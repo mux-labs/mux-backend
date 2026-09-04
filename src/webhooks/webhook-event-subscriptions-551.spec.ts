@@ -12,8 +12,13 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { WebhookService } from './webhook.service';
+import { WebhookSecretService } from './webhook-secret.service';
+import { MetricsService } from '../common/metrics/metrics.service';
 import { WebhookEventType, EndpointStatus } from './domain/webhook-events';
+
+const TEST_SIGNING_KEY = 'unit-test-webhook-signing-key-min-32-chars!!';
 
 const ENDPOINT_ID = 'ep-uuid-1';
 const PROJECT_ID = 'proj-uuid-1';
@@ -24,7 +29,11 @@ function makeEndpoint(override: Partial<any> = {}) {
     projectId: PROJECT_ID,
     url: 'https://example.com/hook',
     description: null,
-    secret: 'whsec_abc',
+    secretHash: '',
+    secretVersion: 1,
+    pendingSecretVersion: null,
+    pendingSecretHash: null,
+    secretGracePeriodEndsAt: null,
     events: [WebhookEventType.WALLET_CREATED],
     status: EndpointStatus.ACTIVE,
     consecutiveFailures: 0,
@@ -63,12 +72,31 @@ describe('WebhookService – event subscriptions (#551)', () => {
     delete: jest.fn(),
   };
 
+  const mockMetrics: any = {
+    incrementCounter: jest.fn(),
+    recordHistogram: jest.fn(),
+  };
+
+  const mockConfigService: any = {
+    get: jest.fn((key: string, defaultValue: any) => {
+      if (key === 'WEBHOOK_SIGNING_KEY') return TEST_SIGNING_KEY;
+      if (key === 'WEBHOOK_SECRET_GRACE_SECONDS') return 3600;
+      return defaultValue;
+    }),
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
     // Re-set default implementations after clearAllMocks wipes them
     mockCache.get.mockReturnValue(null);
     // Directly instantiate to avoid NestJS DI token resolution issues
-    service = new WebhookService(mockPrisma, mockCache);
+    service = new WebhookService(
+      mockPrisma,
+      mockCache,
+      new WebhookSecretService(mockConfigService),
+      mockConfigService,
+      mockMetrics,
+    );
   });
 
   // ── getSubscribedEvents ──────────────────────────────────────────────────────

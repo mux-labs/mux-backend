@@ -272,3 +272,5 @@ The `KeyType` enum (`STELLAR_ED25519`, `ETHEREUM_SECP256K1`) is the discriminato
 |---|---|---|
 | `WALLET_ENCRYPTION_KEY` | Yes | Master encryption key for AES-256-GCM. Must be kept secret. |
 | `DATABASE_URL` | Yes | PostgreSQL connection string for encrypted key storage. |
+| `WEBHOOK_SIGNING_KEY` | Yes | Master key for deriving outbound webhook signing secrets (HMAC-SHA256). Only SHA-256 hashes are stored at rest; never log this value. |
+| `WEBHOOK_SECRET_GRACE_SECONDS` | No | Grace window for rotate-secret (default `3600`). Deliveries keep being signed with the previous secret until it elapses. |

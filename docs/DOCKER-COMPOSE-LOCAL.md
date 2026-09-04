@@ -28,6 +28,7 @@ Open `.env` and set at minimum:
 | `WALLET_ENCRYPTION_KEY` | 32-byte hex secret for Stellar key encryption. Generate with `openssl rand -hex 32`. |
 | `STELLAR_HORIZON_URL` | Horizon endpoint (`https://horizon-testnet.stellar.org` for testnet). |
 | `STELLAR_NETWORK` | `TESTNET` or `PUBLIC`. |
+| `WEBHOOK_SIGNING_KEY` | Master key used to derive outbound webhook signing secrets (≥32 chars, never stored/logged). Generate with `openssl rand -hex 32`. Required — the server fails to boot without it. |
 
 > `DATABASE_URL` is **automatically overridden** by `docker-compose.yml` to point at the bundled Postgres container — you do not need to set it manually.
 

@@ -38,6 +38,9 @@ process.env.WEBHOOK_RETRY_BACKOFF_MS =
 process.env.WEBHOOK_TIMEOUT_MS = process.env.WEBHOOK_TIMEOUT_MS ?? '10000';
 process.env.WEBHOOK_MAX_CONSECUTIVE_FAILURES =
   process.env.WEBHOOK_MAX_CONSECUTIVE_FAILURES ?? '10';
+process.env.WEBHOOK_SIGNING_KEY =
+  process.env.WEBHOOK_SIGNING_KEY ??
+  'stub-webhook-signing-key-min-32-chars-for-openapi-generation';
 process.env.AUTH_RATE_LIMIT_MAX = process.env.AUTH_RATE_LIMIT_MAX ?? '10';
 process.env.AUTH_RATE_LIMIT_WINDOW_MS =
   process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? '60000';

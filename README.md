@@ -357,6 +357,7 @@ Copy `.env.example` to `.env` (or create `.env`) and set:
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
 WALLET_ENCRYPTION_KEY="your-secure-encryption-key-min-32-chars-long"
 EXPORT_SIGNING_SECRET="your-secure-export-signing-secret-min-32-chars-long"
+WEBHOOK_SIGNING_KEY="your-secure-webhook-signing-key-min-32-chars-long"
 ```
 
 #### Boot-Time Configuration Validation
@@ -376,6 +377,11 @@ To guarantee security, the application validates critical environment variables 
   - **Required in production**: Must be defined and not empty.
   - **Length**: Must be at least **32 characters** long.
   - **Security**: No hardcoded fallback secret is allowed; startup fails closed when it is missing.
+* **`WEBHOOK_SIGNING_KEY`**: Master key used to derive outbound webhook signing secrets (only SHA-256 hashes are stored at rest).
+  - **Required in production**: Must be defined and not empty.
+  - **Length**: Must be at least **32 characters** long.
+  - **Security**: No hardcoded fallback or placeholder is allowed; startup fails closed when it is missing. Never log this value.
+* **`WEBHOOK_SECRET_GRACE_SECONDS`**: Grace window for `rotate-secret` (default `3600`). During this window deliveries keep being signed with the previous secret so consumers are not cut off.
 
 **Examples:**
 
@@ -778,6 +784,13 @@ Webhooks allow your application to receive real-time notifications when events o
 ### Payload Signing
 
 All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
+
+### Signing Secret Storage & Rotation
+
+* **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
+* **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-secret` (rotation). Store it immediately; it is never returned again.
+* **Downtime-free rotation**: `rotate-secret` stages a new secret version. Outbound deliveries keep being signed with the previous (established) secret until the grace window (`WEBHOOK_SECRET_GRACE_SECONDS`, default `3600`s) elapses, then the new secret is promoted automatically on the next dispatch. Consumers still verifying with the old secret are never cut off.
+* **Fails closed**: In production the server refuses to boot without `WEBHOOK_SIGNING_KEY`; there is no silent default or mock.
 
 ### Supported Events
 

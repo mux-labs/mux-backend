@@ -1,18 +1,33 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { NotFoundException } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { WebhookService } from './webhook.service';
+import { WebhookSecretService } from './webhook-secret.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { CacheService } from '../common/cache/cache.service';
+import { MetricsService } from '../common/metrics/metrics.service';
 import { EndpointStatus } from './domain/webhook-events';
+import * as crypto from 'crypto';
 
 const PROJECT_ID = 'project-1';
 const ENDPOINT_ID = 'endpoint-1';
+
+const TEST_SIGNING_KEY = 'unit-test-webhook-signing-key-min-32-chars!!';
+
+function sha256Hex(value: string): string {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
 
 const mockEndpoint = {
   id: ENDPOINT_ID,
   projectId: PROJECT_ID,
   url: 'https://example.com/hook',
   description: 'Test hook',
-  secret: 'whsec_abc123',
+  secretHash: sha256Hex('whsec_some-derived-secret'),
+  secretVersion: 1,
+  pendingSecretVersion: null,
+  pendingSecretHash: null,
+  secretGracePeriodEndsAt: null,
   events: ['wallet.created'],
   status: EndpointStatus.ACTIVE,
   consecutiveFailures: 0,
@@ -26,6 +41,7 @@ const mockEndpoint = {
 
 describe('WebhookService', () => {
   let service: WebhookService;
+  let secretService: WebhookSecretService;
   let cache: CacheService;
 
   const mockPrisma = {
@@ -43,17 +59,44 @@ describe('WebhookService', () => {
     },
   };
 
+  const mockCache = {
+    get: jest.fn().mockReturnValue(null),
+    set: jest.fn(),
+    delete: jest.fn(),
+  };
+
+  const mockMetrics = {
+    incrementCounter: jest.fn(),
+    recordHistogram: jest.fn(),
+  };
+
   beforeEach(async () => {
     jest.clearAllMocks();
+    mockCache.get.mockReturnValue(null);
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         WebhookService,
+        WebhookSecretService,
         { provide: PrismaService, useValue: mockPrisma },
+        { provide: CacheService, useValue: mockCache },
+        { provide: MetricsService, useValue: mockMetrics },
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn((key: string, defaultValue: any) => {
+              if (key === 'WEBHOOK_SIGNING_KEY') return TEST_SIGNING_KEY;
+              if (key === 'WEBHOOK_SECRET_GRACE_SECONDS') return 3600;
+              return defaultValue;
+            }),
+          },
+        },
       ],
     }).compile();
 
     service = module.get<WebhookService>(WebhookService);
+    secretService = module.get<WebhookSecretService>(WebhookSecretService);
+    cache = module.get<CacheService>(CacheService);
   });
 
   it('should be defined', () => {
@@ -63,8 +106,10 @@ describe('WebhookService', () => {
   // ─── createEndpoint ──────────────────────────────────────────────────────────
 
   describe('createEndpoint', () => {
-    it('creates an endpoint with a generated secret', async () => {
-      mockPrisma.webhookEndpoint.create.mockResolvedValue(mockEndpoint);
+    it('creates an endpoint and returns the one-time plaintext secret', async () => {
+      mockPrisma.webhookEndpoint.create.mockImplementation(({ data }) =>
+        Promise.resolve({ ...mockEndpoint, ...data }),
+      );
 
       const result = await service.createEndpoint({
         projectId: PROJECT_ID,
@@ -72,33 +117,44 @@ describe('WebhookService', () => {
         events: ['wallet.created'],
       });
 
-      expect(result.id).toBe(ENDPOINT_ID);
+      expect(result.id).toBeDefined();
       expect(result.status).toBe(EndpointStatus.ACTIVE);
-      expect(mockPrisma.webhookEndpoint.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            projectId: PROJECT_ID,
-            url: 'https://example.com/hook',
-            status: EndpointStatus.ACTIVE,
-          }),
-        }),
-      );
+      expect(result.secret).toMatch(/^whsec_/);
     });
 
-    it('stores a secret matching whsec_ format', async () => {
+    it('persists only a SHA-256 hash of the secret, never the plaintext', async () => {
       let capturedData: any;
       mockPrisma.webhookEndpoint.create.mockImplementation(({ data }) => {
         capturedData = data;
-        return Promise.resolve({ ...mockEndpoint, secret: data.secret });
+        return Promise.resolve({ ...mockEndpoint, ...data });
       });
 
-      await service.createEndpoint({
+      const result = await service.createEndpoint({
         projectId: PROJECT_ID,
         url: 'https://example.com/hook',
-        events: [],
+        events: ['wallet.created'],
       });
 
-      expect(capturedData.secret).toMatch(/^whsec_/);
+      // The plaintext secret must NEVER be persisted to the database.
+      expect(capturedData.secret).toBeUndefined();
+      expect(capturedData.secretHash).toBeDefined();
+      // The persisted value is a SHA-256 hex digest, not the whsec_ secret.
+      expect(capturedData.secretHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(capturedData.secretHash).not.toContain('whsec_');
+      // The stored hash equals sha256 of the one-time returned secret.
+      expect(capturedData.secretHash).toBe(sha256Hex(result.secret));
+      // The endpoint id is generated up front so the secret is derivable.
+      expect(capturedData.id).toBe(result.id);
+      expect(capturedData.secretVersion).toBe(1);
+    });
+
+    it('derives a deterministic secret for a fixed endpoint id + version', async () => {
+      const a = secretService.deriveSecret(ENDPOINT_ID, 1);
+      const b = secretService.deriveSecret(ENDPOINT_ID, 1);
+      const c = secretService.deriveSecret(ENDPOINT_ID, 2);
+
+      expect(a).toBe(b);
+      expect(a).not.toBe(c);
     });
   });
 
@@ -113,6 +169,7 @@ describe('WebhookService', () => {
 
       expect(result.endpoints).toHaveLength(1);
       expect(result.endpoints[0].projectId).toBe(PROJECT_ID);
+      expect(result.endpoints[0].secret).toBeUndefined();
       expect(result.total).toBe(1);
       expect(result.page).toBe(1);
       expect(result.limit).toBe(20);
@@ -180,6 +237,9 @@ describe('WebhookService', () => {
       const result = await service.getEndpoint(ENDPOINT_ID);
 
       expect(result.id).toBe(ENDPOINT_ID);
+      // Secret is never exposed on GET — only its hash.
+      expect(result.secret).toBeUndefined();
+      expect(result.secretHash).toBeDefined();
     });
 
     it('hits the database each time', async () => {
@@ -232,17 +292,123 @@ describe('WebhookService', () => {
   // ─── rotateSecret ─────────────────────────────────────────────────────────────
 
   describe('rotateSecret', () => {
-    it('generates a new whsec_ secret and updates the endpoint', async () => {
+    it('stages a new pending secret version and returns it exactly once', async () => {
       let capturedData: any;
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
       mockPrisma.webhookEndpoint.update.mockImplementation(({ data }) => {
         capturedData = data;
-        return Promise.resolve({ ...mockEndpoint, secret: data.secret });
+        return Promise.resolve({ ...mockEndpoint, ...data });
       });
 
       const result = await service.rotateSecret(ENDPOINT_ID);
 
       expect(result.secret).toMatch(/^whsec_/);
-      expect(capturedData.secret).toBe(result.secret);
+      expect(capturedData.pendingSecretVersion).toBe(2);
+      // Only the hash of the pending secret is persisted.
+      expect(capturedData.pendingSecretHash).toBe(sha256Hex(result.secret));
+      expect(capturedData.secretHash).toBeUndefined();
+      expect(capturedData.secretGracePeriodEndsAt).toBeInstanceOf(Date);
+      expect(mockMetrics.incrementCounter).toHaveBeenCalledWith(
+        'webhooks_secrets_rotated_total',
+        { result: 'rotated' },
+      );
+    });
+
+    it('throws NotFoundException for an unknown endpoint', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(null);
+
+      await expect(service.rotateSecret(ENDPOINT_ID)).rejects.toThrow(
+        NotFoundException,
+      );
+    });
+  });
+
+  // ─── resolveSigningSecret (grace-period rotation) ─────────────────────────────
+
+  describe('resolveSigningSecret', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+      jest.setSystemTime(new Date('2026-08-31T00:00:00.000Z'));
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    it('returns the derived secret for the established version when no rotation is pending', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(mockEndpoint);
+
+      const secret = await service.resolveSigningSecret(ENDPOINT_ID);
+
+      expect(secret).toBe(secretService.deriveSecret(ENDPOINT_ID, 1));
+      // No writes when there is nothing to promote or backfill.
+      expect(mockPrisma.webhookEndpoint.update).not.toHaveBeenCalled();
+    });
+
+    it('keeps signing with the established secret during the grace window (no downtime)', async () => {
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue({
+        ...mockEndpoint,
+        secretVersion: 1,
+        pendingSecretVersion: 2,
+        pendingSecretHash: sha256Hex(secretService.deriveSecret(ENDPOINT_ID, 2)),
+        secretGracePeriodEndsAt: new Date('2026-08-31T01:00:00.000Z'), // still in the future
+      });
+
+      const secret = await service.resolveSigningSecret(ENDPOINT_ID);
+
+      // Still the established v1 secret — the pending v2 must NOT be used yet.
+      expect(secret).toBe(secretService.deriveSecret(ENDPOINT_ID, 1));
+      expect(mockPrisma.webhookEndpoint.update).not.toHaveBeenCalled();
+    });
+
+    it('promotes the pending secret to active once the grace window elapses', async () => {
+      let stored = {
+        ...mockEndpoint,
+        secretVersion: 1,
+        pendingSecretVersion: 2,
+        pendingSecretHash: sha256Hex(secretService.deriveSecret(ENDPOINT_ID, 2)),
+        secretGracePeriodEndsAt: new Date('2026-08-31T01:00:00.000Z'),
+      };
+      mockPrisma.webhookEndpoint.findUnique.mockImplementation(() =>
+        Promise.resolve(stored),
+      );
+      mockPrisma.webhookEndpoint.update.mockImplementation(({ data }) => {
+        stored = { ...stored, ...data };
+        return Promise.resolve(stored);
+      });
+
+      // Move past the grace window.
+      jest.setSystemTime(new Date('2026-08-31T02:00:00.000Z'));
+
+      const secret = await service.resolveSigningSecret(ENDPOINT_ID);
+
+      expect(secret).toBe(secretService.deriveSecret(ENDPOINT_ID, 2));
+      expect(stored.secretVersion).toBe(2);
+      expect(stored.pendingSecretVersion).toBeNull();
+      expect(stored.pendingSecretHash).toBeNull();
+      expect(stored.secretGracePeriodEndsAt).toBeNull();
+      expect(mockPrisma.webhookEndpoint.update).toHaveBeenCalled();
+      expect(mockMetrics.incrementCounter).toHaveBeenCalledWith(
+        'webhooks_secrets_promoted_total',
+        {},
+      );
+    });
+
+    it('lazily backfills the stored hash for rows created before hashed storage', async () => {
+      const legacy = { ...mockEndpoint, secretHash: '' };
+      mockPrisma.webhookEndpoint.findUnique.mockResolvedValue(legacy);
+      mockPrisma.webhookEndpoint.update.mockResolvedValue(legacy);
+
+      const secret = await service.resolveSigningSecret(ENDPOINT_ID);
+
+      expect(secret).toBe(secretService.deriveSecret(ENDPOINT_ID, 1));
+      expect(mockPrisma.webhookEndpoint.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            secretHash: sha256Hex(secret),
+          }),
+        }),
+      );
     });
   });
 
