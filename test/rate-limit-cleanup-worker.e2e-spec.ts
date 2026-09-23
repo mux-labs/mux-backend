@@ -85,6 +85,34 @@ describe('RateLimitCleanupWorker (integration — module wired)', () => {
     await expect(worker.run()).resolves.toBe(0);
   });
 
+  it('worker.run() should be idempotent and safe under concurrent/replayed invocations', async () => {
+    // Cleanup must be safe to run concurrently (e.g. overlapping cron ticks or
+    // a manual replay). Each invocation delegates exactly once and the worker
+    // must not throw or double-count when runs overlap.
+    const cleanupSpy = jest
+      .spyOn(rateLimitService, 'cleanupOldRecords')
+      .mockResolvedValue(3);
+
+    const results = await Promise.all([
+      worker.run(),
+      worker.run(),
+      worker.run(),
+    ]);
+
+    expect(cleanupSpy).toHaveBeenCalledTimes(3);
+    expect(results).toEqual([3, 3, 3]);
+  });
+
+  it('worker.run() should fail-closed (return 0) when the dependency is unavailable', async () => {
+    // Dependency outage (DB/RPC) must not surface as an unhandled rejection on
+    // the money/realtime path; the worker degrades to a no-op count.
+    jest
+      .spyOn(rateLimitService, 'cleanupOldRecords')
+      .mockRejectedValue(new Error('connection refused'));
+
+    await expect(worker.run()).resolves.toBe(0);
+  });
+
   it('RateLimitModule should not expose RateLimitCleanupWorker as a public export', () => {
     // The worker is an internal implementation detail.
     // It must NOT appear in RateLimitModule's exports.
