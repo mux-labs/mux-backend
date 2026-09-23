@@ -50,6 +50,11 @@ export function resolveRequestId(inbound?: unknown): string {
 /**
  * Assigns a correlation id to every request, echoes it back on the response
  * and exposes it on the request so the error envelope and logs can include it.
+ *
+ * Internal cron-triggered endpoints are guarded by a required cron secret
+ * (see CronSecretGuard). Auth failures on those routes are surfaced with a
+ * stable error code and the correlation id below, without ever echoing the
+ * secret material back to the caller.
  */
 @Injectable()
 export class RequestIdInterceptor implements NestInterceptor {
