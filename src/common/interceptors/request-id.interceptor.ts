@@ -6,77 +6,78 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Observable } from 'rxjs';
-import { tap } from 'rxjs/operators';
 
 /**
- * Header used to correlate a request with its logs and error envelope.
+ * Header used to propagate a correlation id across services and logs.
+ * Clients may supply their own value; otherwise the server generates one.
  */
 export const REQUEST_ID_HEADER = 'x-request-id';
 
 /**
- * Property attached to the request object so downstream handlers,
- * filters and loggers can read the correlation id.
+ * Maximum accepted length for a client-supplied correlation id. Longer values
+ * are rejected and replaced with a server-generated id to avoid log injection
+ * and unbounded header amplification on privileged surfaces (e.g. tx export).
  */
-export const REQUEST_ID_PROPERTY = 'requestId';
+export const MAX_REQUEST_ID_LENGTH = 128;
 
 /**
- * Maximum accepted length for an inbound request id. Anything longer is
- * treated as adversarial input and replaced with a freshly generated id.
+ * Correlation ids must be opaque and safe to embed in logs, metrics labels,
+ * and error payloads. We only accept a conservative character set so that
+ * adversarial input cannot spoof structured log fields or inject control chars.
  */
-const MAX_REQUEST_ID_LENGTH = 128;
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]+$/;
 
 /**
- * Only allow opaque, log-safe identifiers. Rejecting control characters and
- * whitespace prevents header/log injection through a spoofed request id.
- */
-const SAFE_REQUEST_ID = /^[A-Za-z0-9._:-]+$/;
-
-/**
- * Resolves a trustworthy request id: reuse a well-formed inbound value when
- * present, otherwise generate a new one. Never trust arbitrary client input.
- */
-export function resolveRequestId(inbound?: unknown): string {
-  if (
-    typeof inbound === 'string' &&
-    inbound.length > 0 &&
-    inbound.length <= MAX_REQUEST_ID_LENGTH &&
-    SAFE_REQUEST_ID.test(inbound)
-  ) {
-    return inbound;
-  }
-  return randomUUID();
-}
-
-/**
- * Assigns a correlation id to every request, echoes it back on the response
- * and exposes it on the request so the error envelope and logs can include it.
+ * Attaches a correlation id to every request so that privileged entrypoints
+ * (transaction export jobs, wallet/payment APIs) can emit stable, traceable
+ * error codes without leaking secrets. The id is echoed back on the response
+ * and exposed on the request for downstream handlers and loggers.
  */
 @Injectable()
 export class RequestIdInterceptor implements NestInterceptor {
   intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
     const http = context.switchToHttp();
-    const request = http.getRequest();
-    const response = http.getResponse();
+    const request = http.getRequest<{
+      headers?: Record<string, unknown>;
+      requestId?: string;
+    }>();
+    const response = http.getResponse<{ setHeader?: (name: string, value: string) => void }>();
 
-    const requestId = resolveRequestId(
-      request?.headers?.[REQUEST_ID_HEADER] ?? request?.headers?.[REQUEST_ID_HEADER.toUpperCase()],
-    );
+    const requestId = this.resolveRequestId(request?.headers);
 
     if (request) {
-      request[REQUEST_ID_PROPERTY] = requestId;
+      request.requestId = requestId;
     }
 
     if (response && typeof response.setHeader === 'function') {
       response.setHeader(REQUEST_ID_HEADER, requestId);
     }
 
-    return next.handle().pipe(
-      tap({
-        error: () => {
-          // The id is already attached to the request; the exception filter
-          // reads it from there when building the sanitized error envelope.
-        },
-      }),
-    );
+    return next.handle();
+  }
+
+  /**
+   * Fail-closed resolution: only well-formed, bounded client ids are trusted;
+   * anything else is replaced with a freshly generated UUID.
+   */
+  private resolveRequestId(headers?: Record<string, unknown>): string {
+    const raw = headers?.[REQUEST_ID_HEADER] ?? headers?.[REQUEST_ID_HEADER.toUpperCase()];
+    const candidate = Array.isArray(raw) ? raw[0] : raw;
+
+    if (typeof candidate !== 'string') {
+      return randomUUID();
+    }
+
+    const trimmed = candidate.trim();
+
+    if (
+      trimmed.length === 0 ||
+      trimmed.length > MAX_REQUEST_ID_LENGTH ||
+      !REQUEST_ID_PATTERN.test(trimmed)
+    ) {
+      return randomUUID();
+    }
+
+    return trimmed;
   }
 }
