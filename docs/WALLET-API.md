@@ -1,162 +1,273 @@
-# Wallet API
+# Wallet API — Payment Wallet Identity Linkage
 
-This document describes the wallet-facing HTTP API exposed by `mux-backend`.
-All endpoints are authenticated and deny-by-default: a request that cannot be
-proven to come from an authorized principal is rejected before any state is
-mutated.
+This document specifies the payment wallet identity linkage contract for Mux
+Protocol. It is the source of truth for how a payment wallet is bound to an
+owning identity, how authorization is enforced, and how writes behave under
+failure. It aligns with the migration
+`prisma/migrations/20260828000000_add_payment_wallet_identity/`.
 
-## Authentication
+Related docs:
 
-Every wallet endpoint requires one of the following credentials. The server is
-the source of truth for authorization; clients cannot bypass policy by
-supplying a `successor_id` or any other field.
+- `docs/custody-security-model.md` — custody and key-handling invariants.
+- `docs/MAINNET-PAYMENT-FEATURE-FLAG.md` — mainnet kill-switch and rollout.
 
-| Credential | Header | Notes |
-| --- | --- | --- |
-| Owner JWT | `Authorization: Bearer <jwt>` | Issued to the wallet owner. |
-| Delegate JWT | `Authorization: Bearer <jwt>` | Scoped to a wallet; may be revoked. |
-| Guardian JWT | `Authorization: Bearer <jwt>` | Recovery-only surface. |
-| API key | `X-API-Key: <key>` | Server-to-server; never logged. |
+## Invariants
 
-JWTs and API keys are redacted from logs and error payloads. Never echo raw key
-material, JWTs, or webhook secrets in responses.
+1. **Server is source of truth.** The backend (and Soroban contracts) own the
+   authoritative mapping between a payment wallet and its owning identity.
+   Clients never assert ownership; they request it and the server decides.
+2. **Deny by default.** Every privileged surface introduced by payment wallet
+   identity linkage requires an explicit authorization decision. Absence of a
+   valid role, delegate, guardian, API key, or JWT is a denial, not a default
+   allow.
+3. **Fail closed on writes.** If the database, RPC, or Horizon is unavailable,
+   write operations (link, unlink, delegate grant/revoke) fail with a stable
+   error and no partial state. Reads may degrade; writes may not.
+4. **Idempotent by identity.** Link and unlink operations are idempotent on
+   `(identityId, walletAddress, chain)`. Replays and concurrent duplicates
+   converge to the same terminal state and never create duplicate rows.
+5. **No secret leakage.** Responses, logs, and metrics never contain raw key
+   material, JWTs, webhook secrets, or full signed payloads.
 
-## Authorization
+## Data model
 
-Wallet orchestration is deny-by-default. Every orchestration entrypoint
-requires a valid API key **and** an authenticated principal, and the caller
-must be the wallet owner or an explicitly granted delegate/guardian for the
-target `userId`/`network` pair. Requests that present a valid API key but no
-matching owner/delegate/guardian grant are rejected with `403`; requests with
-no credentials at all are rejected with `401`. A revoked delegate is treated
-exactly like a missing grant. Clients cannot bypass policy by supplying a
-`userId` in the body or path that they do not own.
+The migration `20260828000000_add_payment_wallet_identity` introduces the
+linkage record. Conceptually:
 
-## Error codes
+| Field          | Type     | Notes                                              |
+| -------------- | -------- | -------------------------------------------------- |
+| `id`           | uuid     | Primary key.                                       |
+| `identityId`   | uuid     | Owning identity (developer user / account).        |
+| `walletAddress`| string   | Stellar/Soroban address.                           |
+| `chain`        | string   | Chain discriminator (e.g. `stellar`).              |
+| `status`       | enum     | `pending` \| `active` \| `revoked`.                |
+| `createdAt`    | datetime | Creation timestamp.                                |
+| `updatedAt`    | datetime | Last mutation timestamp.                           |
 
-Orchestration responses use a stable error envelope. Every error carries a
-`code`, a human-readable `message`, and a `correlationId` that matches the
-`X-Request-Id` response header so operators can trace a single request across
-logs and metrics.
+Uniqueness is enforced on `(identityId, walletAddress, chain)` so that
+concurrent link requests cannot create duplicates.
 
-| Code | HTTP | Meaning |
-| --- | --- | --- |
-| `WALLET_UNAUTHORIZED` | `401` | Missing or invalid credentials. |
-| `WALLET_FORBIDDEN` | `403` | Authenticated but not owner/delegate/guardian. |
-| `WALLET_NOT_FOUND` | `404` | No wallet for the requested user/network. |
-| `WALLET_ALREADY_EXISTS` | `409` | Active wallet already exists for the pair. |
-| `WALLET_IDEMPOTENCY_CONFLICT` | `409` | Idempotency key reused for a different user/network. |
-| `WALLET_DEPENDENCY_UNAVAILABLE` | `503` | Key-management or RPC dependency failed; write was not committed. |
-| `WALLET_ORCHESTRATION_DISABLED` | `503` | Feature flag is off for this network. |
+## Payment asset code
 
-## Idempotency
+The migration `20260723_add_asset_code_to_payment` adds an `assetCode` column to
+the `Payment` model. It is the canonical, server-validated identifier of the
+asset a payment settles in, and it is the source of truth for AA/wallet/payment
+behavior. Clients never choose an unvalidated asset code.
 
-Every request may carry `X-Correlation-Id`. If absent, the server generates one
-and returns it in the response header. All error responses include the same
-correlation id so operators can trace a failure end-to-end.
+| Field       | Type   | Notes                                                       |
+| ----------- | ------ | ----------------------------------------------------------- |
+| `assetCode` | string | Non-null. Defaults to `XLM` for legacy rows.                |
 
-## Error envelope
+Rules:
 
-All errors share a stable shape:
+- `assetCode` is **non-null** with a default of `XLM`, so existing rows and
+  legacy clients keep working without a backfill race.
+- Allowed values are the configured asset allowlist (native `XLM` plus issued
+  asset codes). Anything outside the allowlist is rejected with
+  `PAYMENT_ASSET_CODE_INVALID`.
+- Length is capped at 12 characters and the charset is restricted to
+  `A-Z0-9` (Stellar asset code rules). Codes are normalized to upper case
+  before validation and persistence.
+- `assetCode` is immutable after creation. Changing the asset of an existing
+  payment requires a new payment; attempts to mutate it are rejected with
+  `PAYMENT_ASSET_CODE_IMMUTABLE`.
+- The server remains the source of truth: a client-supplied `assetCode` is
+  validated against the allowlist and never trusted to select a spend target.
+
+### Asset code error codes
+
+| Code                            | HTTP | Meaning                                        |
+| ------------------------------- | ---- | ---------------------------------------------- |
+| `PAYMENT_ASSET_CODE_INVALID`    | 400  | Missing, malformed, or non-allowlisted code.   |
+| `PAYMENT_ASSET_CODE_IMMUTABLE`  | 409  | Attempt to change `assetCode` after creation.  |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE`| 503  | Asset metadata dependency unavailable.         |
+
+## Authorization model
+
+Payment wallet identity operations are authorized against the following roles.
+All checks are deny-by-default.
+
+| Role       | Can link | Can unlink | Can grant delegate | Can revoke delegate |
+| ---------- | -------- | ---------- | ------------------ | ------------------- |
+| `owner`    | yes      | yes        | yes                | yes                 |
+| `delegate` | no       | no         | no                 | no                  |
+| `guardian` | no       | yes        | no                 | yes                 |
+| API key    | per scope| per scope  | no                 | no                  |
+| JWT        | per role | per role   | per role           | per role            |
+
+Rules:
+
+- A **delegate** may operate on a wallet only within the scope granted by the
+  owner. Delegates cannot link or unlink wallets or manage other delegates.
+- A **guardian** may unlink or revoke a delegate for recovery, but cannot link
+  new wallets or grant delegates.
+- **Expired auth** (JWT or API key) is rejected before any state is read.
+- **Revoked delegates** are rejected even if their token has not yet expired.
+- **Wrong role** is rejected with `403` and a stable error code.
+- Payment create/read entrypoints that carry `assetCode` require the same
+  owner/delegate/guardian/API-key/JWT authorization as the underlying payment;
+  `assetCode` never widens a caller's privileges.
+
+## Endpoints
+
+All endpoints require authentication. All responses include a `correlationId`
+for tracing. Errors use the stable codes below.
+
+### `POST /v1/payment-wallets`
+
+Link a payment wallet to an identity.
+
+Request:
 
 ```json
 {
-  "error": {
-    "code": "WALLET_SUCCESSOR_SELF_REFERENCE",
-    "message": "A wallet cannot be its own successor.",
-    "correlation_id": "c0ffee00-0000-4000-8000-000000000000"
-  }
+  "identityId": "uuid",
+  "walletAddress": "G...",
+  "chain": "stellar"
 }
 ```
 
-Stable error codes for the successor surface:
+Behavior:
 
-| Code | HTTP | Meaning |
-| --- | --- | --- |
-| `WALLET_NOT_FOUND` | 404 | Target wallet does not exist. |
-| `WALLET_SUCCESSOR_NOT_FOUND` | 404 | `successor_id` does not resolve to a wallet. |
-| `WALLET_SUCCESSOR_SELF_REFERENCE` | 422 | `successor_id` equals the wallet id. |
-| `WALLET_SUCCESSOR_CYCLE` | 422 | Assignment would create a successor cycle. |
-| `WALLET_SUCCESSOR_ALREADY_SET` | 409 | Wallet already has an active successor. |
-| `WALLET_SUCCESSOR_NOT_AUTHORIZED` | 403 | Caller is not owner/delegate/guardian for this wallet. |
-| `WALLET_SUCCESSOR_DELEGATE_REVOKED` | 403 | Delegate credential has been revoked. |
-| `WALLET_SUCCESSOR_DEPENDENCY_UNAVAILABLE` | 503 | RPC/DB/Horizon unavailable; write failed closed. |
-| `WALLET_SUCCESSOR_IDEMPOTENCY_CONFLICT` | 409 | Same idempotency key reused with a different payload. |
+- Requires `owner` role.
+- Idempotent on `(identityId, walletAddress, chain)`. A replay returns the
+  existing linkage with `200`; a new linkage returns `201`.
+- Fails closed if the database is unavailable.
 
-## Successor semantics
+### `DELETE /v1/payment-wallets/:id`
 
-A wallet may have at most one **active successor**. The `successor_id` field is
-the canonical pointer used by recovery and spend delegation. The following
-invariants are enforced server-side on every write:
+Unlink a payment wallet.
 
-1. **Existence** — `successor_id` must resolve to a wallet that exists.
-2. **No self-reference** — a wallet cannot be its own successor.
-3. **No cycles** — following `successor_id` from any wallet must terminate; the
-   server rejects assignments that would introduce a cycle.
-4. **Single active successor** — a wallet with an active successor must have it
-   explicitly cleared before a new one is assigned.
-5. **Authorization** — only the owner, an unrevoked delegate, or a guardian may
-   set or clear a successor. API keys are deny-by-default for this surface
-   unless explicitly granted the `wallet:successor:write` scope.
-6. **Idempotency** — writes accept an `Idempotency-Key` header. Replaying the
-   same key with the same payload returns the original result; replaying with a
-   different payload returns `WALLET_SUCCESSOR_IDEMPOTENCY_CONFLICT`.
-7. **Fail-closed** — if the RPC, database, or Horizon dependency is unavailable,
-   the write is rejected with `WALLET_SUCCESSOR_DEPENDENCY_UNAVAILABLE` and no
-   partial state is persisted.
+Behavior:
 
-### Set successor
+- Requires `owner` or `guardian` role.
+- Idempotent: unlinking an already-revoked linkage returns `200`.
+- Fails closed if the database is unavailable.
 
-```
-PUT /wallets/{wallet_id}/successor
-Authorization: Bearer <jwt>
-Idempotency-Key: <opaque>
-X-Correlation-Id: <opaque>
+### `POST /v1/payment-wallets/:id/delegates`
 
-{ "successor_id": "<wallet_id>" }
-```
+Grant a delegate.
 
-Returns `200` with the updated wallet on success. Returns the error envelope
-above on failure.
+Behavior:
 
-### Clear successor
+- Requires `owner` role.
+- Rejects revoked or expired caller auth.
 
-```
-DELETE /wallets/{wallet_id}/successor
-Authorization: Bearer <jwt>
-Idempotency-Key: <opaque>
-X-Correlation-Id: <opaque>
+### `DELETE /v1/payment-wallets/:id/delegates/:delegateId`
+
+Revoke a delegate.
+
+Behavior:
+
+- Requires `owner` or `guardian` role.
+- Revocation takes effect immediately; subsequent delegate requests are denied.
+
+### `POST /v1/payments`
+
+Create a payment. The request accepts an optional `assetCode`; when omitted it
+resolves to the configured default (`XLM`).
+
+Request:
+
+```json
+{
+  "identityId": "uuid",
+  "walletAddress": "G...",
+  "chain": "stellar",
+  "assetCode": "XLM",
+  "amount": "1000000"
+}
 ```
 
-Clearing is idempotent: clearing an already-cleared successor returns `200`.
+Behavior:
 
-### Read successor
+- Requires the same authorization as the underlying payment (owner, scoped
+  delegate, guardian for recovery, or a scoped API key / JWT).
+- `assetCode` is normalized to upper case, validated against the allowlist, and
+  persisted. Invalid codes return `400 PAYMENT_ASSET_CODE_INVALID`.
+- Idempotent on the client `Idempotency-Key`; a replay returns the stored
+  payment including its `assetCode`.
+- Fails closed if the database, RPC, or Horizon is unavailable.
 
-```
-GET /wallets/{wallet_id}/successor
-Authorization: Bearer <jwt>
-```
+### `GET /v1/payments/:id`
 
-Returns `{ "successor_id": "<wallet_id>" | null }`.
+Read a payment. The response always includes `assetCode`.
+
+Behavior:
+
+- Requires the same authorization as the underlying payment.
+- Returns the persisted `assetCode`; never recomputes it from client input.
+
+## Error codes
+
+| Code                          | HTTP | Meaning                                          |
+| ----------------------------- | ---- | ------------------------------------------------ |
+| `WALLET_IDENTITY_INVALID`     | 400  | Malformed identity or wallet address.            |
+| `WALLET_IDENTITY_UNAUTHORIZED`| 401  | Missing or expired auth.                         |
+| `WALLET_IDENTITY_FORBIDDEN`   | 403  | Wrong role or revoked delegate.                  |
+| `WALLET_IDENTITY_CONFLICT`    | 409  | Linkage exists with conflicting state.           |
+| `WALLET_IDENTITY_UNAVAILABLE` | 503  | Dependency (DB/RPC/Horizon) unavailable.         |
+| `WALLET_IDENTITY_RATE_LIMITED`| 429  | Rate limit exceeded.                             |
+| `PAYMENT_ASSET_CODE_INVALID`  | 400  | Missing, malformed, or non-allowlisted code.     |
+| `PAYMENT_ASSET_CODE_IMMUTABLE`| 409  | Attempt to change `assetCode` after creation.    |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE`| 503 | Asset metadata dependency unavailable.          |
+
+All error responses include `correlationId` and never include secrets or raw
+key material.
+
+## Idempotency and concurrency
+
+- Link and unlink are idempotent on the natural key. Concurrent duplicates are
+  resolved by the unique constraint; the loser returns the winner's state.
+- Payment creation is idempotent on the client `Idempotency-Key`; the stored
+  response includes the resolved `assetCode`.
+- Clients SHOULD send an `Idempotency-Key` header on writes. The server stores
+  the key with the resulting state and replays the stored response for repeats.
+- Replayed requests with a different body for the same key are rejected with
+  `WALLET_IDENTITY_CONFLICT`.
+
+## Failure modes
+
+| Failure                     | Behavior                                              |
+| --------------------------- | ----------------------------------------------------- |
+| DB outage                   | Writes fail `503 WALLET_IDENTITY_UNAVAILABLE`.        |
+| RPC/Horizon outage          | Writes fail closed; no partial linkage.               |
+| Asset metadata outage       | Writes fail `503 PAYMENT_ASSET_CODE_UNAVAILABLE`.     |
+| Auth expiry                 | `401 WALLET_IDENTITY_UNAUTHORIZED`.                   |
+| Wrong role / revoked delegate| `403 WALLET_IDENTITY_FORBIDDEN`.                     |
+| Oversized batch             | Rejected `400`; batch size capped.                    |
+| Spoofed webhook             | Rejected; signature verified before processing.       |
+| Testnet vs mainnet misconfig| Rejected; chain and network must match configuration. |
 
 ## Observability
 
-Successor writes emit structured logs and metrics on the money path:
+- Every request emits a structured log line with `correlationId`, `identityId`,
+  `walletAddress` (redacted to a prefix), `role`, `outcome`, and `latencyMs`.
+- Payment writes additionally log the resolved `assetCode` (never key material).
+- Metrics: `wallet_identity_link_total{outcome}`, `wallet_identity_unlink_total{outcome}`,
+  `wallet_identity_authz_denied_total{reason}`,
+  `wallet_identity_dependency_error_total{dependency}`, and
+  `payment_asset_code_total{assetCode,outcome}`.
+- No metric label or log field contains secrets, JWTs, or raw key material.
 
-- `wallet_successor_write_total{result="ok|error",code="..."}`
-- `wallet_successor_write_latency_seconds`
-- `wallet_successor_dependency_failures_total{dependency="rpc|db|horizon"}`
+## Mainnet safety
 
-Logs include the correlation id and wallet id only. They never include JWTs,
-API keys, webhook secrets, or raw key material.
+Payment wallet identity linkage is gated by the mainnet payment feature flag
+described in `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`. When the flag is off, all
+linkage writes return `503 WALLET_IDENTITY_UNAVAILABLE` and no state changes.
+Rollback is performed by disabling the flag; no data migration is required.
 
-## Feature flag / kill switch
+Asset code validation is part of the same money path and is gated by the same
+flag. When the flag is off, payment writes that carry `assetCode` fail closed
+with `503 PAYMENT_ASSET_CODE_UNAVAILABLE` and no state changes. Rollback is the
+flag flip; the `assetCode` column is additive and requires no data migration.
 
-Successor writes are gated behind the `WALLET_SUCCESSOR_WRITES_ENABLED` flag.
-When disabled, the endpoints return `503 WALLET_SUCCESSOR_DEPENDENCY_UNAVAILABLE`
-and no state is mutated. This flag is the documented rollback lever for
-mainnet-affecting changes; see the runbook for the rollback procedure.
+## Contributor checklist (Stellar Wave)
 
-## References
-
-- `prisma/migrations/20260601000000_add_wallet_successor_id/`
+- [ ] Read this document and the custody security model before changing
+      linkage or asset code code.
+- [ ] Add unit tests for invariants and auth negatives, including asset code
+      allowlist and immutability cases.
+- [ ] Add integration/e2e coverage on the payment critical path.
+- [ ] Keep CI green for this package; add a required check if ungated.
+- [ ] Update runbooks and cross-links when behavior changes.

@@ -35,6 +35,13 @@ export enum ErrorCode {
   KEY_DECRYPT_FAILED = 'KEY_DECRYPT_FAILED',
   KEY_VERSION_UNSUPPORTED = 'KEY_VERSION_UNSUPPORTED',
 
+  // Transaction export (secure downloads)
+  EXPORT_JOB_NOT_FOUND = 'EXPORT_JOB_NOT_FOUND',
+  EXPORT_NOT_READY = 'EXPORT_NOT_READY',
+  EXPORT_DOWNLOAD_FORBIDDEN = 'EXPORT_DOWNLOAD_FORBIDDEN',
+  EXPORT_DOWNLOAD_EXPIRED = 'EXPORT_DOWNLOAD_EXPIRED',
+  EXPORT_TOO_LARGE = 'EXPORT_TOO_LARGE',
+
   // Validation
   VALIDATION_FAILED = 'VALIDATION_FAILED',
 }
@@ -110,6 +117,11 @@ const DEFAULT_STATUS_BY_CODE: Record<ErrorCode, number> = {
   [ErrorCode.WRITE_REJECTED]: 503,
   [ErrorCode.KEY_DECRYPT_FAILED]: 503,
   [ErrorCode.KEY_VERSION_UNSUPPORTED]: 503,
+  [ErrorCode.EXPORT_JOB_NOT_FOUND]: 404,
+  [ErrorCode.EXPORT_NOT_READY]: 409,
+  [ErrorCode.EXPORT_DOWNLOAD_FORBIDDEN]: 403,
+  [ErrorCode.EXPORT_DOWNLOAD_EXPIRED]: 410,
+  [ErrorCode.EXPORT_TOO_LARGE]: 413,
   [ErrorCode.VALIDATION_FAILED]: 422,
 };
 
@@ -133,6 +145,11 @@ const GENERIC_MESSAGE_BY_CODE: Record<ErrorCode, string> = {
   [ErrorCode.WRITE_REJECTED]: 'Write rejected to protect data integrity.',
   [ErrorCode.KEY_DECRYPT_FAILED]: 'Key material could not be decrypted; operation refused.',
   [ErrorCode.KEY_VERSION_UNSUPPORTED]: 'Key version is not supported; operation refused.',
+  [ErrorCode.EXPORT_JOB_NOT_FOUND]: 'Transaction export job not found.',
+  [ErrorCode.EXPORT_NOT_READY]: 'Transaction export is not ready for download.',
+  [ErrorCode.EXPORT_DOWNLOAD_FORBIDDEN]: 'You are not allowed to download this export.',
+  [ErrorCode.EXPORT_DOWNLOAD_EXPIRED]: 'This export download link has expired.',
+  [ErrorCode.EXPORT_TOO_LARGE]: 'Requested export exceeds the maximum allowed size.',
   [ErrorCode.VALIDATION_FAILED]: 'Validation failed.',
 };
 
