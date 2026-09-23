@@ -47,6 +47,41 @@ linkage record. Conceptually:
 Uniqueness is enforced on `(identityId, walletAddress, chain)` so that
 concurrent link requests cannot create duplicates.
 
+## Payment asset code
+
+The migration `20260723_add_asset_code_to_payment` adds an `assetCode` column to
+the `Payment` model. It is the canonical, server-validated identifier of the
+asset a payment settles in, and it is the source of truth for AA/wallet/payment
+behavior. Clients never choose an unvalidated asset code.
+
+| Field       | Type   | Notes                                                       |
+| ----------- | ------ | ----------------------------------------------------------- |
+| `assetCode` | string | Non-null. Defaults to `XLM` for legacy rows.                |
+
+Rules:
+
+- `assetCode` is **non-null** with a default of `XLM`, so existing rows and
+  legacy clients keep working without a backfill race.
+- Allowed values are the configured asset allowlist (native `XLM` plus issued
+  asset codes). Anything outside the allowlist is rejected with
+  `PAYMENT_ASSET_CODE_INVALID`.
+- Length is capped at 12 characters and the charset is restricted to
+  `A-Z0-9` (Stellar asset code rules). Codes are normalized to upper case
+  before validation and persistence.
+- `assetCode` is immutable after creation. Changing the asset of an existing
+  payment requires a new payment; attempts to mutate it are rejected with
+  `PAYMENT_ASSET_CODE_IMMUTABLE`.
+- The server remains the source of truth: a client-supplied `assetCode` is
+  validated against the allowlist and never trusted to select a spend target.
+
+### Asset code error codes
+
+| Code                            | HTTP | Meaning                                        |
+| ------------------------------- | ---- | ---------------------------------------------- |
+| `PAYMENT_ASSET_CODE_INVALID`    | 400  | Missing, malformed, or non-allowlisted code.   |
+| `PAYMENT_ASSET_CODE_IMMUTABLE`  | 409  | Attempt to change `assetCode` after creation.  |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE`| 503  | Asset metadata dependency unavailable.         |
+
 ## Authorization model
 
 Payment wallet identity operations are authorized against the following roles.
@@ -69,6 +104,9 @@ Rules:
 - **Expired auth** (JWT or API key) is rejected before any state is read.
 - **Revoked delegates** are rejected even if their token has not yet expired.
 - **Wrong role** is rejected with `403` and a stable error code.
+- Payment create/read entrypoints that carry `assetCode` require the same
+  owner/delegate/guardian/API-key/JWT authorization as the underlying payment;
+  `assetCode` never widens a caller's privileges.
 
 ## Endpoints
 
@@ -124,6 +162,42 @@ Behavior:
 - Requires `owner` or `guardian` role.
 - Revocation takes effect immediately; subsequent delegate requests are denied.
 
+### `POST /v1/payments`
+
+Create a payment. The request accepts an optional `assetCode`; when omitted it
+resolves to the configured default (`XLM`).
+
+Request:
+
+```json
+{
+  "identityId": "uuid",
+  "walletAddress": "G...",
+  "chain": "stellar",
+  "assetCode": "XLM",
+  "amount": "1000000"
+}
+```
+
+Behavior:
+
+- Requires the same authorization as the underlying payment (owner, scoped
+  delegate, guardian for recovery, or a scoped API key / JWT).
+- `assetCode` is normalized to upper case, validated against the allowlist, and
+  persisted. Invalid codes return `400 PAYMENT_ASSET_CODE_INVALID`.
+- Idempotent on the client `Idempotency-Key`; a replay returns the stored
+  payment including its `assetCode`.
+- Fails closed if the database, RPC, or Horizon is unavailable.
+
+### `GET /v1/payments/:id`
+
+Read a payment. The response always includes `assetCode`.
+
+Behavior:
+
+- Requires the same authorization as the underlying payment.
+- Returns the persisted `assetCode`; never recomputes it from client input.
+
 ## Error codes
 
 | Code                          | HTTP | Meaning                                          |
@@ -134,6 +208,9 @@ Behavior:
 | `WALLET_IDENTITY_CONFLICT`    | 409  | Linkage exists with conflicting state.           |
 | `WALLET_IDENTITY_UNAVAILABLE` | 503  | Dependency (DB/RPC/Horizon) unavailable.         |
 | `WALLET_IDENTITY_RATE_LIMITED`| 429  | Rate limit exceeded.                             |
+| `PAYMENT_ASSET_CODE_INVALID`  | 400  | Missing, malformed, or non-allowlisted code.     |
+| `PAYMENT_ASSET_CODE_IMMUTABLE`| 409  | Attempt to change `assetCode` after creation.    |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE`| 503 | Asset metadata dependency unavailable.          |
 
 All error responses include `correlationId` and never include secrets or raw
 key material.
@@ -142,6 +219,8 @@ key material.
 
 - Link and unlink are idempotent on the natural key. Concurrent duplicates are
   resolved by the unique constraint; the loser returns the winner's state.
+- Payment creation is idempotent on the client `Idempotency-Key`; the stored
+  response includes the resolved `assetCode`.
 - Clients SHOULD send an `Idempotency-Key` header on writes. The server stores
   the key with the resulting state and replays the stored response for repeats.
 - Replayed requests with a different body for the same key are rejected with
@@ -153,6 +232,7 @@ key material.
 | --------------------------- | ----------------------------------------------------- |
 | DB outage                   | Writes fail `503 WALLET_IDENTITY_UNAVAILABLE`.        |
 | RPC/Horizon outage          | Writes fail closed; no partial linkage.               |
+| Asset metadata outage       | Writes fail `503 PAYMENT_ASSET_CODE_UNAVAILABLE`.     |
 | Auth expiry                 | `401 WALLET_IDENTITY_UNAUTHORIZED`.                   |
 | Wrong role / revoked delegate| `403 WALLET_IDENTITY_FORBIDDEN`.                     |
 | Oversized batch             | Rejected `400`; batch size capped.                    |
@@ -163,9 +243,11 @@ key material.
 
 - Every request emits a structured log line with `correlationId`, `identityId`,
   `walletAddress` (redacted to a prefix), `role`, `outcome`, and `latencyMs`.
+- Payment writes additionally log the resolved `assetCode` (never key material).
 - Metrics: `wallet_identity_link_total{outcome}`, `wallet_identity_unlink_total{outcome}`,
-  `wallet_identity_authz_denied_total{reason}`, and
-  `wallet_identity_dependency_error_total{dependency}`.
+  `wallet_identity_authz_denied_total{reason}`,
+  `wallet_identity_dependency_error_total{dependency}`, and
+  `payment_asset_code_total{assetCode,outcome}`.
 - No metric label or log field contains secrets, JWTs, or raw key material.
 
 ## Mainnet safety
@@ -175,11 +257,17 @@ described in `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`. When the flag is off, all
 linkage writes return `503 WALLET_IDENTITY_UNAVAILABLE` and no state changes.
 Rollback is performed by disabling the flag; no data migration is required.
 
+Asset code validation is part of the same money path and is gated by the same
+flag. When the flag is off, payment writes that carry `assetCode` fail closed
+with `503 PAYMENT_ASSET_CODE_UNAVAILABLE` and no state changes. Rollback is the
+flag flip; the `assetCode` column is additive and requires no data migration.
+
 ## Contributor checklist (Stellar Wave)
 
 - [ ] Read this document and the custody security model before changing
-      linkage code.
-- [ ] Add unit tests for invariants and auth negatives.
-- [ ] Add integration/e2e coverage on the critical path.
-- [ ] Keep CI green for the package.
-- [ ] Document any new error code or metric.
+      linkage or asset code code.
+- [ ] Add unit tests for invariants and auth negatives, including asset code
+      allowlist and immutability cases.
+- [ ] Add integration/e2e coverage on the payment critical path.
+- [ ] Keep CI green for this package; add a required check if ungated.
+- [ ] Update runbooks and cross-links when behavior changes.
