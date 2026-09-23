@@ -189,4 +189,105 @@ describe('ApiKeyGuard', () => {
     await expect(guard.canActivate(context)).rejects.toThrow();
     expect(req.apiKeyContext).toBeUndefined();
   });
+
+  it('links payment wallet identity to the authenticated developer (deny-by-default)', async () => {
+    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
+    jest.spyOn(reflector, 'get').mockReturnValue(true);
+
+    const req: any = {
+      headers: {
+        authorization: 'ApiKey mux_test_abc',
+        'user-agent': 'jest',
+      },
+      path: '/payments/wallets/link',
+      method: 'POST',
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      body: { walletId: 'wallet-1', developerId: 'attacker-supplied-id' },
+    };
+
+    const res: any = {
+      statusCode: 201,
+      on: jest.fn((event, callback) => {
+        if (event === 'finish') {
+          callback();
+        }
+      }),
+    };
+
+    const context: any = {
+      getHandler: () => undefined,
+      getClass: () => undefined,
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+    };
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
+    // The authenticated developer identity is the source of truth; client-supplied
+    // developerId must not be trusted for the payment wallet linkage.
+    expect(req.apiKeyContext).toBeDefined();
+    expect(req.apiKeyContext.developerId).toBe('dev-id');
+    expect(req.apiKeyContext.developerId).not.toBe(req.body.developerId);
+  });
+
+  it('rejects payment wallet linkage when the API key is revoked (deny-by-default)', async () => {
+    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
+    jest.spyOn(reflector, 'get').mockReturnValue(true);
+
+    (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
+      throw new Error('Unauthorized');
+    });
+
+    const req: any = {
+      headers: {
+        authorization: 'ApiKey mux_revoked',
+        'user-agent': 'jest',
+      },
+      path: '/payments/wallets/link',
+      method: 'POST',
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      body: { walletId: 'wallet-1' },
+    };
+
+    const context: any = {
+      getHandler: () => undefined,
+      getClass: () => undefined,
+      switchToHttp: () => ({ getRequest: () => req }),
+    };
+
+    await expect(guard.canActivate(context)).rejects.toThrow();
+    expect(req.apiKeyContext).toBeUndefined();
+  });
+
+  it('fails closed (503) on payment wallet linkage when the API key store is unavailable', async () => {
+    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
+    jest.spyOn(reflector, 'get').mockReturnValue(true);
+
+    (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
+      throw new Error('DB is down');
+    });
+
+    const req: any = {
+      headers: {
+        authorization: 'ApiKey mux_test_abc',
+        'user-agent': 'jest',
+      },
+      path: '/payments/wallets/link',
+      method: 'POST',
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+      body: { walletId: 'wallet-1' },
+    };
+
+    const context: any = {
+      getHandler: () => undefined,
+      getClass: () => undefined,
+      switchToHttp: () => ({ getRequest: () => req }),
+    };
+
+    await expect(guard.canActivate(context)).rejects.toThrow(
+      'API key validation service unavailable',
+    );
+    expect(req.apiKeyContext).toBeUndefined();
+  });
 });
