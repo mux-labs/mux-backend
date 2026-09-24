@@ -50,8 +50,73 @@ export function resolveRequestId(inbound?: unknown): string {
 }
 
 /**
+ * Explicit allowlist of public (unauthenticated) endpoints. Every route that is
+ * not matched here is treated as privileged and must be authenticated by the
+ * global auth guard. This is the single source of truth for the public surface
+ * so that adding a route never silently exposes it without auth.
+ *
+ * Entries are matched against the request path (query string stripped) using
+ * exact matches or a trailing `*` wildcard. Keep this list minimal and review
+ * every addition: deny-by-default is the invariant.
+ */
+export const PUBLIC_ENDPOINT_ALLOWLIST: readonly string[] = [
+  '/health',
+  '/health/*',
+  '/metrics',
+  '/auth/challenge',
+  '/auth/verify',
+  '/auth/refresh',
+];
+
+/**
+ * Stable error code returned when a non-allowlisted route is reached without
+ * authentication. Kept constant so clients and dashboards can rely on it.
+ */
+export const UNAUTHENTICATED_ERROR_CODE = 'AUTH_UNAUTHENTICATED';
+
+/**
+ * Normalizes a request path for allowlist matching: strips the query string and
+ * any trailing slash so `/health/` and `/health?x=1` both match `/health`.
+ */
+export function normalizeRequestPath(path: string): string {
+  const withoutQuery = path.split('?')[0] ?? '';
+  if (withoutQuery.length > 1 && withoutQuery.endsWith('/')) {
+    return withoutQuery.slice(0, -1);
+  }
+  return withoutQuery;
+}
+
+/**
+ * Deny-by-default check: returns true only when the path is explicitly listed
+ * as public. Supports exact matches and a single trailing `*` wildcard.
+ */
+export function isPublicEndpoint(path: string): boolean {
+  const normalized = normalizeRequestPath(path);
+
+  for (const entry of PUBLIC_ENDPOINT_ALLOWLIST) {
+    if (entry.endsWith('*')) {
+      const prefix = entry.slice(0, -1);
+      if (normalized.startsWith(prefix)) {
+        return true;
+      }
+    } else if (normalized === entry) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Assigns a correlation id to every request, echoes it back on the response
  * and exposes it on the request so the error envelope and logs can include it.
+ *
+ * The interceptor also enforces the public endpoint allowlist: any request to a
+ * non-allowlisted route that has not been authenticated is rejected fail-closed
+ * with a stable error code and the correlation id, so clients cannot bypass
+ * policy by hitting privileged routes directly. Authentication is signalled by
+ * the auth guard attaching `request.user` (or an API-key principal); the
+ * interceptor never inspects or logs raw credentials.
  *
  * Internal cron-triggered endpoints are guarded by a required cron secret
  * (see CronSecretGuard). Auth failures on those routes are surfaced with a
@@ -69,7 +134,13 @@ export class RequestIdInterceptor implements NestInterceptor {
     const http = context.switchToHttp();
     const request = http.getRequest<{
       headers?: Record<string, unknown>;
+      method?: string;
+      originalUrl?: string;
+      url?: string;
+      path?: string;
       requestId?: string;
+      user?: unknown;
+      apiKey?: unknown;
     }>();
     const response = http.getResponse<{ setHeader?: (name: string, value: string) => void }>();
 
@@ -83,7 +154,48 @@ export class RequestIdInterceptor implements NestInterceptor {
       response.setHeader(REQUEST_ID_HEADER, requestId);
     }
 
+    this.enforcePublicAllowlist(request);
+
     return next.handle();
+  }
+
+  /**
+   * Fail-closed authorization gate. Public routes pass through untouched; every
+   * other route must carry an authenticated principal (set by the auth guard)
+   * or the request is rejected with a stable, non-leaking error code.
+   */
+  private enforcePublicAllowlist(request?: {
+    method?: string;
+    originalUrl?: string;
+    url?: string;
+    path?: string;
+    requestId?: string;
+    user?: unknown;
+    apiKey?: unknown;
+  }): void {
+    if (!request) {
+      return;
+    }
+
+    const path = request.originalUrl ?? request.url ?? request.path ?? '';
+
+    if (isPublicEndpoint(path)) {
+      return;
+    }
+
+    const authenticated = Boolean(request.user) || Boolean(request.apiKey);
+
+    if (!authenticated) {
+      const error = new Error('Authentication required for this endpoint') as Error & {
+        status?: number;
+        code?: string;
+        requestId?: string;
+      };
+      error.status = 401;
+      error.code = UNAUTHENTICATED_ERROR_CODE;
+      error.requestId = request.requestId;
+      throw error;
+    }
   }
 
   /**

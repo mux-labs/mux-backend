@@ -25,6 +25,30 @@ export interface ErrorResponse {
 }
 
 /**
+ * Stable error code emitted when a request targets a route that is not part of
+ * the public (unauthenticated) allowlist and no valid credentials were supplied.
+ */
+export const AUTH_REQUIRED_ERROR_CODE = 'AUTH_REQUIRED';
+
+/**
+ * Explicit allowlist of public (unauthenticated) endpoints.
+ *
+ * Deny-by-default: any route that is not matched here is treated as protected.
+ * Matching is done against the request path (query string stripped) using exact
+ * matches and prefix matches (entries ending in `/*`).
+ */
+export const PUBLIC_ENDPOINT_ALLOWLIST: readonly string[] = [
+  '/health',
+  '/health/*',
+  '/metrics',
+  '/auth/login',
+  '/auth/register',
+  '/auth/refresh',
+  '/auth/challenge',
+  '/auth/verify',
+];
+
+/**
  * Global exception filter that transforms all exceptions into a consistent,
  * structured error response format.
  *
@@ -36,6 +60,7 @@ export interface ErrorResponse {
  * - Error logging with context
  * - Security: No stack traces or sensitive data in production
  * - Support for validation errors and custom error details
+ * - Deny-by-default auth: non-allowlisted routes without credentials fail closed
  */
 @Catch()
 export class HttpExceptionFilter implements ExceptionFilter {
@@ -72,6 +97,42 @@ export class HttpExceptionFilter implements ExceptionFilter {
   }
 
   /**
+   * Determine whether the request path is part of the public allowlist.
+   * Query strings and trailing slashes are normalized before matching.
+   */
+  private isPublicEndpoint(request: Request): boolean {
+    const rawPath = (request.path || request.url || '/').split('?')[0];
+    const path = rawPath.length > 1 ? rawPath.replace(/\/+$/, '') : rawPath;
+
+    return PUBLIC_ENDPOINT_ALLOWLIST.some((entry) => {
+      if (entry.endsWith('/*')) {
+        const prefix = entry.slice(0, -2);
+        return path === prefix || path.startsWith(`${prefix}/`);
+      }
+      return path === entry;
+    });
+  }
+
+  /**
+   * Detect whether the request carries any credential material. Presence of a
+   * credential is not proof of validity, but its absence on a protected route
+   * is a definitive auth failure that must fail closed.
+   */
+  private hasCredentials(request: Request): boolean {
+    const authorization = request.headers['authorization'];
+    if (typeof authorization === 'string' && authorization.trim().length > 0) {
+      return true;
+    }
+
+    const apiKey = request.headers['x-api-key'];
+    if (typeof apiKey === 'string' && apiKey.trim().length > 0) {
+      return true;
+    }
+
+    return false;
+  }
+
+  /**
    * Build a structured error response from any exception type
    */
   private buildErrorResponse(
@@ -82,6 +143,21 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const timestamp = new Date().toISOString();
     const path = request.url;
     const method = request.method;
+
+    // Deny-by-default: protected routes without credentials fail closed with a
+    // stable error code, regardless of the underlying exception.
+    if (!this.isPublicEndpoint(request) && !this.hasCredentials(request)) {
+      return {
+        statusCode: HttpStatus.UNAUTHORIZED,
+        timestamp,
+        path,
+        method,
+        message: 'Authentication required',
+        error: 'Unauthorized',
+        errorCode: AUTH_REQUIRED_ERROR_CODE,
+        requestId,
+      };
+    }
 
     // Handle HttpException (NestJS exceptions)
     if (exception instanceof HttpException) {

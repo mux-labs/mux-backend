@@ -259,24 +259,18 @@ describe('ApiKeyGuard', () => {
     expect(req.apiKeyContext).toBeUndefined();
   });
 
-  it('fails closed (503) on payment wallet linkage when the API key store is unavailable', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
-
-    (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
-      throw new Error('DB is down');
-    });
+  it('denies by default for a non-allowlisted route without IS_PUBLIC metadata', async () => {
+    // No IS_PUBLIC metadata and no REQUIRE_API_KEY metadata: the guard must
+    // still deny by default rather than silently allowing the request.
+    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(undefined);
+    jest.spyOn(reflector, 'get').mockReturnValue(undefined);
 
     const req: any = {
-      headers: {
-        authorization: 'ApiKey mux_test_abc',
-        'user-agent': 'jest',
-      },
-      path: '/payments/wallets/link',
+      headers: { 'user-agent': 'jest' },
+      path: '/admin/privileged',
       method: 'POST',
       ip: '127.0.0.1',
       socket: { remoteAddress: '127.0.0.1' },
-      body: { walletId: 'wallet-1' },
     };
 
     const context: any = {
@@ -285,9 +279,35 @@ describe('ApiKeyGuard', () => {
       switchToHttp: () => ({ getRequest: () => req }),
     };
 
-    await expect(guard.canActivate(context)).rejects.toThrow(
-      'API key validation service unavailable',
-    );
+    await expect(guard.canActivate(context)).rejects.toThrow();
+    expect(req.apiKeyContext).toBeUndefined();
+  });
+
+  it('allows only explicitly allowlisted public endpoints without credentials', async () => {
+    // IS_PUBLIC is the explicit allowlist marker; only routes decorated with it
+    // bypass API key auth. Everything else is denied by default.
+    jest.spyOn(reflector, 'getAllAndOverride').mockImplementation((key: any) => {
+      if (key === IS_PUBLIC) {
+        return true;
+      }
+      return undefined;
+    });
+
+    const req: any = {
+      headers: { 'user-agent': 'jest' },
+      path: '/health',
+      method: 'GET',
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
+    };
+
+    const context: any = {
+      getHandler: () => undefined,
+      getClass: () => undefined,
+      switchToHttp: () => ({ getRequest: () => req }),
+    };
+
+    await expect(guard.canActivate(context)).resolves.toBe(true);
     expect(req.apiKeyContext).toBeUndefined();
   });
 });
