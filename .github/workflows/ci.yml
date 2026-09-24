@@ -69,6 +69,64 @@ jobs:
           WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
           WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
 
+  login-smoke-e2e:
+    name: Login Smoke E2E (required)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mux_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Run database migrations
+        run: pnpm prisma:migrate:prod
+
+      - name: Verify login smoke spec is present
+        # #903: Fail closed if the required login smoke e2e spec is missing so
+        # the check can never be silently skipped.
+        run: test -f test/login-smoke.e2e-spec.ts
+
+      - name: Run login smoke e2e
+        run: pnpm test:e2e -- test/login-smoke.e2e-spec.ts
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
