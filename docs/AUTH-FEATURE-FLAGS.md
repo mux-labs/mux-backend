@@ -44,6 +44,9 @@ explicitly enabled. The wallet orchestration path uses:
   `WALLET_ORCHESTRATION_DISABLED`.
 - `WALLET_ORCHESTRATION_MAINNET_ENABLED` — additional gate for mainnet. Testnet
   may be enabled independently; mainnet requires both flags.
+- `FEE_SPONSORSHIP_ENABLED` — gates fee sponsorship budget writes on mainnet.
+  Default OFF (deny-by-default). When `false`, mainnet fee sponsorship requests
+  fail closed with `FEE_SPONSORSHIP_FEATURE_FLAG_DISABLED`. Testnet is unaffected.
 
 ### Kill-switch
 

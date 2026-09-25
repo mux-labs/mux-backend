@@ -10,6 +10,7 @@ Related docs:
 
 - `docs/custody-security-model.md` — custody and key-handling invariants.
 - `docs/MAINNET-PAYMENT-FEATURE-FLAG.md` — mainnet kill-switch and rollout.
+- `README.md` — fee sponsorship budgets API reference (#920).
 
 ## Invariants
 

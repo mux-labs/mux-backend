@@ -975,6 +975,70 @@ model ApiChangelog {
   @@index([changeType])
 }
 
+/// Fee sponsorship budget lifecycle states
+enum FeeSponsorshipBudgetStatus {
+  /// Budget is active and accepting sponsorship requests.
+  ACTIVE
+  /// Budget is paused; no new sponsorships are accepted.
+  PAUSED
+  /// Budget is fully exhausted or manually closed.
+  CLOSED
+}
+
+/// Fee sponsorship budget for a wallet.
+/// Tracks the maximum amount a sponsor is willing to pay on behalf
+/// of a sponsored wallet for Stellar/Soroban transaction fees.
+///
+/// Invariants:
+/// - A wallet may have at most one active budget at a time.
+/// - Budgets are scoped to a network (mainnet/testnet).
+/// - All monetary amounts are stored as strings to preserve precision.
+/// - The server is the source of truth for spend tracking.
+model FeeSponsorshipBudget {
+  id String @id @default(uuid())
+
+  /// Wallet this budget is associated with.
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  /// Sponsor identity (e.g., sponsor wallet address or project ID).
+  sponsorId String
+
+  /// Maximum total amount the sponsor is willing to pay (in the asset's smallest unit, e.g., stroops).
+  limitAmount String
+
+  /// Asset code for the sponsorship (e.g., "XLM", "USDC"). Null for native XLM.
+  assetCode String?
+
+  /// Asset issuer for credit-alphanumeric assets. Null for native XLM.
+  assetIssuer String?
+
+  /// Network scope for this budget.
+  network WalletNetwork
+
+  /// Current remaining budget (amount left to sponsor).
+  remainingAmount String
+
+  /// Lifecycle state.
+  status FeeSponsorshipBudgetStatus @default(ACTIVE)
+
+  /// Optional note set by the sponsor or admin.
+  note String?
+
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
+  @@unique([walletId, network])
+  @@index([sponsorId])
+  @@index([status])
+  @@index([network])
+  @@index([deletedAt])
+}
+
 /// Async export job for transaction data
 /// Tracks status, progress, and result location for large exports
 model TransactionExportJob {
