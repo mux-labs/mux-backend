@@ -84,8 +84,44 @@ jobs:
       - name: Run verify-orchestrator.sh
         run: bash verify-orchestrator.sh
 
+      - name: Run verify-orchestrator-retries.sh
+        # #963: Fail-closed gate for the wallet-orchestration retry contract —
+        # a retry must never mint a second custody key for the same user.
+        run: bash verify-orchestrator-retries.sh
+
       - name: Run verify-idempotent-user.sh
         run: bash verify-idempotent-user.sh
+
+  wallet-orchestration-e2e:
+    name: Wallet Orchestration E2E (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify wallet orchestration e2e spec is present
+        # #963: Fail closed if the spec is missing so the retry contract can
+        # never be silently un-gated.
+        run: test -f test/wallet-orchestration.e2e-spec.ts
+
+      - name: Run wallet orchestration e2e
+        # Pure in-memory suite: no DB, RPC, or Horizon required.
+        run: pnpm test:e2e -- test/wallet-orchestration.e2e-spec.ts
 
   openapi-drift:
     name: OpenAPI Generate + Drift

@@ -220,6 +220,32 @@ key material.
 
 - Link and unlink are idempotent on the natural key. Concurrent duplicates are
   resolved by the unique constraint; the loser returns the winner's state.
+- **Wallet creation is retry-safe.** `POST /v1/wallets/orchestration/create`
+  never mints a second custody key for the same user, because two keys means
+  funds stranded on an orphaned address. Three independent guards enforce this:
+  1. **Key replay** — a completed `idempotencyKey` returns the *original*
+     result verbatim (same wallet id, same `isNewWallet`, same `createdAt`),
+     so a retry after a dropped response is a no-op. Reusing a key for a
+     different `userId`/`network` is a `409`
+     (`WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT`) rather than a cross-tenant
+     leak.
+  2. **In-flight reservation** — a key currently being processed is rejected
+     with `WALLET_ORCHESTRATION_IDEMPOTENCY_IN_PROGRESS` (also `409`) so two
+     concurrent retries cannot both mint. The reservation is released in a
+     `finally`, so one transient failure never poisons a key.
+  3. **Natural-key guard** — one wallet per `(userId, network)`. Even with no
+     idempotency key, a repeat call returns the existing wallet with
+     `isNewWallet: false` instead of creating a duplicate.
+- The orchestration surface is **deny-by-default**: it requires an API key
+  (`ApiKeyGuard`) and is gated behind `FEATURE_WALLET_ORCHESTRATOR`
+  (`FeatureFlagGuard`). Only the exact string `true` enables it.
+- A dependency outage returns `503` unchanged rather than being masked as a
+  `500`, so the calling orchestrator can retry a request that would succeed.
+- Private key material never crosses the service boundary: the orchestration
+  result carries no `privateKey` field.
+- Invariants are gated in CI by `verify-orchestrator-retries.sh` and covered by
+  `src/wallets/wallet-creation-orchestrator.service.spec.ts` and
+  `test/wallet-orchestration.e2e-spec.ts`.
 - Payment creation is idempotent on the client `Idempotency-Key`; the stored
   response includes the resolved `assetCode`.
 - Clients SHOULD send an `Idempotency-Key` header on writes. The server stores

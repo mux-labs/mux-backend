@@ -647,6 +647,7 @@ no database/RPC/Horizon connection, and never print raw key material.
 |--------|--------------------|------------|
 | `verify-encryption.sh` | Keys encrypted before storage; env-based key; controlled decryption; safe failure handling; no plaintext persistence; strong cipher; boot validation | [`docs/custody-security-model.md`](docs/custody-security-model.md), README § Security |
 | `verify-orchestrator.sh` | Orchestrator presence; atomic creation; one-wallet-per-user; idempotency; fail-closed outages; authz; feature-flag gate | [`docs/WALLET-API.md`](docs/WALLET-API.md), [`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md), [`test/wallet-orchestration.e2e-spec.ts`](test/wallet-orchestration.e2e-spec.ts) |
+| `verify-orchestrator-retries.sh` | Retry contract: key replay, in-flight reservation, awaited mint, one-wallet-per-user, authz, stable codes, no key material, validated DTO | [`docs/WALLET-API.md`](docs/WALLET-API.md), [`test/wallet-orchestration.e2e-spec.ts`](test/wallet-orchestration.e2e-spec.ts) |
 | `verify-idempotent-user.sh` | `findOrCreateUser`; `authId` uniqueness; existing-user return; authz; schema invariants; fail-closed outages | [`test/users-find-or-create.e2e-spec.ts`](test/users-find-or-create.e2e-spec.ts), [`prisma/schema.prisma`](prisma/schema.prisma) |
 | `scripts/verify-key-management-consolidation.sh` | Key-management consolidation invariants | [`docs/key-management-consolidation.md`](docs/key-management-consolidation.md), [`docs/MIGRATION-KEY-MANAGEMENT.md`](docs/MIGRATION-KEY-MANAGEMENT.md) |
 
