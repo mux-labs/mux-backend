@@ -116,6 +116,11 @@ mismatched secret disables the internal jobs rather than exposing them.
 - Internal job endpoints are rate-limited and idempotent; replayed or
   concurrent triggers must not cause duplicate side effects.
 - On dependency outages (RPC/DB/Horizon), internal write paths fail closed.
+- **Idempotency TTL cleanup** is fail-closed on database outage and deletes
+  only rows whose TTL has already elapsed, so it can never cause a duplicate
+  payment on the money path. It is opt-in and logs counts/cutoffs only — never
+  idempotency keys or cached response payloads. Contract:
+  [docs/IDEMPOTENCY-TTL.md](docs/IDEMPOTENCY-TTL.md).
 - Coverage: `test/cron-secret-guard.e2e-spec.ts` verifies missing/invalid/missing
   config behavior and that secrets never leak into error messages.
 

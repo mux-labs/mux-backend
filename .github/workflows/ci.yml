@@ -87,6 +87,12 @@ jobs:
       - name: Run verify-idempotent-user.sh
         run: bash verify-idempotent-user.sh
 
+      - name: Run verify-idempotency-ttl.sh
+        # #962: Fail-closed gate for the idempotency TTL invariants — cleanup
+        # must only delete strictly-expired rows, must be batch-bounded, and
+        # must fail closed (not mask) a database outage.
+        run: bash verify-idempotency-ttl.sh
+
   openapi-drift:
     name: OpenAPI Generate + Drift
     runs-on: ubuntu-latest

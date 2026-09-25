@@ -636,7 +636,7 @@ Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key
 
 ### Verification Scripts (CI Gates)
 
-Four fail-closed verification scripts assert the documented security invariants
+Five fail-closed verification scripts assert the documented security invariants
 against the source tree and Prisma schema. They run in CI (the `verify-scripts`
 job) and exit **non-zero when any invariant is violated**, so a regression is
 surfaced as a failed PR rather than a silent drift. Run them locally from the
@@ -648,6 +648,7 @@ no database/RPC/Horizon connection, and never print raw key material.
 | `verify-encryption.sh` | Keys encrypted before storage; env-based key; controlled decryption; safe failure handling; no plaintext persistence; strong cipher; boot validation | [`docs/custody-security-model.md`](docs/custody-security-model.md), README § Security |
 | `verify-orchestrator.sh` | Orchestrator presence; atomic creation; one-wallet-per-user; idempotency; fail-closed outages; authz; feature-flag gate | [`docs/WALLET-API.md`](docs/WALLET-API.md), [`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md), [`test/wallet-orchestration.e2e-spec.ts`](test/wallet-orchestration.e2e-spec.ts) |
 | `verify-idempotent-user.sh` | `findOrCreateUser`; `authId` uniqueness; existing-user return; authz; schema invariants; fail-closed outages | [`test/users-find-or-create.e2e-spec.ts`](test/users-find-or-create.e2e-spec.ts), [`prisma/schema.prisma`](prisma/schema.prisma) |
+| `verify-idempotency-ttl.sh` | Cleanup deletes only strictly-expired rows; batch-bounded; fail-closed on DB outage; deny-by-default worker; no key material logged | [`docs/IDEMPOTENCY-TTL.md`](docs/IDEMPOTENCY-TTL.md), [`src/idempotency/idempotency.service.ts`](src/idempotency/idempotency.service.ts) |
 | `scripts/verify-key-management-consolidation.sh` | Key-management consolidation invariants | [`docs/key-management-consolidation.md`](docs/key-management-consolidation.md), [`docs/MIGRATION-KEY-MANAGEMENT.md`](docs/MIGRATION-KEY-MANAGEMENT.md) |
 
 Treat a failing verification script as a failed PR — do not bypass it with
@@ -758,6 +759,37 @@ Key authentication-related environment variables (when applicable):
 - `AUTH_PROVIDER` — Identity provider (e.g., CLERK, BETTER_AUTH)
 - `API_KEY_DEFAULT_EXPIRY_DAYS` — Optional. When set, newly created API keys expire after this many days. Omit (or set to `0`) for non-expiring keys. See [API Key Expiry](#api-key-expiry) below.
 - `RATE_LIMIT_RPM` — Requests per minute limit (per API key)
+
+---
+
+## Idempotency TTL Cleanup
+
+Every money-path write carrying an idempotency key inserts an
+`IdempotencyRecord` row so a replayed request returns the original result. That
+table has a TTL (`expiresAt`, indexed) but **nothing pruned expired rows**, so it
+grew without bound — degrading the index that replay protection depends on.
+
+`IdempotencyCleanupWorker` (in `IdempotencyModule`) deletes expired rows on a
+configurable interval. Invariants: only rows with `expiresAt < now` are ever
+deleted (a live record is never touched, so cleanup can never cause a duplicate
+payment), each pass is batch-bounded, a database outage **fails closed** with
+`IDEMPOTENCY_CLEANUP_DEPENDENCY_UNAVAILABLE` rather than reporting a false
+"0 deleted", and logs carry counts and cutoffs only — never keys or payloads.
+
+The worker is **opt-in / deny-by-default**: it only starts when
+`IDEMPOTENCY_CLEANUP_ENABLED=true`, so a deployment using an external scheduler
+can leave it off and run cleanup in exactly one place.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IDEMPOTENCY_CLEANUP_ENABLED` | `false` | Set to `true` to run the in-process worker |
+| `IDEMPOTENCY_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run a cleanup pass |
+| `IDEMPOTENCY_CLEANUP_BATCH_SIZE` | `1000` | Rows deleted per pass (clamped to `10000`) |
+
+Full contract, metrics, scheduling, and rollback:
+[docs/IDEMPOTENCY-TTL.md](docs/IDEMPOTENCY-TTL.md).
 
 ---
 
