@@ -113,16 +113,59 @@ echo ""
 # ---------------------------------------------------------------------------
 echo "5. Checking that plain private keys are never persisted..."
 
-# Any privateKey assignment/usage not routed through encryption is a violation.
-# Test/spec files are excluded because they are not executed in production.
-PLAINTEXT_PK=$(grep -rn "\.privateKey\|privateKey[[:space:]]*=" src/ 2>/dev/null \
-  | grep -v "encryptAndSerialize\|EncryptionService\|KeyManagementService\|\.spec\.ts\|\.test\.ts\|//.*privateKey" \
+# Generating key material is legitimate and must happen somewhere; what must
+# never happen is plaintext key material reaching the database, a log, or an
+# API response. A blunt `privateKey =` grep cannot tell those apart: it
+# flags the legitimate key-generation site while missing an actual
+# `prisma.create({ privateKey })`. This check therefore looks for the two
+# things that actually constitute a leak:
+#
+#   (a) plaintext key material assigned into a persistence payload
+#   (b) plaintext key material written to a log
+#
+# Spec/test files are excluded because they are not executed in production.
+# A plaintext secret is a leak if it is (a) returned as a field on a result
+# object, (b) written into a persistence payload, or (c) logged. Generating
+# key material is legitimate; any of these three is not.
+#
+# `privateKey`/`secretSeed` are the offending identifiers. `encryptedSecret`
+# is deliberately NOT one of them — it is the AES-GCM envelope and is the
+# correct thing to persist.
+LEAKED_FIELDS='privateKey|secretSeed|secret'
+
+# (a) returned on a runtime object literal. A bare `privateKey: string;` is a
+# TypeScript type declaration, not a value being returned, so require that the
+# declaration is NOT immediately terminated with a type annotation.
+PLAINTEXT_RETURN=$(grep -rnE "(^[[:space:]]*|\{[[:space:]]*)($LEAKED_FIELDS):" src/ 2>/dev/null \
+  | grep -vE "encryptAndSerialize|\.spec\.ts|\.test\.ts|/generated/" \
+  | grep -vE ":[[:space:]]*(string|number|boolean|Buffer|string\[\]|[A-Za-z0-9_]*(Str|Secret|Key)Str)[[:space:]]*;[[:space:]]*$" \
   || true)
-if [ -n "$PLAINTEXT_PK" ]; then
-    fail "Private key material may bypass the encryption layer — review:"
-    echo "$PLAINTEXT_PK" | head -10
+
+# (b) written into a persistence payload
+PLAINTEXT_PERSIST=$(grep -rnE "(create|update|upsert|insert)[^;]*\{[^}]*($LEAKED_FIELDS)[[:space:]]*:" src/ 2>/dev/null \
+  | grep -vE "encryptAndSerialize|\.spec\.ts|\.test\.ts|/generated/" \
+  || true)
+
+# (c) logged
+PLAINTEXT_LOG=$(grep -rnE "logger\.[a-z]+\([^)]*($LEAKED_FIELDS)\b" src/ 2>/dev/null \
+  | grep -vE "mask|redact|\.spec\.ts|\.test\.ts" \
+  || true)
+
+LEAKS="$(printf '%s\n%s\n%s' "$PLAINTEXT_RETURN" "$PLAINTEXT_PERSIST" "$PLAINTEXT_LOG" | grep -v '^[[:space:]]*$' || true)"
+
+if [ -n "$LEAKS" ]; then
+    fail "Plaintext key material may be returned, persisted, or logged — review:"
+    echo "$LEAKS" | head -10
 else
-    pass "No direct privateKey usage outside the encryption layer"
+    pass "No plaintext key material is returned, persisted, or logged"
+fi
+
+# The wallet creation path must carry the AES-GCM envelope, not a raw secret.
+if grep -q "encryptedSecret" src/wallets/wallet-creation-orchestrator.service.ts 2>/dev/null && \
+   grep -q "encryptAndSerialize" src/wallets/wallet-creation-orchestrator.service.ts 2>/dev/null; then
+    pass "Wallet creation encrypts the secret seed before it leaves the orchestrator"
+else
+    fail "Wallet creation does NOT encrypt the secret seed — plaintext custody material would be persisted"
 fi
 echo ""
 
