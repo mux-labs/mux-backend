@@ -27,6 +27,7 @@ Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 | `FEATURE_KEY_MANAGEMENT`      | `/v1/key-management/**` — key ops        | enabled  |
 | `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | enabled  |
 | `FEE_SPONSORSHIP_ENABLED`     | Fee sponsorship budget writes on mainnet | **disabled** (deny-by-default) |
+| `SOROBAN_INVOKE_ENABLED`      | Soroban contract invocation            | **disabled** (deny-by-default) |
 
 ## Production vs Development
 

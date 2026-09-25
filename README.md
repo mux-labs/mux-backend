@@ -29,7 +29,7 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Invisible wallet creation and management
 * Secure custody and encryption of Stellar keypairs
 * Transaction relaying and fee sponsorship
-* Soroban smart contract invocation
+* Soroban smart contract invocation (`POST /v1/soroban/invoke`, allowlisted contracts only, gated by `SOROBAN_INVOKE_ENABLED`)
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications

@@ -263,6 +263,95 @@ flag. When the flag is off, payment writes that carry `assetCode` fail closed
 with `503 PAYMENT_ASSET_CODE_UNAVAILABLE` and no state changes. Rollback is the
 flag flip; the `assetCode` column is additive and requires no data migration.
 
+## Soroban invoke orchestration
+
+`SorobanInvokeService` (`src/soroban/`) orchestrates contract calls on a
+wallet's behalf.
+
+### Invariants
+
+1. **The backend orchestrates; the client requests.** A client supplies an
+   intent — an allowlisted contract *name*, a function, and arguments. The
+   server resolves the contract id, bounds-checks the arguments, simulates, and
+   signs with the custody key. A client can never supply a contract id or a
+   pre-signed transaction.
+2. **Explicit allowlist.** Only `(contract, function)` pairs in
+   `ALLOWED_CONTRACT_FUNCTIONS` are invocable. An open "invoke any contract the
+   client names" surface turns the backend into a generic relay for arbitrary
+   third-party code, which is not a wallet.
+3. **Arguments are bounds-checked before the network is touched.** Arity,
+   per-argument Soroban type, argument count and total serialized size are
+   validated locally, so a malformed request never costs an RPC round trip.
+4. **Simulate before submit.** Every invoke is simulated first. A predicted
+   revert returns a failure with `SOROBAN_SIMULATION_REVERTED` and **nothing is
+   submitted**.
+5. **Fee bounds are server-side.** A client may lower the fee it will pay but
+   never raise it: a `maxFee` above the server ceiling is refused. A fee below
+   the floor is refused because a dust invoke is an RPC griefing vector.
+6. **Network is enforced.** A function with `mainnetEnabled: false` is refused
+   on mainnet with `SOROBAN_FUNCTION_NOT_ENABLED`, so an unaudited contract
+   cannot be driven at mainnet value.
+7. **Deny-by-default authz and kill-switch.** Owner/guardian/API-key may invoke;
+   a delegate is refused. `SOROBAN_INVOKE_ENABLED` defaults to off.
+8. **Fail-closed on outage.** An unreachable RPC or contract registry refuses the
+   invoke; it never falls through to submitting an unsimulated transaction.
+9. **No key material anywhere.** Logs, metrics and responses carry contract
+   names, function names, ids and correlation ids only.
+
+### Endpoints
+
+All routes require an API key (`ApiKeyGuard`, deny-by-default). Invoking
+additionally requires `SOROBAN_INVOKE_ENABLED=true`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/v1/soroban/contracts?network=…` | Allowlisted functions usable on a network. |
+| `POST` | `/v1/soroban/invoke` | Orchestrate a contract call. Body: `{ contract, functionName, args, network, simulateOnly?, maxFee? }`. |
+
+### Error codes
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `SOROBAN_INVOKE_INVALID_INPUT` | 400 | Malformed contract, function, args, or fee. |
+| `SOROBAN_ARGUMENT_MISMATCH` | 400 | Arity or per-argument type does not match the signature. |
+| `SOROBAN_FEE_TOO_LOW` | 400 | `maxFee` is below the server floor. |
+| `SOROBAN_CONTRACT_NOT_ALLOWED` | 403 | Contract is not in the allowlist. |
+| `SOROBAN_FUNCTION_NOT_ALLOWED` | 403 | Function is not allowlisted on that contract. |
+| `SOROBAN_FUNCTION_NOT_ENABLED` | 403 | Function is not enabled on the requested network. |
+| `SOROBAN_INSUFFICIENT_ROLE` | 403 | Role may not invoke contracts. |
+| `SOROBAN_REQUEST_TOO_LARGE` | 413 | Too many arguments, or the payload exceeds the size budget. |
+| `SOROBAN_INVOKE_DISABLED` | 503 | `SOROBAN_INVOKE_ENABLED` is not `true`. |
+| `SOROBAN_RPC_UNAVAILABLE` | 503 | Soroban RPC or contract registry unavailable; the invoke is refused. |
+
+A simulated revert is **not** an HTTP error: it returns `status: "FAILED"` with
+`errorCode: "SOROBAN_SIMULATION_REVERTED"` and `200`, because the request was
+well-formed and the *simulation* reported the failure.
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `SOROBAN_INVOKE_ENABLED` | `false` | Kill-switch for all invokes. Only `true`/`1` enables. |
+| `MAX_INVOKE_ARGS` | `16` | Maximum arguments per invoke. |
+| `MAX_INVOKE_ARG_BYTES` | `8192` | Maximum serialized argument size. |
+| `MIN_INVOKE_FEE_STROOPS` | `100` | Server fee floor. |
+| `MAX_INVOKE_FEE_STROOPS` | `1000000` | Server fee ceiling. |
+
+### Port bindings
+
+`SOROBAN_RPC` and `CONTRACT_REGISTRY` are intentionally **not** bound in
+`SorobanInvokeModule`. Both belong to the custody/network layer that owns the
+wallet keys and the Soroban endpoint. Until a deployment binds them,
+`SorobanInvokeService` fails to construct and the surface is unreachable —
+fail-closed by absence, rather than fail-open with a stub that would "succeed"
+without ever reaching the chain. Do not add default implementations here.
+
+### Rollback
+
+Set `SOROBAN_INVOKE_ENABLED=false` and redeploy. No schema change, so no data
+migration. Allowlist discovery (`GET /v1/soroban/contracts`) keeps working so
+clients can render correct UIs while the surface is disabled.
+
 ## Contributor checklist (Stellar Wave)
 
 - [ ] Read this document and the custody security model before changing
