@@ -761,6 +761,29 @@ Key authentication-related environment variables (when applicable):
 
 ---
 
+## Cron Schedules
+
+Every scheduled job in the backend — its endpoint, recommended cadence,
+idempotency guard, authentication, failure modes, and operator runbook — is
+documented in **[docs/CRON-SCHEDULES.md](docs/CRON-SCHEDULES.md)**.
+
+In short:
+
+- Internal jobs are **deny-by-default** and require the `X-Cron-Secret` header
+  matching `CRON_SECRET`. A missing/unset/mismatched secret rejects the request
+  **before any job logic runs**; there is no fallback credential.
+- Comparison is constant-time (`crypto.timingSafeEqual`) and the secret is never
+  logged or returned in an error body.
+- Every job is **replay-safe**: a duplicated or overlapping trigger must not
+  produce duplicate side effects, and every batch parameter is clamped.
+- Adding a new scheduled job requires updating the schedule table *and*
+  `test/cron-schedule-docs.e2e-spec.ts` in the same PR.
+
+The access-control and rotation policy lives in
+[SECURITY.md](SECURITY.md#internal-cron-jobs--secret-guard).
+
+---
+
 ## Rate-Limit Record Cleanup
 
 The `RateLimitCleanupWorker` runs on a configurable interval and prunes expired

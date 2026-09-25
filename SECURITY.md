@@ -111,6 +111,13 @@ mismatched secret disables the internal jobs rather than exposing them.
 
 ### Operational Notes
 
+- **Schedules, cadences, and the operator runbook** for every cron job are
+  documented in [docs/CRON-SCHEDULES.md](docs/CRON-SCHEDULES.md). That document
+  is the source of truth for *when* each job runs and *what to do when it fails*;
+  this section remains the source of truth for *who may call it*.
+- Adding a new scheduled job requires updating the schedule table in
+  `docs/CRON-SCHEDULES.md` **and** `test/cron-schedule-docs.e2e-spec.ts` in the
+  same PR, so the documented surface cannot drift from the implemented one.
 - Auth failures are logged with a correlation/request id and a stable error
   code, but **never** log the secret value or raw key material.
 - Internal job endpoints are rate-limited and idempotent; replayed or

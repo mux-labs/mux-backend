@@ -329,6 +329,37 @@ jobs:
       - name: Run transaction env validator e2e
         run: pnpm test:e2e -- test/transaction-env-validator.e2e-spec.ts
 
+  cron-schedule-docs:
+    name: Cron Schedule Docs (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify cron schedule docs spec is present
+        # #961: Fail closed if the required spec is missing so the documented
+        # cron schedule surface can never be silently un-gated.
+        run: test -f test/cron-schedule-docs.e2e-spec.ts
+
+      - name: Run cron schedule docs contract test
+        # Pure documentation contract test: no DB, no secrets, no network.
+        run: pnpm test:e2e -- test/cron-schedule-docs.e2e-spec.ts
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
