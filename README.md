@@ -1068,6 +1068,9 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 Wallets can carry a short, optional human-readable label.
 
 - `PATCH /wallets/:id/nickname` - set or clear the wallet nickname
+- `GET /wallets/key/versions` - key versions this build can read/write (#922)
+- `GET /wallets/:id/key` - key metadata (versions only, no key material) (#922)
+- `POST /wallets/:id/key/rotate` - rotate `keyVersion` (owner/guardian, gated by `KEY_ROTATION_ENABLED`) (#922)
 
 **Request body**:
 ```json

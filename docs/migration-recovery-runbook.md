@@ -204,9 +204,25 @@ Key-management operations return the shared error envelope (`src/common/dto/erro
 
 | Operation | Entrypoint | Authz | Stable error codes |
 |-----------|-----------|-------|--------------------|
-| Rotate key envelope | `POST /keys/rotate` | owner / guardian | `KEY_VERSION_CONFLICT`, `KEY_DECRYPT_FAILED`, `AUTHZ_DENIED` |
-| Migrate wallet key | `POST /wallets/:id/key/migrate` | owner / delegate | `KEY_MIGRATION_REPLAYED`, `KEY_VERSION_UNKNOWN`, `AUTHZ_DENIED` |
-| Read key metadata | `GET /wallets/:id/key` | owner / delegate / API-key | `KEY_NOT_FOUND`, `AUTHZ_DENIED` |
+| Rotate `keyVersion` | `POST /v1/wallets/:id/key/rotate` | owner / guardian | `KEY_ROTATION_VERSION_CONFLICT`, `KEY_ROTATION_DECRYPT_FAILED`, `KEY_ROTATION_INSUFFICIENT_ROLE` |
+| Read key metadata | `GET /v1/wallets/:id/key` | owner / delegate / guardian / API-key | `KEY_ROTATION_WALLET_NOT_FOUND`, `KEY_ROTATION_NOT_AUTHORIZED` |
+| List supported versions | `GET /v1/wallets/key/versions` | API-key | — |
+
+Rotation error codes are namespaced `KEY_ROTATION_*` and defined in
+`src/wallets/key-rotation.model.ts`. The full set:
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `KEY_ROTATION_INVALID_INPUT` | 400 | Malformed wallet id, or a `targetKeyVersion` outside `SUPPORTED_KEY_VERSIONS`. |
+| `KEY_ROTATION_WALLET_NOT_FOUND` | 404 | No wallet with that id. |
+| `KEY_ROTATION_NOT_AUTHORIZED` | 403 | Caller claimed `owner` for a wallet they do not own. |
+| `KEY_ROTATION_INSUFFICIENT_ROLE` | 403 | Role (e.g. `delegate`) may not rotate. |
+| `KEY_ROTATION_VERSION_CONFLICT` | 409 | Rotation would not increase `keyVersion` (no-op or downgrade). |
+| `KEY_ROTATION_IDEMPOTENCY_CONFLICT` | 409 | Idempotency key reused for a different target version. |
+| `KEY_ROTATION_DECRYPT_FAILED` | 503 | Envelope could not be decrypted; **rotation refused, no write applied**. |
+| `KEY_ROTATION_VERSION_UNSUPPORTED` | 503 | The wallet's stored version is outside the supported set. |
+| `KEY_ROTATION_FEATURE_FLAG_DISABLED` | 503 | `KEY_ROTATION_ENABLED` is not `true`. |
+| `KEY_ROTATION_DEPENDENCY_UNAVAILABLE` | 503 | Key store unreachable; **rotation refused, no write applied**. |
 
 All responses include a `correlationId` for tracing; errors are actionable and never echo key material.
 
@@ -244,10 +260,52 @@ All responses include a `correlationId` for tracing; errors are actionable and n
 
 5. **Verify** with the integrity checks below and confirm no `KEY_*` errors in logs.
 
+### Rotation invariants (enforced in code)
+
+`KeyRotationService` (`src/wallets/key-rotation.service.ts`) enforces these
+mechanically, each covered by a unit test:
+
+1. **Fail-closed decrypt.** A provider that cannot decrypt the envelope aborts
+   the rotation with `KEY_ROTATION_DECRYPT_FAILED` and **no write is applied**.
+   There is no fallback to plaintext, to an older key, or to a prior version.
+2. **Closed version set.** A wallet whose stored `keyVersion` is not in
+   `SUPPORTED_KEY_VERSIONS` is refused with
+   `KEY_ROTATION_VERSION_UNSUPPORTED`. An unknown version is never treated as
+   "the latest" — that is how a rotation destroys the only copy of a key.
+3. **Monotonicity.** `keyVersion` only increases. A no-op or downgrade returns
+   `KEY_ROTATION_VERSION_CONFLICT`, so a replayed or out-of-order request cannot
+   walk a wallet backwards through derivation schemes.
+4. **Idempotent replay.** A repeated request with the same `Idempotency-Key` and
+   target returns the original result with `applied: false` and does **not**
+   re-encrypt. Reusing the key for a *different* target is
+   `KEY_ROTATION_IDEMPOTENCY_CONFLICT` rather than a silent re-run.
+5. **Ownership is server-resolved.** The `owner` role is checked against the
+   stored `userId`, never against a client-supplied claim. A `delegate` may read
+   metadata but can never rotate key material.
+6. **No key material anywhere.** Logs, metrics and responses carry version
+   numbers, wallet ids and correlation ids only. The envelope is passed through
+   opaquely and never inspected, logged, or returned.
+
+### Crypto provider binding
+
+`KeyEnvelopeProvider` is intentionally **not** registered in `WalletsModule`.
+Re-encryption belongs to the custody/HSM layer (`src/key-management`), which
+owns `WALLET_ENCRYPTION_KEY` and the derivation scheme. Until a deployment binds
+the token, `KeyRotationService` fails to construct and the surface is
+unreachable — fail-closed by absence rather than fail-open with a stub that
+silently "succeeds" and loses a wallet's key. Do not add a default provider
+here.
+
 ### Rollback / kill-switch
 
-- The key-migration change is gated by `KEY_MIGRATION_ENABLED`; disabling it reverts to the previous (pre-migration) code path without data loss.
-- Rollback is safe because envelopes are additive: old versions remain readable until explicitly retired.
+- Rotation is gated by `KEY_ROTATION_ENABLED`; setting it to `false` and
+  redeploying returns the service to metadata-read-only. No data migration is
+  required: the `keyVersion` column and its `>= 1` check already exist.
+- Rollback is safe because envelopes are additive: old versions remain readable
+  until explicitly retired.
+- To roll a single wallet back after a bad rotation, do **not** attempt a
+  version downgrade — it is refused by design. Follow the recovery procedure
+  above and re-issue key material through the custody layer instead.
 
 ---
 
