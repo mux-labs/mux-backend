@@ -263,6 +263,80 @@ flag. When the flag is off, payment writes that carry `assetCode` fail closed
 with `503 PAYMENT_ASSET_CODE_UNAVAILABLE` and no state changes. Rollback is the
 flag flip; the `assetCode` column is additive and requires no data migration.
 
+## Multi-asset payment matrix
+
+`AssetMatrixService` (`src/payments/asset-matrix.ts`) decides which asset a
+payment may carry. This section documents the implementation behind the
+asset-code allowlist and `PAYMENT_ASSET_CODE_UNAVAILABLE` referenced elsewhere in
+this document.
+
+### Invariants
+
+1. **The matrix is the allowlist.** An asset absent from `ASSET_MATRIX` is
+   refused with `PAYMENT_ASSET_UNKNOWN`. There is no "if it looks like a valid
+   Stellar asset, accept it" path — accepting an unreviewed issuer is how an
+   impersonation token gets spent.
+2. **Issuer is part of the identity.** A credit asset is identified by
+   `(code, issuer)`, never by code alone. A known code with an unrecognised
+   issuer is refused with `PAYMENT_ASSET_ISSUER_MISMATCH`; this is the check
+   that blocks a look-alike token reusing a legitimate code.
+3. **Network is enforced.** A matrix entry marked `mainnetEnabled: false` is
+   refused on mainnet with `PAYMENT_ASSET_NOT_ENABLED`. A testnet asset can
+   never settle on mainnet, even when its code and issuer are otherwise valid.
+4. **Native XLM carries no issuer.** `XLM` with an `assetIssuer` is refused — a
+   caller must not be able to assert a "native" asset that is not native. An
+   absent `assetCode` still means native, so existing native payments are
+   unaffected.
+5. **Amounts are strings, precision-checked.** Amounts are validated in the
+   asset's smallest unit as a decimal string, never as a JS `number`, so a
+   large or 7-decimal amount is not silently rounded. An amount with more
+   fractional digits than the asset allows is **refused**
+   (`PAYMENT_AMOUNT_INVALID`), not truncated — silently rounding sends a
+   different amount than the user asked for.
+6. **Fail-closed on the flag.** Credit-asset writes require
+   `MULTI_ASSET_PAYMENTS_ENABLED`. Native XLM is unaffected: the flag gates
+   *new* asset exposure and must not break the existing money path.
+7. **Code length fits the type.** `CREDIT_ALPHANUM4` takes 1-4 characters and
+   `CREDIT_ALPHANUM12` takes 5-12; a mismatch is
+   `PAYMENT_ASSET_CODE_LENGTH_INVALID`, because such a payment could never
+   settle on-chain.
+
+### Error codes
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `PAYMENT_ASSET_INVALID_INPUT` | 400 | Malformed asset code, or an issuer with no code. |
+| `PAYMENT_ASSET_UNKNOWN` | 400 | Asset code is not in the matrix. |
+| `PAYMENT_ASSET_ISSUER_MISMATCH` | 400 | Issuer is absent or not recognised for the code. |
+| `PAYMENT_ASSET_NOT_ENABLED` | 400 | Asset is not enabled on the requested network. |
+| `PAYMENT_ASSET_CODE_LENGTH_INVALID` | 400 | Code length does not fit the declared asset type. |
+| `PAYMENT_AMOUNT_INVALID` | 400 | Amount is non-positive, non-numeric, or over-precise. |
+| `PAYMENT_MULTI_ASSET_DISABLED` | 503 | `MULTI_ASSET_PAYMENTS_ENABLED` is not `true`. |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE` | 503 | Asset metadata unavailable; the write is refused. |
+
+### Adding an asset
+
+Add a row to `ASSET_MATRIX`. A new mainnet asset requires `mainnetEnabled: true`
+and a reviewed issuer address — that row is the assertion "this issuer's asset
+is acceptable to move money in", so it belongs in a reviewed diff rather than a
+runtime chain query. Add a testnet row first with `mainnetEnabled: false` to
+exercise it before enabling it on mainnet.
+
+### Observability
+
+Metrics: `payment_asset_rejected`, `payment_asset_unknown`,
+`payment_asset_issuer_mismatch`, `payment_asset_not_enabled`,
+`payment_amount_precision_exceeded`, `payment_multi_asset_blocked_by_flag`.
+
+A rejected issuer is attacker-supplied, so it is **never** echoed into the error
+response or the log line; only the asset code and correlation id are.
+
+### Rollback
+
+Set `MULTI_ASSET_PAYMENTS_ENABLED=false` and redeploy. Native XLM payments
+continue to work; credit-asset writes are refused. The `assetCode` column is
+additive and requires no data migration.
+
 ## Contributor checklist (Stellar Wave)
 
 - [ ] Read this document and the custody security model before changing
