@@ -48,6 +48,8 @@ In a separate terminal (while the stack is running):
 docker compose exec api npx prisma migrate deploy
 ```
 
+> **Note:** The `api` container runs as the non-root `mux` user (UID 1001). The `docker compose exec` command drops into a shell as that user, so any files created inside the container are owned by `mux`. If you need to run commands as root for debugging, use `docker compose exec --user root api sh`.
+
 ### 4. Verify the API is healthy
 
 ```bash
@@ -103,6 +105,21 @@ Database: mux_db
 
 ---
 
+## Container hardening
+
+The production Dockerfile runs the API as a non-root user (`mux`, UID 1001) with the following security controls:
+
+| Control | Detail |
+|---------|--------|
+| Non-root user | The `mux` user (UID 1001) owns all application files and runs the process. |
+| No new privileges | `security_opt: no-new-privileges:true` prevents the container from gaining additional capabilities at runtime. |
+| Read-only filesystem (production) | The Dockerfile copies only production artifacts; the container does not include build tools, source code, or dev dependencies. |
+| Fail-closed on migration failure | If `prisma migrate deploy` fails, the entrypoint exits non-zero and the container stops — orchestrators detect the failure immediately. |
+
+For production deployments on Kubernetes or ECS, apply the same `USER` and `securityOpt` settings from `docker-compose.yml`, and consider adding a `readOnlyRootFilesystem` root-level mount with `tmpfs` for `/tmp` and Prisma cache writes.
+
+---
+
 ## Troubleshooting
 
 **`ECONNREFUSED` on startup** — the API starts before Postgres is ready. Docker Compose has a `healthcheck` on the `db` service and the `api` depends on it, so this should resolve automatically. If it persists, increase the `retries` value in the `db.healthcheck` block of `docker-compose.yml`.
@@ -110,3 +127,5 @@ Database: mux_db
 **`relation "X" does not exist`** — migrations have not been run yet. Execute `docker compose exec api npx prisma migrate deploy`.
 
 **Port already in use** — stop your local Postgres or change the host port mapping as described above.
+
+**Permission denied on migration** — the `mux` user (UID 1001) must own the `/app` directory inside the container. If you rebuilt the image and see permission errors, ensure the `chown mux:mux /app` step in the Dockerfile ran successfully. You can verify with `docker compose exec api id`.
