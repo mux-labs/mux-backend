@@ -453,6 +453,274 @@ jobs:
         # Pure documentation test: no DB, no network, no secrets.
         run: pnpm test:e2e -- test/migration-recovery-tabletop.e2e-spec.ts
 
+  security-md:
+    name: SECURITY.md contract
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify SECURITY.md against test contract
+        # #916: Required check. Runs test/security-md.spec.ts (previously
+        # ungated) so the security policy — contacts, Response SLA, safe
+        # harbor, production requirements, disclosure timeline — cannot
+        # silently drift from the documented contract.
+        run: pnpm exec jest --config ./test/jest-e2e.json --runTestsByPath test/security-md.spec.ts
+
+      - name: Run key management consolidation verification
+        # #918: Fail-closed required check for the custody-key invariants
+        # documented in docs/key-management-consolidation.md and
+        # docs/custody-security-model.md. Exit code is 0 on pass, 1 on any
+        # error-severity finding, 2/3 on verifier misuse.
+        run: pnpm verify:key-consolidation
+
+  login-smoke-e2e:
+    name: Login Smoke E2E (required)
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mux_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Run database migrations
+        run: pnpm prisma:migrate:prod
+
+      - name: Verify login smoke spec is present
+        # #903: Fail closed if the required login smoke e2e spec is missing so
+        # the check can never be silently skipped.
+        run: test -f test/login-smoke.e2e-spec.ts
+
+      - name: Run login smoke e2e
+        run: pnpm test:e2e -- test/login-smoke.e2e-spec.ts
+
+  transaction-env-validator-e2e:
+    name: Transaction Env Validator E2E (required)
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify transaction env validator e2e spec is present
+        # #914: Fail closed if the required spec is missing so the check can
+        # never be silently skipped.
+        run: test -f test/transaction-env-validator.e2e-spec.ts
+
+      - name: Run transaction env validator e2e
+        run: pnpm test:e2e -- test/transaction-env-validator.e2e-spec.ts
+
+  cron-schedule-docs:
+    name: Cron Schedule Docs (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify cron schedule docs spec is present
+        # #961: Fail closed if the required spec is missing so the documented
+        # cron schedule surface can never be silently un-gated.
+        run: test -f test/cron-schedule-docs.e2e-spec.ts
+
+      - name: Run cron schedule docs contract test
+        # Pure documentation contract test: no DB, no secrets, no network.
+        run: pnpm test:e2e -- test/cron-schedule-docs.e2e-spec.ts
+
+  migration-recovery-tabletop:
+    name: Migration Recovery Tabletop (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify migration recovery runbook is present
+        # #929: Fail closed if the runbook is missing so the recovery
+        # procedure can never be silently un-gated.
+        run: test -f docs/migration-recovery-runbook.md
+
+      - name: Verify tabletop exercise doc is present
+        run: test -f docs/migration-recovery-tabletop.md
+
+      - name: Verify tabletop contract spec is present
+        run: test -f test/migration-recovery-tabletop.e2e-spec.ts
+
+      - name: Run migration recovery tabletop contract test
+        # #929: Asserts the runbook only invokes scripts that exist in
+        # package.json (it previously named five that do not), and that the
+        # tabletop exercise covers every runbook scenario, names roles,
+        # timebox, abort conditions and after-action record, and forbids
+        # running against mainnet or real key material.
+        # Pure documentation test: no DB, no network, no secrets.
+        run: pnpm test:e2e -- test/migration-recovery-tabletop.e2e-spec.ts
+
+  api-prefix-docs:
+    name: API Prefix Docs Contract (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify pre
+  api-prefix-docs:
+    name: API Prefix Docs Contract (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify prefix spec is present
+        # #932: Fail closed if the spec is missing so the /v1 prefix contract
+        # can never be silently un-gated.
+        run: test -f test/api-prefix-v1.e2e-spec.ts
+
+      - name: Verify docs contract spec is present
+        # #932: Same fail-closed guarantee for the docs<->spec contract test.
+        run: test -f test/api-prefix-v1-docs.e2e-spec.ts
+
+      - name: Run API prefix docs contract test
+        # #931, #930: Parses test/api-prefix-v1.e2e-spec.ts and fails when
+        # README_V1_PREFIX.md or TEST_VERIFICATION_GUIDE.md disagree with it
+        # about suite names, per-suite counts, totals, or referenced pnpm
+        # scripts. Pure documentation test: no DB, no network, no secrets.
+        run: pnpm test:e2e -- test/api-prefix-v1-docs.e2e-spec.ts
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest
@@ -502,6 +770,11 @@ jobs:
 
       - name: Run database migrations
         run: pnpm prisma:migrate:prod
+
+      - name: Verify /v1 prefix spec is present
+        # #932: Fail closed if the spec is missing so the prefix behaviour
+        # can never be silently un-gated by the full e2e run.
+        run: test -f test/api-prefix-v1.e2e-spec.ts
 
       - name: Run e2e tests
         run: pnpm test:e2e
