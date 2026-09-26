@@ -4,6 +4,7 @@ import {
   NotFoundException,
   OnModuleDestroy,
   Optional,
+  TooManyRequestsException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
@@ -24,6 +25,7 @@ import { RequestContextService } from '../common/request-context/request-context
 import { requestIdAwareFetch } from '../common/http/request-id-fetch';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletRetryService } from './wallet-retry.service';
+import { WalletSponsorshipLimiter } from './wallet-sponsorship-limits';
 import { WalletApiMetricsService } from './wallet-api-metrics.service';
 import { WalletOrchestratorMetricsService } from './wallet-orchestrator-metrics.service';
 
@@ -188,6 +190,15 @@ export class WalletCreationOrchestrator implements OnModuleDestroy {
   /** Idempotency records for wallet operations are retained for 24 hours. */
   private readonly IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
 
+  /**
+   * Caps how much sponsor resource wallet creation may consume (#957).
+   *
+   * Created here rather than injected so the cap is always present: an
+   * optional dependency would silently disable the control if a module wiring
+   * change ever dropped it.
+   */
+  private readonly sponsorshipLimiter = new WalletSponsorshipLimiter();
+
   constructor(
     private encryptionService: EncryptionService,
     private configService: ConfigService,
@@ -289,6 +300,13 @@ export class WalletCreationOrchestrator implements OnModuleDestroy {
           };
         }
 
+        // --- Phase: sponsorship-limits ---
+        // Checked here, immediately before the wallet is minted and BEFORE the
+        // testnet faucet is touched, so a refused request spends no sponsor
+        // resources. Placed after the idempotency and existing-wallet checks so
+        // a replay or a get-or-create never consumes a user's allowance.
+        this.sponsorshipLimiter.assertWithinLimits(request.userId);
+
         // Create new wallet in PROVISIONING status (Issue #188)
         const newWallet = await this.createNewWallet(context, tx);
 
@@ -381,6 +399,18 @@ export class WalletCreationOrchestrator implements OnModuleDestroy {
         error instanceof NotFoundException
       ) {
         throw error;
+      }
+
+      // A refused sponsorship request is a policy decision with a stable code,
+      // not an orchestration fault. Surfacing it as a typed 429 lets a client
+      // back off and retry after the window rolls, instead of seeing a 500 and
+      // retrying immediately.
+      const sponsorshipCode = (error as { code?: string })?.code;
+      if (typeof sponsorshipCode === 'string' && sponsorshipCode.startsWith('WALLET_SPONSORSHIP_')) {
+        throw new TooManyRequestsException({
+          code: sponsorshipCode,
+          message: (error as Error).message,
+        });
       }
 
       if (error instanceof WalletOrchestrationError) {
