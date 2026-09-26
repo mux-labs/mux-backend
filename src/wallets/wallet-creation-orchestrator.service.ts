@@ -1,7 +1,18 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ConflictException,
+  Inject,
+  Optional,
+} from '@nestjs/common';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { randomUUID } from 'crypto';
+import { ConfigService } from '@nestjs/config';
 import { EncryptionService } from '../encryption/encryption.service';
+import {
+  USER_STATUS_PORT,
+  type UserStatusPort,
+} from '../users/user-status.service';
 
 /** Networks a wallet may be created on. */
 export const VALID_NETWORKS: ReadonlySet<string> = new Set([
@@ -15,6 +26,8 @@ export interface CreateWalletOrchestratorRequest {
   network: WalletNetwork;
   /** Optional client-supplied key enabling replay-safe retries. */
   idempotencyKey?: string;
+  /** Correlation id echoed into denial errors and ops logs. */
+  correlationId?: string;
 }
 
 /** Result of a create-or-get orchestration call. */
@@ -118,7 +131,40 @@ export class WalletCreationOrchestrator {
     network: WalletNetwork,
   ): string => `${userId}:${network}`;
 
-  constructor(private readonly encryptionService: EncryptionService) {}
+  /**
+   * The custody encryption layer.
+   *
+   * Resolved from DI when a provider is available; otherwise constructed lazily
+   * from the process environment on first use, so a missing/invalid
+   * `WALLET_ENCRYPTION_KEY` surfaces as a typed keygen failure for the request
+   * in flight instead of preventing the module from booting at all.
+   */
+  private encryptionService?: EncryptionService;
+
+  private readonly userStatus?: UserStatusPort;
+
+  constructor(
+    @Optional() encryptionService?: EncryptionService,
+    /**
+     * User-status port (#941). Optional so the orchestrator remains
+     * constructible in isolation/unit tests; when bound it gates every
+     * wallet-creation call on the account's `UserStatus`.
+     */
+    @Optional()
+    @Inject(USER_STATUS_PORT)
+    userStatus?: UserStatusPort,
+  ) {
+    this.encryptionService = encryptionService;
+    this.userStatus = userStatus;
+  }
+
+  /** Returns the custody encryption layer, constructing it on first use. */
+  private resolveEncryptionService(): EncryptionService {
+    if (!this.encryptionService) {
+      this.encryptionService = new EncryptionService(new ConfigService());
+    }
+    return this.encryptionService;
+  }
 
   /**
    * Creates a wallet for `userId` on `network`, or returns the existing one.
@@ -130,20 +176,6 @@ export class WalletCreationOrchestrator {
    *   different user or network, or when a concurrent call with the same key is
    *   still in flight.
    */
-  async createWallet(
-    userId: string,
-    network: WalletNetwork,
-    idempotencyKey: string,
-  ): Promise<WalletCreationResult> {
-    const publicKey = `G${randomUUID().slice(0, 55)}`;
-    const secretSeed = `S${randomUUID().slice(0, 55)}`;
-
-    // Encrypt before the secret can be persisted or returned. Throwing here
-    // (e.g. missing WALLET_ENCRYPTION_KEY) aborts creation rather than falling
-    // back to storing the seed in plaintext.
-    const encryptedSecret =
-      this.encryptionService.encryptAndSerialize(secretSeed);
-
   /**
    * Creates a wallet for `userId` on `network`, or returns the existing one.
    *
@@ -174,6 +206,18 @@ export class WalletCreationOrchestrator {
         });
       }
       this.inFlight.add(idempotencyKey);
+    }
+
+    // #941: refuse a suspended/disabled account before any key material is
+    // minted. Deliberately placed after the replay check above so the retry
+    // contract still returns the original result for an already-completed
+    // creation — a retry must never be turned into a confusing 403.
+    if (this.userStatus) {
+      await this.userStatus.assertCanTransact(
+        userId,
+        'wallet_create',
+        request.correlationId,
+      );
     }
 
     try {
@@ -261,8 +305,16 @@ export class WalletCreationOrchestrator {
     idempotencyKey?: string,
   ): Promise<WalletCreationResult> {
     let publicKey: string;
+    let encryptedSecret: string;
     try {
       publicKey = `G${randomUUID().replace(/-/g, '').slice(0, 55)}`;
+      const secretSeed = `S${randomUUID().replace(/-/g, '').slice(0, 55)}`;
+
+      // Encrypt before the seed can be persisted or returned. Throwing here
+      // (e.g. a missing/invalid WALLET_ENCRYPTION_KEY) aborts creation rather
+      // than letting the service fall back to a plaintext seed.
+      encryptedSecret =
+        this.resolveEncryptionService().encryptAndSerialize(secretSeed);
     } catch {
       throw new WalletOrchestrationError('Key generation failed', 'keygen');
     }
@@ -272,11 +324,6 @@ export class WalletCreationOrchestrator {
       userId,
       publicKey,
       encryptedSecret,
-      network,
-      status: WalletStatus.ACTIVE,
-      idempotencyKey,
-      createdAt: new Date(),
-    };
       network,
       status: WalletStatus.ACTIVE,
       idempotencyKey,

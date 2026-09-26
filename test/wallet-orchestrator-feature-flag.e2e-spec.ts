@@ -15,6 +15,10 @@ describe('Wallet Orchestrator Feature Flag (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    // Apply the same `/v1` prefix that `src/main.ts` applies in production
+    // (docs/API-VERSIONING.md). Without it the suite would probe unversioned
+    // paths and get 404s instead of exercising the flag guard.
+    app.setGlobalPrefix('v1');
     await app.init();
   });
 
@@ -39,8 +43,9 @@ describe('Wallet Orchestrator Feature Flag (e2e)', () => {
   });
 
   it('GET /v1/wallets/orchestration/user/:userId/:network returns 403 when FEATURE_WALLET_ORCHESTRATOR=false', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/v1/wallets/orchestration/user/user-1/TESTNET');
+    const response = await request(app.getHttpServer()).get(
+      '/v1/wallets/orchestration/user/user-1/TESTNET',
+    );
 
     expect(response.status).toBe(HttpStatus.FORBIDDEN);
     expect(response.body).toHaveProperty('message');
@@ -48,8 +53,9 @@ describe('Wallet Orchestrator Feature Flag (e2e)', () => {
   });
 
   it('GET /v1/wallets/orchestration/validate/:userId/:network returns 403 when FEATURE_WALLET_ORCHESTRATOR=false', async () => {
-    const response = await request(app.getHttpServer())
-      .get('/v1/wallets/orchestration/validate/user-1/TESTNET');
+    const response = await request(app.getHttpServer()).get(
+      '/v1/wallets/orchestration/validate/user-1/TESTNET',
+    );
 
     expect(response.status).toBe(HttpStatus.FORBIDDEN);
     expect(response.body).toHaveProperty('message');

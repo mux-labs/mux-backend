@@ -95,8 +95,8 @@ describe('Auth Provider Unification (e2e)', () => {
       );
     });
 
-    it('should normalize provider to uppercase', () => {
-      // The validator should normalize lowercase to uppercase internally
+    it('should reject lowercase provider (case-sensitive)', () => {
+      // The validator should reject lowercase as invalid
       const payload = {
         authId: 'user-123',
         authProvider: 'clerk', // lowercase

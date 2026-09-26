@@ -8,19 +8,44 @@ import {
   ApiKeyAuditService,
 } from './api-key-audit.service';
 import { MetricsService } from '../common/metrics/metrics.service';
+import { ApiKeyContext, ApiKeyStatus } from './domain/api-key.model';
 
 describe('ApiKeyGuard', () => {
   let guard: ApiKeyGuard;
   let mockApiKeyService: Partial<ApiKeyService>;
   let reflector: Reflector;
 
+  /**
+   * A complete validated-key context. `validateApiKey` returns `ApiKeyInfo`,
+   * so the stub must carry the full domain shape (not just an id) — the guard
+   * copies `developer.id` into the request context and that identity is
+   * authoritative for downstream ownership checks.
+   */
+  const validatedContext: ApiKeyContext = {
+    apiKey: {
+      id: 'key-id',
+      name: 'test key',
+      keyHash: 'hashed',
+      keyPrefix: 'mux_test_',
+      lastFour: 'abcd',
+      projectId: 'proj-id',
+      status: ApiKeyStatus.ACTIVE,
+      createdAt: new Date('2026-01-01T00:00:00.000Z'),
+      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
+    },
+    project: {
+      id: 'proj-id',
+      name: 'proj-name',
+      environment: 'development',
+      developerId: 'dev-id',
+      rateLimitRpm: 10,
+    },
+    developer: { id: 'dev-id', email: 'dev@example.com' },
+  };
+
   beforeEach(() => {
     mockApiKeyService = {
-      validateApiKey: jest.fn(async (key: string) => ({
-        apiKey: { id: 'key-id' },
-        project: { id: 'proj-id', rateLimitRpm: 10 },
-        developer: { id: 'dev-id' },
-      })),
+      validateApiKey: jest.fn(async () => validatedContext),
       recordUsage: jest.fn(async () => {}),
     };
 
@@ -292,12 +317,14 @@ describe('ApiKeyGuard', () => {
   it('allows only explicitly allowlisted public endpoints without credentials', async () => {
     // IS_PUBLIC is the explicit allowlist marker; only routes decorated with it
     // bypass API key auth. Everything else is denied by default.
-    jest.spyOn(reflector, 'getAllAndOverride').mockImplementation((key: any) => {
-      if (key === IS_PUBLIC) {
-        return true;
-      }
-      return undefined;
-    });
+    jest
+      .spyOn(reflector, 'getAllAndOverride')
+      .mockImplementation((key: any) => {
+        if (key === IS_PUBLIC) {
+          return true;
+        }
+        return undefined;
+      });
 
     const req: any = {
       headers: { 'user-agent': 'jest' },

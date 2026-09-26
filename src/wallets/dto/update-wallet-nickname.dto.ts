@@ -31,7 +31,7 @@ export function normalizeWalletNickname(
   value: unknown,
 ): string | null | undefined {
   if (value === null || value === undefined) {
-    return value as null | undefined;
+    return value;
   }
   if (typeof value !== 'string') {
     return value as unknown as string;
@@ -59,8 +59,7 @@ export class UpdateWalletNicknameDto {
   @MinLength(WALLET_NICKNAME_MIN_LENGTH)
   @MaxLength(WALLET_NICKNAME_MAX_LENGTH)
   @Matches(WALLET_NICKNAME_PATTERN, {
-    message:
-      'nickname may only contain letters, numbers, spaces and . _ \' -',
+    message: "nickname may only contain letters, numbers, spaces and . _ ' -",
   })
   nickname?: string | null;
 }

@@ -36,6 +36,10 @@ services:
       PORT: 3000
     ports:
       - '3000:3000'
+    # Graceful shutdown (#950): give the app time to drain in-flight payments
+    # (GRACEFUL_SHUTDOWN_TIMEOUT_MS defaults to 25s) before Docker escalates to
+    # SIGKILL. Keep this strictly greater than GRACEFUL_SHUTDOWN_TIMEOUT_MS.
+    stop_grace_period: 30s
     # Run as non-root user (mux, UID 1001) for container hardening.
     # The Dockerfile creates the mux user with UID 1001; this
     # matches so the container user stays consistent across
