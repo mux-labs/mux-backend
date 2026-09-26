@@ -1,6 +1,11 @@
 /**
  * Generates an openapi.json file from the NestJS Swagger metadata.
- * Used by CI to lint the spec with @redocly/cli.
+ * Used by CI to lint the spec with @redocly/cli and to detect drift
+ * against the committed artifact (see scripts/check-openapi-drift.ts).
+ *
+ * The output is deterministic: object keys are sorted and volatile
+ * fields (timestamps, host, etc.) are stripped so that a byte-for-byte
+ * diff against the committed spec is meaningful.
  *
  * Usage:
  *   npx ts-node -r tsconfig-paths/register scripts/generate-openapi.ts
@@ -38,12 +43,52 @@ process.env.WEBHOOK_RETRY_BACKOFF_MS =
 process.env.WEBHOOK_TIMEOUT_MS = process.env.WEBHOOK_TIMEOUT_MS ?? '10000';
 process.env.WEBHOOK_MAX_CONSECUTIVE_FAILURES =
   process.env.WEBHOOK_MAX_CONSECUTIVE_FAILURES ?? '10';
+process.env.WEBHOOK_SIGNING_KEY =
+  process.env.WEBHOOK_SIGNING_KEY ??
+  'stub-webhook-signing-key-min-32-chars-for-openapi-generation';
 process.env.AUTH_RATE_LIMIT_MAX = process.env.AUTH_RATE_LIMIT_MAX ?? '10';
 process.env.AUTH_RATE_LIMIT_WINDOW_MS =
   process.env.AUTH_RATE_LIMIT_WINDOW_MS ?? '60000';
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const { AppModule } = require('../src/app.module');
+
+/**
+ * Recursively sort object keys so the serialized spec is stable across
+ * runs and machines. Arrays keep their original order (operation order
+ * is meaningful for readability and is already deterministic).
+ */
+function sortKeys(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map(sortKeys);
+  }
+  if (value && typeof value === 'object') {
+    const obj = value as Record<string, unknown>;
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(obj).sort()) {
+      sorted[key] = sortKeys(obj[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+/**
+ * Remove volatile fields that would otherwise cause spurious drift
+ * (e.g. server URLs derived from env, or any timestamp-like metadata).
+ */
+function stripVolatileFields(document: Record<string, unknown>): void {
+  // Swagger may emit a `servers` array derived from runtime config; the
+  // committed artifact should not depend on the environment it was built in.
+  if (Array.isArray(document.servers)) {
+    document.servers = (document.servers as Array<Record<string, unknown>>).map(
+      (server) => {
+        const { url: _url, ...rest } = server;
+        return rest;
+      },
+    );
+  }
+}
 
 async function generate() {
   const app = await NestFactory.create(AppModule, { logger: false });
@@ -66,8 +111,12 @@ async function generate() {
 
   const document = SwaggerModule.createDocument(app, config);
 
+  const doc = document as unknown as Record<string, unknown>;
+  stripVolatileFields(doc);
+  const stable = sortKeys(doc);
+
   const outPath = resolve(__dirname, '../openapi.json');
-  writeFileSync(outPath, JSON.stringify(document, null, 2));
+  writeFileSync(outPath, JSON.stringify(stable, null, 2) + '\n');
   console.log(`OpenAPI spec written to ${outPath}`);
 
   await app.close();

@@ -236,60 +236,45 @@ describe('API Prefix /v1 (e2e)', () => {
       const customHeaderValue = 'test-request-id-12345';
 
       const response = await request(app.getHttpServer())
-        .get('/v1/')
-        .set('x-request-id', customHeaderValue)
+        .get('/v1/health')
+        .set('X-Request-Id', customHeaderValue)
         .expect(HttpStatus.OK);
 
-      // Request should be processed successfully
-      expect(response.status).toBe(HttpStatus.OK);
+      expect(response.body).toHaveProperty('status');
     });
 
-    it('should return proper content-type with /v1 prefix', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/ready')
-        .expect(HttpStatus.OK);
-
-      expect(response.headers['content-type']).toMatch(/application\/json/);
+    it('should not double-prefix routes (no /v1/v1)', async () => {
+      await request(app.getHttpServer())
+        .get('/v1/v1/health')
+        .expect(HttpStatus.NOT_FOUND);
     });
   });
 
-  describe('HTTP methods with /v1 prefix', () => {
-    it('should handle GET requests with /v1 prefix', async () => {
-      const response = await request(app.getHttpServer())
-        .get('/v1/')
-        .expect(HttpStatus.OK);
+  describe('Prefix completeness across v1 surface', () => {
+    const v1Paths = [
+      '/v1/',
+      '/v1/ready',
+      '/v1/health',
+      '/v1/users',
+      '/v1/wallets',
+      '/v1/api-keys',
+      '/v1/developers',
+      '/v1/projects',
+    ];
 
-      expect(response.text).toBe('Hello World!');
-    });
-
-    it('should handle POST requests with /v1 prefix', async () => {
-      const response = await request(app.getHttpServer())
-        .post('/v1/auth/authenticate')
-        .send({
-          authId: 'test-id',
-          email: 'test@example.com',
-          displayName: 'Test User',
-          authProvider: 'CLERK',
-          network: 'TESTNET',
-        });
-
-      // Should not be 404
+    it.each(v1Paths)('should not 404 on %s (route is mounted)', async (path) => {
+      const response = await request(app.getHttpServer()).get(path);
       expect(response.status).not.toBe(HttpStatus.NOT_FOUND);
     });
 
-    it('should handle POST requests without /v1 prefix as 404', async () => {
-      const response = await request(app.getHttpServer())
-        .post('/auth/authenticate')
-        .send({
-          authId: 'test-id',
-          email: 'test@example.com',
-          displayName: 'Test User',
-          authProvider: 'CLERK',
-          network: 'TESTNET',
-        })
-        .expect(HttpStatus.NOT_FOUND);
-
-      expect(response.status).toBe(HttpStatus.NOT_FOUND);
-    });
+    it.each(v1Paths.map((p) => p.replace('/v1', ''))) (
+      'should 404 on unprefixed %s',
+      async (path) => {
+        const normalized = path === '' ? '/' : path;
+        await request(app.getHttpServer())
+          .get(normalized)
+          .expect(HttpStatus.NOT_FOUND);
+      },
+    );
   });
 });

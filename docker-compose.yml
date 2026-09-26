@@ -36,6 +36,14 @@ services:
       PORT: 3000
     ports:
       - '3000:3000'
+    # Run as non-root user (mux, UID 1001) for container hardening.
+    # The Dockerfile creates the mux user with UID 1001; this
+    # matches so the container user stays consistent across
+    # docker compose and production deployments.
+    user: "1001:1001"
+    # Deny new privileges at runtime for defense-in-depth.
+    security_opt:
+      - no-new-privileges:true
     depends_on:
       db:
         condition: service_healthy

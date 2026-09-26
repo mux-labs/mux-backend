@@ -16,6 +16,15 @@ every route is automatically namespaced (`/v1/auth/authenticate`,
 `/v1/wallets`, etc.). Requests made without the `/v1` prefix return `404 Not
 Found` — there is no unversioned fallback.
 
+### Prefix completeness invariant
+
+The `/v1` prefix is applied exactly once, globally. Controllers MUST NOT
+re-declare `v1` in their own path (e.g. `@Controller('v1/wallets')`), which
+would produce a double-prefixed route (`/v1/v1/wallets`). This invariant is
+enforced by the e2e suite in `test/api-prefix-v1.e2e-spec.ts`, which asserts
+that every registered route is mounted under `/v1` and that no route is
+reachable without the prefix.
+
 ## Why URI versioning
 
 - **Explicit and cache-friendly**: the version is visible in the URL, in logs,

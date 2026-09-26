@@ -1,6 +1,8 @@
 import {
+  BadRequestException,
   ConflictException,
   NotFoundException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { WalletsService } from './wallets.service';
 
@@ -140,7 +142,9 @@ describe('WalletsService – nickname', () => {
       const result = await service.updateNickname('wallet-1', undefined);
 
       expect(mockPrisma.wallet.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { nickname: null, updatedAt: expect.any(Date) } }),
+        expect.objectContaining({
+          data: { nickname: null, updatedAt: expect.any(Date) },
+        }),
       );
       expect(result.nickname).toBeNull();
     });
@@ -157,13 +161,86 @@ describe('WalletsService – nickname', () => {
       expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
     });
 
-    it('propagates prisma errors from the update call', async () => {
+    it('fails closed with 503 when the store is unavailable, leaking no DB detail', async () => {
+      // #958: a raw Prisma error must not reach the client — it can carry
+      // connection strings, table names, or driver internals. The caller gets
+      // a retryable 503 with a stable shape instead.
       mockPrisma.wallet.findUnique.mockResolvedValue(baseWallet);
       mockPrisma.wallet.update.mockRejectedValue(new Error('DB error'));
 
-      await expect(
-        service.updateNickname('wallet-1', 'Savings'),
-      ).rejects.toThrow('DB error');
+      const err = await service
+        .updateNickname('wallet-1', 'Savings')
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(ServiceUnavailableException);
+      expect(err.message).not.toContain('DB error');
+    });
+  });
+
+  describe('updateNickname – input bounding (#958)', () => {
+    beforeEach(() => {
+      mockPrisma.wallet.findUnique.mockResolvedValue(baseWallet);
+      mockPrisma.wallet.findFirst.mockResolvedValue(null);
+    });
+
+    it('rejects an over-long nickname before any store write', async () => {
+      const err = await service
+        .updateNickname('wallet-1', 'a'.repeat(101))
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect((err as { response?: { code?: string } }).response?.code).toBe(
+        'WALLET_NICKNAME_INVALID_INPUT',
+      );
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-string nickname without coercing it', async () => {
+      const err = await service
+        .updateNickname('wallet-1', 123 as unknown as string)
+        .catch((e) => e);
+
+      expect(err).toBeInstanceOf(BadRequestException);
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+    });
+
+    it('rejects an oversized raw input without running the uniqueness query', async () => {
+      // The raw-input cap is what stops a caller burning a request thread (and
+      // a database round trip) with a multi-megabyte "nickname".
+      await service
+        .updateNickname('wallet-1', 'a'.repeat(5_000))
+        .catch(() => undefined);
+
+      expect(mockPrisma.wallet.findFirst).not.toHaveBeenCalled();
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts a nickname of exactly the maximum length', async () => {
+      const exact = 'a'.repeat(100);
+      mockPrisma.wallet.update.mockResolvedValue({
+        ...baseWallet,
+        nickname: exact,
+        updatedAt: new Date(),
+      });
+
+      const result = await service.updateNickname('wallet-1', exact);
+
+      expect(result.nickname).toBe(exact);
+    });
+
+    it('collapses the whitespace a stripped tag leaves behind', async () => {
+      mockPrisma.wallet.update.mockResolvedValue({
+        ...baseWallet,
+        nickname: 'My Wallet',
+        updatedAt: new Date(),
+      });
+
+      const result = await service.updateNickname(
+        'wallet-1',
+        '<b>My</b> Wallet',
+      );
+
+      expect(result.nickname).toBe('My Wallet');
     });
   });
 
@@ -236,7 +313,9 @@ describe('WalletsService – nickname', () => {
       );
 
       expect(mockPrisma.wallet.update).toHaveBeenCalledWith(
-        expect.objectContaining({ data: { nickname: null, updatedAt: expect.any(Date) } }),
+        expect.objectContaining({
+          data: { nickname: null, updatedAt: expect.any(Date) },
+        }),
       );
       expect(result.nickname).toBeNull();
     });

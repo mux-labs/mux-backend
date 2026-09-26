@@ -4,6 +4,7 @@ ALTER TABLE "Developer" ADD COLUMN "userId" TEXT;
 -- Backfill: link existing developers to the user account that shares the same
 -- email address. Only non-deleted users are linked; unmatched developers stay
 -- unowned (platform/onboarding accounts) and are untouched by user deletion.
+-- Idempotent: only rows still unowned are updated, so re-running is a no-op.
 UPDATE "Developer" AS d
 SET "userId" = u."id"
 FROM "User" AS u

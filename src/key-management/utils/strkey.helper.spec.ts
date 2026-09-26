@@ -1,510 +1,655 @@
-import { StrKeyHelper } from './strkey.helper';
-import { Keypair } from 'stellar-sdk';
+import { Test, TestingModule } from '@nestjs/testing';
+import { StrKeyHelper, StrKeyType, StrKeyErrorCode } from './strkey.helper';
 
 describe('StrKeyHelper', () => {
-  let testKeypair: Keypair;
-  let testPublicKeyBuffer: Buffer;
-  let testSecretSeedBuffer: Buffer;
+  let helper: StrKeyHelper;
 
-  beforeEach(() => {
-    // Generate a test keypair for consistent testing
-    testKeypair = Keypair.random();
-    // Extract raw buffers
-    testPublicKeyBuffer = testKeypair.rawPublicKey();
-    testSecretSeedBuffer = testKeypair.rawSecretKey();
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [StrKeyHelper],
+    }).compile();
+
+    helper = module.get<StrKeyHelper>(StrKeyHelper);
   });
+
+  // -----------------------------------------------------------------------
+  // encodeEd25519PublicKey
+  // -----------------------------------------------------------------------
 
   describe('encodeEd25519PublicKey', () => {
-    it('should encode a valid 32-byte public key buffer', () => {
-      const encoded = StrKeyHelper.encodeEd25519PublicKey(testPublicKeyBuffer);
+    it('encodes a valid 32-byte buffer to a G... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer[0] = 0x30; // version byte for public key
+      buffer.fill(0x01, 1);
 
-      expect(encoded).toBeDefined();
-      expect(typeof encoded).toBe('string');
-      expect(encoded.startsWith('G')).toBe(true);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+
+      expect(encoded).toMatch(/^G[A-Z2-7]{55}$/);
       expect(encoded.length).toBe(56);
     });
 
-    it('should throw error for non-Buffer input', () => {
-      expect(() => {
-        StrKeyHelper.encodeEd25519PublicKey('not a buffer' as any);
-      }).toThrow('Public key must be a Buffer');
-    });
+    it('produces a deterministic result for the same input', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x42);
 
-    it('should throw error for wrong length buffer', () => {
-      const wrongLength = Buffer.alloc(16); // Should be 32 bytes
-
-      expect(() => {
-        StrKeyHelper.encodeEd25519PublicKey(wrongLength);
-      }).toThrow('Invalid public key length: expected 32 bytes, got 16');
-    });
-
-    it('should produce consistent encoding for same input', () => {
-      const encoded1 = StrKeyHelper.encodeEd25519PublicKey(testPublicKeyBuffer);
-      const encoded2 = StrKeyHelper.encodeEd25519PublicKey(testPublicKeyBuffer);
+      const encoded1 = helper.encodeEd25519PublicKey(buffer);
+      const encoded2 = helper.encodeEd25519PublicKey(buffer);
 
       expect(encoded1).toBe(encoded2);
     });
+
+    it('throws when input is not a Buffer', () => {
+      expect(() => helper.encodeEd25519PublicKey('not-a-buffer' as any)).toThrow(
+        /STRKEY_INVALID_INPUT_TYPE/,
+      );
+    });
+
+    it('throws when buffer is not 32 bytes', () => {
+      expect(() => helper.encodeEd25519PublicKey(Buffer.alloc(16))).toThrow(
+        /STRKEY_INVALID_LENGTH/,
+      );
+
+      expect(() => helper.encodeEd25519PublicKey(Buffer.alloc(64))).toThrow(
+        /STRKEY_INVALID_LENGTH/,
+      );
+    });
+
+    it('throws when buffer is empty', () => {
+      expect(() => helper.encodeEd25519PublicKey(Buffer.alloc(0))).toThrow(
+        /STRKEY_INVALID_LENGTH/,
+      );
+    });
   });
+
+  // -----------------------------------------------------------------------
+  // encodeEd25519SecretSeed
+  // -----------------------------------------------------------------------
 
   describe('encodeEd25519SecretSeed', () => {
-    it('should encode a valid 32-byte secret seed buffer', () => {
-      const encoded =
-        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
+    it('encodes a valid 32-byte buffer to an S... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer[0] = 0x10; // version byte for secret seed
+      buffer.fill(0x01, 1);
 
-      expect(encoded).toBeDefined();
-      expect(typeof encoded).toBe('string');
-      expect(encoded.startsWith('S')).toBe(true);
+      const encoded = helper.encodeEd25519SecretSeed(buffer);
+
+      expect(encoded).toMatch(/^S[A-Z2-7]{55}$/);
       expect(encoded.length).toBe(56);
     });
 
-    it('should throw error for non-Buffer input', () => {
-      expect(() => {
-        StrKeyHelper.encodeEd25519SecretSeed('not a buffer' as any);
-      }).toThrow('Secret seed must be a Buffer');
+    it('throws when input is not a Buffer', () => {
+      expect(() => helper.encodeEd25519SecretSeed(123 as any)).toThrow(
+        /STRKEY_INVALID_INPUT_TYPE/,
+      );
     });
 
-    it('should throw error for wrong length buffer', () => {
-      const wrongLength = Buffer.alloc(64); // Should be 32 bytes
-
-      expect(() => {
-        StrKeyHelper.encodeEd25519SecretSeed(wrongLength);
-      }).toThrow('Invalid secret seed length: expected 32 bytes, got 64');
-    });
-
-    it('should produce consistent encoding for same input', () => {
-      const encoded1 =
-        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
-      const encoded2 =
-        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
-
-      expect(encoded1).toBe(encoded2);
-    });
-  });
-
-  describe('decodeEd25519PublicKey', () => {
-    it('should decode a valid Stellar public key', () => {
-      const encoded = testKeypair.publicKey();
-      const decoded = StrKeyHelper.decodeEd25519PublicKey(encoded);
-
-      expect(decoded).toBeDefined();
-      expect(Buffer.isBuffer(decoded)).toBe(true);
-      expect(decoded.length).toBe(32);
-      expect(decoded).toEqual(testPublicKeyBuffer);
-    });
-
-    it('should throw error for non-string input', () => {
-      expect(() => {
-        StrKeyHelper.decodeEd25519PublicKey(123 as any);
-      }).toThrow('Encoded key must be a string');
-    });
-
-    it('should throw error for key not starting with G', () => {
-      expect(() => {
-        StrKeyHelper.decodeEd25519PublicKey(
-          'SABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQR',
-        );
-      }).toThrow("Invalid public key format: expected key to start with 'G'");
-    });
-
-    it('should throw error for invalid key format', () => {
-      expect(() => {
-        StrKeyHelper.decodeEd25519PublicKey('G1NVALIDKEY');
-      }).toThrow('Failed to decode Ed25519 public key');
-    });
-
-    it('should round-trip encode/decode correctly', () => {
-      const encoded = StrKeyHelper.encodeEd25519PublicKey(testPublicKeyBuffer);
-      const decoded = StrKeyHelper.decodeEd25519PublicKey(encoded);
-
-      expect(decoded).toEqual(testPublicKeyBuffer);
-    });
-  });
-
-  describe('decodeEd25519SecretSeed', () => {
-    it('should decode a valid Stellar secret seed', () => {
-      const encoded = testKeypair.secret();
-      const decoded = StrKeyHelper.decodeEd25519SecretSeed(encoded);
-
-      expect(decoded).toBeDefined();
-      expect(Buffer.isBuffer(decoded)).toBe(true);
-      expect(decoded.length).toBe(32);
-      expect(decoded).toEqual(testSecretSeedBuffer);
-    });
-
-    it('should throw error for non-string input', () => {
-      expect(() => {
-        StrKeyHelper.decodeEd25519SecretSeed(Buffer.from('test') as any);
-      }).toThrow('Encoded seed must be a string');
-    });
-
-    it('should throw error for seed not starting with S', () => {
-      expect(() => {
-        StrKeyHelper.decodeEd25519SecretSeed(
-          'GABCDEFGHIJKLMNOPQRSTUVWXYZ234567890ABCDEFGHIJKLMNOPQR',
-        );
-      }).toThrow("Invalid secret seed format: expected seed to start with 'S'");
-    });
-
-    it('should throw error for invalid seed format', () => {
-      expect(() => {
-        StrKeyHelper.decodeEd25519SecretSeed('S1NVALIDSEED');
-      }).toThrow('Failed to decode Ed25519 secret seed');
-    });
-
-    it('should round-trip encode/decode correctly', () => {
-      const encoded =
-        StrKeyHelper.encodeEd25519SecretSeed(testSecretSeedBuffer);
-      const decoded = StrKeyHelper.decodeEd25519SecretSeed(encoded);
-
-      expect(decoded).toEqual(testSecretSeedBuffer);
-    });
-  });
-
-  describe('isValidEd25519PublicKey', () => {
-    it('should return true for valid public key', () => {
-      const validKey = testKeypair.publicKey();
-
-      expect(StrKeyHelper.isValidEd25519PublicKey(validKey)).toBe(true);
-    });
-
-    it('should return false for invalid public key', () => {
-      expect(StrKeyHelper.isValidEd25519PublicKey('GINVALIDKEY')).toBe(false);
-    });
-
-    it('should return false for secret seed', () => {
-      const secretSeed = testKeypair.secret();
-
-      expect(StrKeyHelper.isValidEd25519PublicKey(secretSeed)).toBe(false);
-    });
-
-    it('should return false for non-string input', () => {
-      expect(StrKeyHelper.isValidEd25519PublicKey(123 as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519PublicKey(null as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519PublicKey(undefined as any)).toBe(
-        false,
+    it('throws when buffer is not 32 bytes', () => {
+      expect(() => helper.encodeEd25519SecretSeed(Buffer.alloc(16))).toThrow(
+        /STRKEY_INVALID_LENGTH/,
       );
     });
   });
 
-  describe('isValidEd25519SecretSeed', () => {
-    it('should return true for valid secret seed', () => {
-      const validSeed = testKeypair.secret();
-
-      expect(StrKeyHelper.isValidEd25519SecretSeed(validSeed)).toBe(true);
-    });
-
-    it('should return false for invalid secret seed', () => {
-      expect(StrKeyHelper.isValidEd25519SecretSeed('SINVALIDSEED')).toBe(false);
-    });
-
-    it('should return false for public key', () => {
-      const publicKey = testKeypair.publicKey();
-
-      expect(StrKeyHelper.isValidEd25519SecretSeed(publicKey)).toBe(false);
-    });
-
-    it('should return false for non-string input', () => {
-      expect(StrKeyHelper.isValidEd25519SecretSeed([] as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(null as any)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(undefined as any)).toBe(
-        false,
-      );
-    });
-  });
+  // -----------------------------------------------------------------------
+  // encodePreAuthTx
+  // -----------------------------------------------------------------------
 
   describe('encodePreAuthTx', () => {
-    it('should encode a 32-byte transaction hash', () => {
-      const hash = Buffer.alloc(32).fill(0x42);
-      const encoded = StrKeyHelper.encodePreAuthTx(hash);
+    it('encodes a valid 32-byte buffer to a T... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0xAB);
 
-      expect(encoded).toBeDefined();
-      expect(typeof encoded).toBe('string');
-      expect(encoded.startsWith('T')).toBe(true);
+      const encoded = helper.encodePreAuthTx(buffer);
+
+      expect(encoded).toMatch(/^T[A-Z2-7]{55}$/);
+      expect(encoded.length).toBe(56);
     });
 
-    it('should throw error for non-Buffer input', () => {
-      expect(() => {
-        StrKeyHelper.encodePreAuthTx('not a buffer' as any);
-      }).toThrow('Transaction hash must be a Buffer');
+    it('throws when input is not a Buffer', () => {
+      expect(() => helper.encodePreAuthTx(null as any)).toThrow(
+        /STRKEY_INVALID_INPUT_TYPE/,
+      );
     });
 
-    it('should throw error for wrong length', () => {
-      const wrongLength = Buffer.alloc(16);
-
-      expect(() => {
-        StrKeyHelper.encodePreAuthTx(wrongLength);
-      }).toThrow('Invalid hash length: expected 32 bytes, got 16');
-    });
-  });
-
-  describe('decodePreAuthTx', () => {
-    it('should decode a valid pre-auth tx hash', () => {
-      const hash = Buffer.alloc(32).fill(0x42);
-      const encoded = StrKeyHelper.encodePreAuthTx(hash);
-      const decoded = StrKeyHelper.decodePreAuthTx(encoded);
-
-      expect(decoded).toEqual(hash);
-    });
-
-    it('should throw error for non-string input', () => {
-      expect(() => {
-        StrKeyHelper.decodePreAuthTx(12345 as any);
-      }).toThrow('Encoded transaction must be a string');
-    });
-
-    it('should throw error for invalid format', () => {
-      expect(() => {
-        StrKeyHelper.decodePreAuthTx('TINVALIDHASH');
-      }).toThrow('Failed to decode pre-authorized transaction');
+    it('throws when buffer is not 32 bytes', () => {
+      expect(() => helper.encodePreAuthTx(Buffer.alloc(1))).toThrow(
+        /STRKEY_INVALID_LENGTH/,
+      );
     });
   });
+
+  // -----------------------------------------------------------------------
+  // encodeSha256Hash
+  // -----------------------------------------------------------------------
 
   describe('encodeSha256Hash', () => {
-    it('should encode a 32-byte SHA256 hash', () => {
-      const hash = Buffer.alloc(32).fill(0xab);
-      const encoded = StrKeyHelper.encodeSha256Hash(hash);
+    it('encodes a valid 32-byte buffer to an X... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0xCD);
 
-      expect(encoded).toBeDefined();
-      expect(typeof encoded).toBe('string');
-      expect(encoded.startsWith('X')).toBe(true);
+      const encoded = helper.encodeSha256Hash(buffer);
+
+      expect(encoded).toMatch(/^X[A-Z2-7]{55}$/);
+      expect(encoded.length).toBe(56);
     });
 
-    it('should throw error for non-Buffer input', () => {
-      expect(() => {
-        StrKeyHelper.encodeSha256Hash('not a buffer' as any);
-      }).toThrow('Hash must be a Buffer');
+    it('throws when input is not a Buffer', () => {
+      expect(() => helper.encodeSha256Hash(undefined as any)).toThrow(
+        /STRKEY_INVALID_INPUT_TYPE/,
+      );
     });
 
-    it('should throw error for wrong length', () => {
-      const wrongLength = Buffer.alloc(20);
-
-      expect(() => {
-        StrKeyHelper.encodeSha256Hash(wrongLength);
-      }).toThrow('Invalid hash length: expected 32 bytes, got 20');
+    it('throws when buffer is not 32 bytes', () => {
+      expect(() => helper.encodeSha256Hash(Buffer.alloc(33))).toThrow(
+        /STRKEY_INVALID_LENGTH/,
+      );
     });
   });
+
+  // -----------------------------------------------------------------------
+  // decodeEd25519PublicKey
+  // -----------------------------------------------------------------------
+
+  describe('decodeEd25519PublicKey', () => {
+    it('decodes a valid G... StrKey to a 32-byte buffer', () => {
+      const originalBuffer = Buffer.alloc(32);
+      originalBuffer.fill(0x01);
+
+      const encoded = helper.encodeEd25519PublicKey(originalBuffer);
+      const decoded = helper.decodeEd25519PublicKey(encoded);
+
+      expect(decoded).toBeInstanceOf(Buffer);
+      expect(decoded.length).toBe(32);
+      expect(decoded.equals(originalBuffer)).toBe(true);
+    });
+
+    it('round-trips correctly for random data', () => {
+      const originalBuffer = Buffer.from(
+        'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2',
+        'hex',
+      );
+
+      const encoded = helper.encodeEd25519PublicKey(originalBuffer);
+      const decoded = helper.decodeEd25519PublicKey(encoded);
+
+      expect(decoded.equals(originalBuffer)).toBe(true);
+    });
+
+    it('throws when input is not a string', () => {
+      expect(() => helper.decodeEd25519PublicKey(123 as any)).toThrow(
+        /STRKEY_DECODING_FAILED/,
+      );
+    });
+
+    it('throws when string has wrong length', () => {
+      expect(() => helper.decodeEd25519PublicKey('GABC')).toThrow(
+        /STRKEY_INVALID_LENGTH/,
+      );
+    });
+
+    it('throws when prefix is wrong (S instead of G)', () => {
+      const secretSeedBuffer = Buffer.alloc(32);
+      secretSeedBuffer.fill(0x01);
+      const encoded = helper.encodeEd25519SecretSeed(secretSeedBuffer);
+
+      expect(() => helper.decodeEd25519PublicKey(encoded)).toThrow(
+        /STRKEY_INVALID_PREFIX/,
+      );
+    });
+
+    it('throws when checksum is invalid', () => {
+      // Take a valid key and corrupt the last character
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+      const corrupted = encoded.slice(0, -1) + 'Z';
+
+      expect(() => helper.decodeEd25519PublicKey(corrupted)).toThrow(
+        /STRKEY_INVALID_CHECKSUM/,
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // decodeEd25519SecretSeed
+  // -----------------------------------------------------------------------
+
+  describe('decodeEd25519SecretSeed', () => {
+    it('decodes a valid S... StrKey to a 32-byte buffer', () => {
+      const originalBuffer = Buffer.alloc(32);
+      originalBuffer.fill(0x02);
+
+      const encoded = helper.encodeEd25519SecretSeed(originalBuffer);
+      const decoded = helper.decodeEd25519SecretSeed(encoded);
+
+      expect(decoded.length).toBe(32);
+      expect(decoded.equals(originalBuffer)).toBe(true);
+    });
+
+    it('throws when prefix is wrong (G instead of S)', () => {
+      const publicKeyBuffer = Buffer.alloc(32);
+      publicKeyBuffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(publicKeyBuffer);
+
+      expect(() => helper.decodeEd25519SecretSeed(encoded)).toThrow(
+        /STRKEY_INVALID_PREFIX/,
+      );
+    });
+
+    it('throws when checksum is invalid', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519SecretSeed(buffer);
+      const corrupted = encoded.slice(0, -1) + 'Z';
+
+      expect(() => helper.decodeEd25519SecretSeed(corrupted)).toThrow(
+        /STRKEY_INVALID_CHECKSUM/,
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // decodePreAuthTx
+  // -----------------------------------------------------------------------
+
+  describe('decodePreAuthTx', () => {
+    it('decodes a valid T... StrKey to a 32-byte buffer', () => {
+      const originalBuffer = Buffer.alloc(32);
+      originalBuffer.fill(0x03);
+
+      const encoded = helper.encodePreAuthTx(originalBuffer);
+      const decoded = helper.decodePreAuthTx(encoded);
+
+      expect(decoded.length).toBe(32);
+      expect(decoded.equals(originalBuffer)).toBe(true);
+    });
+
+    it('throws when prefix is wrong', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+
+      expect(() => helper.decodePreAuthTx(encoded)).toThrow(
+        /STRKEY_INVALID_PREFIX/,
+      );
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // decodeSha256Hash
+  // -----------------------------------------------------------------------
 
   describe('decodeSha256Hash', () => {
-    it('should decode a valid SHA256 hash', () => {
-      const hash = Buffer.alloc(32).fill(0xab);
-      const encoded = StrKeyHelper.encodeSha256Hash(hash);
-      const decoded = StrKeyHelper.decodeSha256Hash(encoded);
+    it('decodes a valid X... StrKey to a 32-byte buffer', () => {
+      const originalBuffer = Buffer.alloc(32);
+      originalBuffer.fill(0x04);
 
-      expect(decoded).toEqual(hash);
+      const encoded = helper.encodeSha256Hash(originalBuffer);
+      const decoded = helper.decodeSha256Hash(encoded);
+
+      expect(decoded.length).toBe(32);
+      expect(decoded.equals(originalBuffer)).toBe(true);
     });
 
-    it('should throw error for non-string input', () => {
-      expect(() => {
-        StrKeyHelper.decodeSha256Hash({} as any);
-      }).toThrow('Encoded hash must be a string');
-    });
+    it('throws when prefix is wrong', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
 
-    it('should throw error for invalid format', () => {
-      expect(() => {
-        StrKeyHelper.decodeSha256Hash('XINVALIDHASH');
-      }).toThrow('Failed to decode SHA256 hash');
+      expect(() => helper.decodeSha256Hash(encoded)).toThrow(
+        /STRKEY_INVALID_PREFIX/,
+      );
     });
   });
+
+  // -----------------------------------------------------------------------
+  // isValidEd25519PublicKey
+  // -----------------------------------------------------------------------
+
+  describe('isValidEd25519PublicKey', () => {
+    it('returns true for a valid G... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+
+      expect(helper.isValidEd25519PublicKey(encoded)).toBe(true);
+    });
+
+    it('returns false for a string with wrong prefix', () => {
+      expect(helper.isValidEd25519PublicKey('SABC...')).toBe(false);
+    });
+
+    it('returns false for a string with wrong length', () => {
+      expect(helper.isValidEd25519PublicKey('GABC')).toBe(false);
+    });
+
+    it('returns false for non-string inputs', () => {
+      expect(helper.isValidEd25519PublicKey(123)).toBe(false);
+      expect(helper.isValidEd25519PublicKey(null)).toBe(false);
+      expect(helper.isValidEd25519PublicKey(undefined)).toBe(false);
+      expect(helper.isValidEd25519PublicKey({})).toBe(false);
+    });
+
+    it('returns false for an empty string', () => {
+      expect(helper.isValidEd25519PublicKey('')).toBe(false);
+    });
+
+    it('returns false for a string with invalid characters', () => {
+      expect(helper.isValidEd25519PublicKey('GABC...invalid!@#')).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // isValidEd25519SecretSeed
+  // -----------------------------------------------------------------------
+
+  describe('isValidEd25519SecretSeed', () => {
+    it('returns true for a valid S... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x02);
+      const encoded = helper.encodeEd25519SecretSeed(buffer);
+
+      expect(helper.isValidEd25519SecretSeed(encoded)).toBe(true);
+    });
+
+    it('returns false for a string with wrong prefix', () => {
+      expect(helper.isValidEd25519SecretSeed('GABC...')).toBe(false);
+    });
+
+    it('returns false for non-string inputs', () => {
+      expect(helper.isValidEd25519SecretSeed(123)).toBe(false);
+      expect(helper.isValidEd25519SecretSeed(null)).toBe(false);
+      expect(helper.isValidEd25519SecretSeed(undefined)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // isValidPreAuthTx
+  // -----------------------------------------------------------------------
+
+  describe('isValidPreAuthTx', () => {
+    it('returns true for a valid T... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x03);
+      const encoded = helper.encodePreAuthTx(buffer);
+
+      expect(helper.isValidPreAuthTx(encoded)).toBe(true);
+    });
+
+    it('returns false for a string with wrong prefix', () => {
+      expect(helper.isValidPreAuthTx('GABC...')).toBe(false);
+    });
+
+    it('returns false for non-string inputs', () => {
+      expect(helper.isValidPreAuthTx(123)).toBe(false);
+      expect(helper.isValidPreAuthTx(null)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // isValidSha256Hash
+  // -----------------------------------------------------------------------
+
+  describe('isValidSha256Hash', () => {
+    it('returns true for a valid X... StrKey', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x04);
+      const encoded = helper.encodeSha256Hash(buffer);
+
+      expect(helper.isValidSha256Hash(encoded)).toBe(true);
+    });
+
+    it('returns false for a string with wrong prefix', () => {
+      expect(helper.isValidSha256Hash('GABC...')).toBe(false);
+    });
+
+    it('returns false for non-string inputs', () => {
+      expect(helper.isValidSha256Hash(123)).toBe(false);
+      expect(helper.isValidSha256Hash(null)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // getStrKeyType
+  // -----------------------------------------------------------------------
 
   describe('getStrKeyType', () => {
-    it('should identify valid public key', () => {
-      const publicKey = testKeypair.publicKey();
-      const result = StrKeyHelper.getStrKeyType(publicKey);
+    it('identifies a valid public key', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
 
-      expect(result.isValid).toBe(true);
-      expect(result.type).toBe('publicKey');
+      const info = helper.getStrKeyType(encoded);
+      expect(info.isValid).toBe(true);
+      expect(info.type).toBe(StrKeyType.ED25519_PUBLIC_KEY);
+      expect(info.prefix).toBe('G');
     });
 
-    it('should identify valid secret seed', () => {
-      const secretSeed = testKeypair.secret();
-      const result = StrKeyHelper.getStrKeyType(secretSeed);
+    it('identifies a valid secret seed', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x02);
+      const encoded = helper.encodeEd25519SecretSeed(buffer);
 
-      expect(result.isValid).toBe(true);
-      expect(result.type).toBe('secretSeed');
+      const info = helper.getStrKeyType(encoded);
+      expect(info.isValid).toBe(true);
+      expect(info.type).toBe(StrKeyType.ED25519_SECRET_SEED);
+      expect(info.prefix).toBe('S');
     });
 
-    it('should identify pre-auth tx', () => {
-      const hash = Buffer.alloc(32).fill(0x42);
-      const encoded = StrKeyHelper.encodePreAuthTx(hash);
-      const result = StrKeyHelper.getStrKeyType(encoded);
+    it('identifies a valid pre-auth tx', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x03);
+      const encoded = helper.encodePreAuthTx(buffer);
 
-      expect(result.isValid).toBe(true);
-      expect(result.type).toBe('preAuthTx');
+      const info = helper.getStrKeyType(encoded);
+      expect(info.isValid).toBe(true);
+      expect(info.type).toBe(StrKeyType.PRE_AUTH_TX);
+      expect(info.prefix).toBe('T');
     });
 
-    it('should identify SHA256 hash', () => {
-      const hash = Buffer.alloc(32).fill(0xab);
-      const encoded = StrKeyHelper.encodeSha256Hash(hash);
-      const result = StrKeyHelper.getStrKeyType(encoded);
+    it('identifies a valid SHA256 hash', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x04);
+      const encoded = helper.encodeSha256Hash(buffer);
 
-      expect(result.isValid).toBe(true);
-      expect(result.type).toBe('sha256Hash');
+      const info = helper.getStrKeyType(encoded);
+      expect(info.isValid).toBe(true);
+      expect(info.type).toBe(StrKeyType.SHA256_HASH);
+      expect(info.prefix).toBe('X');
     });
 
-    it('should return unknown for invalid string', () => {
-      const result = StrKeyHelper.getStrKeyType('INVALIDKEY');
+    it('returns isValid: false for an invalid checksum', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+      const corrupted = encoded.slice(0, -1) + 'Z';
 
-      expect(result.isValid).toBe(false);
-      expect(result.type).toBe('unknown');
+      const info = helper.getStrKeyType(corrupted);
+      expect(info.isValid).toBe(false);
+      expect(info.type).toBe(StrKeyType.ED25519_PUBLIC_KEY);
+      expect(info.prefix).toBe('G');
     });
 
-    it('should return unknown for non-string input', () => {
-      const result = StrKeyHelper.getStrKeyType(12345 as any);
-
-      expect(result.isValid).toBe(false);
-      expect(result.type).toBe('unknown');
-    });
-  });
-
-  describe('looksLikeSecretSeed', () => {
-    it('should return true for valid secret seed format', () => {
-      const secretSeed = testKeypair.secret();
-
-      expect(StrKeyHelper.looksLikeSecretSeed(secretSeed)).toBe(true);
+    it('returns isValid: false for an unknown prefix', () => {
+      const info = helper.getStrKeyType('ZABC...');
+      expect(info.isValid).toBe(false);
+      expect(info.type).toBeNull();
+      expect(info.prefix).toBe('Z');
     });
 
-    it('should return true for S-prefixed 56-char string even if invalid', () => {
-      const fakeSeed = 'S' + '1'.repeat(55);
-
-      expect(StrKeyHelper.looksLikeSecretSeed(fakeSeed)).toBe(true);
-    });
-
-    it('should return false for public key', () => {
-      const publicKey = testKeypair.publicKey();
-
-      expect(StrKeyHelper.looksLikeSecretSeed(publicKey)).toBe(false);
-    });
-
-    it('should return false for non-string input', () => {
-      expect(StrKeyHelper.looksLikeSecretSeed(123)).toBe(false);
-      expect(StrKeyHelper.looksLikeSecretSeed(null)).toBe(false);
-      expect(StrKeyHelper.looksLikeSecretSeed(undefined)).toBe(false);
-      expect(StrKeyHelper.looksLikeSecretSeed({})).toBe(false);
-    });
-
-    it('should return false for short S-prefixed string', () => {
-      expect(StrKeyHelper.looksLikeSecretSeed('S123')).toBe(false);
-    });
-  });
-
-  describe('maskKey', () => {
-    it('should mask a key showing only prefix and suffix', () => {
-      const key = testKeypair.publicKey();
-      const masked = StrKeyHelper.maskKey(key);
-
-      expect(masked).toContain('*');
-      expect(masked.startsWith(key.substring(0, 4))).toBe(true);
-      expect(masked.endsWith(key.substring(key.length - 4))).toBe(true);
-    });
-
-    it('should handle custom prefix and suffix lengths', () => {
-      const key = testKeypair.publicKey();
-      const masked = StrKeyHelper.maskKey(key, 6, 6);
-
-      expect(masked.startsWith(key.substring(0, 6))).toBe(true);
-      expect(masked.endsWith(key.substring(key.length - 6))).toBe(true);
-    });
-
-    it('should return *** for very short keys', () => {
-      const shortKey = 'ABC';
-      const masked = StrKeyHelper.maskKey(shortKey, 4, 4);
-
-      expect(masked).toBe('***');
-    });
-
-    it('should limit asterisk length to 20', () => {
-      const longKey = 'G' + 'A'.repeat(100);
-      const masked = StrKeyHelper.maskKey(longKey, 4, 4);
-
-      const asteriskCount = (masked.match(/\*/g) || []).length;
-      expect(asteriskCount).toBeLessThanOrEqual(20);
-    });
-
-    it('should handle secret seeds safely', () => {
-      const secretSeed = testKeypair.secret();
-      const masked = StrKeyHelper.maskKey(secretSeed);
-
-      // Should not expose the full secret
-      expect(masked).not.toBe(secretSeed);
-      expect(masked).toContain('*');
-      expect(masked.length).toBeLessThan(secretSeed.length);
-    });
-  });
-
-  describe('Integration - Full Key Lifecycle', () => {
-    it('should handle complete encode/decode cycle for public key', () => {
-      const rawKey = testPublicKeyBuffer;
-      const encoded = StrKeyHelper.encodeEd25519PublicKey(rawKey);
-      const decoded = StrKeyHelper.decodeEd25519PublicKey(encoded);
-
-      expect(decoded).toEqual(rawKey);
-      expect(StrKeyHelper.isValidEd25519PublicKey(encoded)).toBe(true);
-    });
-
-    it('should handle complete encode/decode cycle for secret seed', () => {
-      const rawSeed = testSecretSeedBuffer;
-      const encoded = StrKeyHelper.encodeEd25519SecretSeed(rawSeed);
-      const decoded = StrKeyHelper.decodeEd25519SecretSeed(encoded);
-
-      expect(decoded).toEqual(rawSeed);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(encoded)).toBe(true);
-    });
-
-    it('should correctly identify and validate different key types', () => {
-      const publicKey = testKeypair.publicKey();
-      const secretSeed = testKeypair.secret();
-      const hash = Buffer.alloc(32);
-      const preAuthTx = StrKeyHelper.encodePreAuthTx(hash);
-      const sha256Hash = StrKeyHelper.encodeSha256Hash(hash);
-
-      // Each should be identified correctly
-      expect(StrKeyHelper.getStrKeyType(publicKey).type).toBe('publicKey');
-      expect(StrKeyHelper.getStrKeyType(secretSeed).type).toBe('secretSeed');
-      expect(StrKeyHelper.getStrKeyType(preAuthTx).type).toBe('preAuthTx');
-      expect(StrKeyHelper.getStrKeyType(sha256Hash).type).toBe('sha256Hash');
-
-      // Validation should not cross-validate
-      expect(StrKeyHelper.isValidEd25519PublicKey(secretSeed)).toBe(false);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(publicKey)).toBe(false);
-    });
-  });
-
-  describe('Security - Edge Cases', () => {
-    it('should handle malformed input gracefully', () => {
-      const malformedInputs = [
-        '',
-        'G',
-        'S',
-        'GSHORT',
-        'TOOLONGKEYXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX',
-        'G' + '\x00'.repeat(55),
-        null,
-        undefined,
-        {},
-        [],
-        123,
-      ];
-
-      malformedInputs.forEach((input) => {
-        expect(() => {
-          if (typeof input === 'string') {
-            StrKeyHelper.isValidEd25519PublicKey(input);
-            StrKeyHelper.isValidEd25519SecretSeed(input);
-          }
-        }).not.toThrow();
+    it('returns isValid: false for non-string inputs', () => {
+      expect(helper.getStrKeyType(123)).toEqual({
+        isValid: false,
+        type: null,
+        prefix: null,
+      });
+      expect(helper.getStrKeyType(null)).toEqual({
+        isValid: false,
+        type: null,
+        prefix: null,
+      });
+      expect(helper.getStrKeyType(undefined)).toEqual({
+        isValid: false,
+        type: null,
+        prefix: null,
       });
     });
 
-    it('should not expose sensitive data in error messages', () => {
-      const secretSeed = testKeypair.secret();
+    it('returns isValid: false for empty string', () => {
+      const info = helper.getStrKeyType('');
+      expect(info.isValid).toBe(false);
+      expect(info.type).toBeNull();
+      expect(info.prefix).toBeNull();
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // looksLikeSecretSeed
+  // -----------------------------------------------------------------------
+
+  describe('looksLikeSecretSeed', () => {
+    it('returns true for a string starting with S and length 56', () => {
+      expect(helper.looksLikeSecretSeed('SABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12')).toBe(true);
+    });
+
+    it('returns false for a public key (G prefix)', () => {
+      expect(helper.looksLikeSecretSeed('GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12')).toBe(false);
+    });
+
+    it('returns false for wrong length', () => {
+      expect(helper.looksLikeSecretSeed('SABC')).toBe(false);
+    });
+
+    it('returns false for non-string inputs', () => {
+      expect(helper.looksLikeSecretSeed(123)).toBe(false);
+      expect(helper.looksLikeSecretSeed(null)).toBe(false);
+      expect(helper.looksLikeSecretSeed(undefined)).toBe(false);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // maskKey
+  // -----------------------------------------------------------------------
+
+  describe('maskKey', () => {
+    it('masks the middle of a StrKey string', () => {
+      const key = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234';
+      const masked = helper.maskKey(key);
+
+      expect(masked.startsWith('GABCDE')).toBe(true);
+      expect(masked.endsWith('34')).toBe(true);
+      expect(masked.length).toBe(key.length);
+      expect(masked).toContain('*');
+    });
+
+    it('uses custom prefix and suffix lengths', () => {
+      const key = 'GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234';
+      const masked = helper.maskKey(key, 3, 2);
+
+      expect(masked.startsWith('GAB')).toBe(true);
+      expect(masked.endsWith('34')).toBe(true);
+    });
+
+    it('returns [INVALID] for non-string inputs', () => {
+      expect(helper.maskKey(123)).toBe('[INVALID]');
+      expect(helper.maskKey(null)).toBe('[INVALID]');
+      expect(helper.maskKey(undefined)).toBe('[INVALID]');
+    });
+
+    it('returns [REDACTED] for strings that are too short to mask', () => {
+      expect(helper.maskKey('GAB')).toBe('[REDACTED]');
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Round-trip encoding/decoding
+  // -----------------------------------------------------------------------
+
+  describe('round-trip encoding/decoding', () => {
+    it('public key round-trip preserves data', () => {
+      const original = Buffer.alloc(32);
+      for (let i = 0; i < 32; i++) original[i] = i;
+
+      const encoded = helper.encodeEd25519PublicKey(original);
+      const decoded = helper.decodeEd25519PublicKey(encoded);
+
+      expect(decoded.equals(original)).toBe(true);
+    });
+
+    it('secret seed round-trip preserves data', () => {
+      const original = Buffer.alloc(32);
+      for (let i = 0; i < 32; i++) original[i] = 31 - i;
+
+      const encoded = helper.encodeEd25519SecretSeed(original);
+      const decoded = helper.decodeEd25519SecretSeed(encoded);
+
+      expect(decoded.equals(original)).toBe(true);
+    });
+
+    it('pre-auth tx round-trip preserves data', () => {
+      const original = Buffer.alloc(32);
+      for (let i = 0; i < 32; i++) original[i] = i * 2;
+
+      const encoded = helper.encodePreAuthTx(original);
+      const decoded = helper.decodePreAuthTx(encoded);
+
+      expect(decoded.equals(original)).toBe(true);
+    });
+
+    it('SHA256 hash round-trip preserves data', () => {
+      const original = Buffer.alloc(32);
+      for (let i = 0; i < 32; i++) original[i] = 255 - i;
+
+      const encoded = helper.encodeSha256Hash(original);
+      const decoded = helper.decodeSha256Hash(encoded);
+
+      expect(decoded.equals(original)).toBe(true);
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Edge cases and adversarial inputs
+  // -----------------------------------------------------------------------
+
+  describe('edge cases and adversarial inputs', () => {
+    it('handles all-zeros buffer', () => {
+      const buffer = Buffer.alloc(32);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+      const decoded = helper.decodeEd25519PublicKey(encoded);
+      expect(decoded.equals(buffer)).toBe(true);
+    });
+
+    it('handles all-0xFF buffer', () => {
+      const buffer = Buffer.alloc(32).fill(0xff);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+      const decoded = helper.decodeEd25519PublicKey(encoded);
+      expect(decoded.equals(buffer)).toBe(true);
+    });
+
+    it('rejects StrKey with lowercase prefix', () => {
+      expect(helper.isValidEd25519PublicKey('gabc...')).toBe(false);
+    });
+
+    it('rejects StrKey with invalid base32 characters', () => {
+      expect(helper.isValidEd25519PublicKey('GABC=...')).toBe(false);
+    });
+
+    it('rejects StrKey with whitespace', () => {
+      expect(helper.isValidEd25519PublicKey('GABC... ')).toBe(false);
+    });
+
+    it('does not leak raw key material in error messages', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
+      const corrupted = encoded.slice(0, -1) + 'Z';
 
       try {
-        // Try to decode as public key (wrong type)
-        StrKeyHelper.decodeEd25519PublicKey(secretSeed);
-        fail('Should have thrown error');
-      } catch (error) {
-        // Error message should not contain the actual secret
-        expect(error.message).not.toContain(secretSeed.substring(5));
+        helper.decodeEd25519PublicKey(corrupted);
+        fail('Should have thrown');
+      } catch (error: any) {
+        expect(error.message).not.toContain(encoded);
+        expect(error.message).not.toContain('0x01');
       }
     });
   });

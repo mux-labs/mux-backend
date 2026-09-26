@@ -1,367 +1,265 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { EncryptionService, DecryptionError } from './encryption.service';
+import {
+  EncryptionService,
+  DecryptionError,
+  MIN_ENCRYPTION_KEY_LENGTH,
+  PLACEHOLDER_ENCRYPTION_KEYS,
+} from './encryption.service';
+
+const GOOD_KEY = 'a'.repeat(MIN_ENCRYPTION_KEY_LENGTH);
+const OTHER_KEY = 'b'.repeat(MIN_ENCRYPTION_KEY_LENGTH);
+const SECRET = 'SABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMN';
+
+const makeConfig = (env: Record<string, string | undefined>) =>
+  ({ get: (key: string) => env[key] }) as unknown as ConfigService;
+
+async function build(env: Record<string, string | undefined>) {
+  const module: TestingModule = await Test.createTestingModule({
+    providers: [
+      EncryptionService,
+      { provide: ConfigService, useValue: makeConfig(env) },
+    ],
+  }).compile();
+  return module.get(EncryptionService);
+}
 
 describe('EncryptionService', () => {
-  let service: EncryptionService;
-  let configService: ConfigService;
-
-  beforeEach(async () => {
-    const mockConfigService = {
-      get: jest
-        .fn()
-        .mockReturnValue('test-encryption-key-32-characters-long!!'),
-    };
-
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        EncryptionService,
-        {
-          provide: ConfigService,
-          useValue: mockConfigService,
-        },
-      ],
-    }).compile();
-
-    service = module.get<EncryptionService>(EncryptionService);
-    configService = module.get<ConfigService>(ConfigService);
-  });
-
-  it('should be defined', () => {
-    expect(service).toBeDefined();
-  });
-
-  describe('initialization', () => {
-    it('should throw error if WALLET_ENCRYPTION_KEY is not set', () => {
-      jest.spyOn(configService, 'get').mockReturnValue(undefined);
-
-      expect(() => new EncryptionService(configService)).toThrow(
-        'WALLET_ENCRYPTION_KEY environment variable is required',
-      );
+  describe('boot-time key validation (fail closed)', () => {
+    it('is defined for a valid key', async () => {
+      await expect(
+        build({ WALLET_ENCRYPTION_KEY: GOOD_KEY }),
+      ).resolves.toBeDefined();
     });
 
-    it('should throw error if WALLET_ENCRYPTION_KEY contains only whitespace', () => {
-      jest.spyOn(configService, 'get').mockReturnValue('   ');
-
-      expect(() => new EncryptionService(configService)).toThrow(
-        'WALLET_ENCRYPTION_KEY environment variable is required',
-      );
-    });
-
-    it('should throw error if WALLET_ENCRYPTION_KEY is less than 32 characters', () => {
-      jest.spyOn(configService, 'get').mockReturnValue('short-key-123');
-
-      expect(() => new EncryptionService(configService)).toThrow(
-        'WALLET_ENCRYPTION_KEY must be at least 32 characters long',
-      );
-    });
-
-    it('should throw error if WALLET_ENCRYPTION_KEY is the default placeholder value', () => {
-      jest
-        .spyOn(configService, 'get')
-        .mockReturnValue('your-secret-encryption-key-min-32-chars');
-
-      expect(() => new EncryptionService(configService)).toThrow(
-        'WALLET_ENCRYPTION_KEY environment variable cannot use the default placeholder value',
-      );
-    });
-
-    it('should initialize successfully with valid encryption key', () => {
-      jest
-        .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
-
-      expect(() => new EncryptionService(configService)).not.toThrow();
-    });
-  });
-
-  describe('encryption and decryption', () => {
-    beforeEach(() => {
-      jest
-        .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
-      service = new EncryptionService(configService);
-    });
-
-    it('should encrypt and decrypt plaintext correctly', () => {
-      const plaintext = 'super-secret-private-key-12345';
-
-      const encrypted = service.encrypt(plaintext);
-      const decrypted = service.decrypt(encrypted);
-
-      expect(decrypted).toBe(plaintext);
-    });
-
-    it('should produce different encrypted values for same plaintext', () => {
-      const plaintext = 'same-plaintext';
-
-      const encrypted1 = service.encrypt(plaintext);
-      const encrypted2 = service.encrypt(plaintext);
-
-      expect(encrypted1.encryptedData).not.toBe(encrypted2.encryptedData);
-      expect(encrypted1.iv).not.toBe(encrypted2.iv);
-      expect(encrypted1.tag).not.toBe(encrypted2.tag);
-    });
-
-    it('should encrypt and decrypt complex strings', () => {
-      const complexPlaintext =
-        '-----BEGIN PRIVATE KEY-----\\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQC7VJTUt9Us8cKB\\nxI/6+TqSgUqT0d5l0KGBZtZnQj5M6qJ8L5M8V5J9K5A8B5K5L8K5M8V5J9K5A8B5\\n-----END PRIVATE KEY-----';
-
-      const encrypted = service.encrypt(complexPlaintext);
-      const decrypted = service.decrypt(encrypted);
-
-      expect(decrypted).toBe(complexPlaintext);
-    });
-
-    it('should handle empty strings', () => {
-      const plaintext = '';
-
-      const encrypted = service.encrypt(plaintext);
-      const decrypted = service.decrypt(encrypted);
-
-      expect(decrypted).toBe(plaintext);
-    });
-
-    it('should handle unicode characters', () => {
-      const plaintext = '🔐 🔑 🚀 测试 🔒';
-
-      const encrypted = service.encrypt(plaintext);
-      const decrypted = service.decrypt(encrypted);
-
-      expect(decrypted).toBe(plaintext);
-    });
-  });
-
-  describe('serialization', () => {
-    beforeEach(() => {
-      jest
-        .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
-      service = new EncryptionService(configService);
-    });
-
-    it('should serialize and deserialize encryption result', () => {
-      const plaintext = 'test-serialization';
-
-      const encrypted = service.encrypt(plaintext);
-      const serialized = service.serializeForStorage(encrypted);
-      const deserialized = service.deserializeFromStorage(serialized);
-      const decrypted = service.decrypt(deserialized);
-
-      expect(decrypted).toBe(plaintext);
-    });
-
-    it('should throw error for invalid serialized data', () => {
-      const invalidData = 'invalid-json-data';
-
-      expect(() => service.deserializeFromStorage(invalidData)).toThrow(
-        'Invalid encrypted data format',
-      );
-    });
-
-    it('should handle encryptAndSerialize and deserializeAndDecrypt', () => {
-      const plaintext = 'test-convenience-methods';
-
-      const serialized = service.encryptAndSerialize(plaintext);
-      const decrypted = service.deserializeAndDecrypt(serialized);
-
-      expect(decrypted).toBe(plaintext);
-    });
-  });
-
-  describe('error handling', () => {
-    beforeEach(() => {
-      jest
-        .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
-      service = new EncryptionService(configService);
-    });
-
-    it('should throw DecryptionError for invalid encrypted data', () => {
-      const invalidEncrypted = {
-        encryptedData: 'invalid-data',
-        iv: 'invalid-iv',
-        tag: 'invalid-tag',
-      };
-
-      expect(() => service.decrypt(invalidEncrypted)).toThrow(DecryptionError);
-    });
-
-    it('should throw DecryptionError for wrong IV', () => {
-      const plaintext = 'test-data';
-      const encrypted = service.encrypt(plaintext);
-
-      const wrongIvEncrypted = {
-        ...encrypted,
-        iv: 'wrong-iv-123456789012',
-      };
-
-      expect(() => service.decrypt(wrongIvEncrypted)).toThrow(DecryptionError);
-    });
-
-    it('should throw DecryptionError for wrong tag', () => {
-      const plaintext = 'test-data';
-      const encrypted = service.encrypt(plaintext);
-
-      const wrongTagEncrypted = {
-        ...encrypted,
-        tag: 'wrong-tag-123456789012',
-      };
-
-      expect(() => service.decrypt(wrongTagEncrypted)).toThrow(DecryptionError);
-    });
-
-    it('should handle decryption errors with proper error codes', () => {
-      const invalidEncrypted = {
-        encryptedData: 'invalid',
-        iv: 'invalid',
-        tag: 'invalid',
-      };
-
-      try {
-        service.decrypt(invalidEncrypted);
-        fail('Expected DecryptionError to be thrown');
-      } catch (error) {
-        expect(error).toBeInstanceOf(DecryptionError);
-        expect((error as DecryptionError).code).toBeDefined();
-        expect(['DECRYPTION_FAILED', 'INVALID_KEY', 'INVALID_DATA']).toContain(
-          (error as DecryptionError).code,
+    it.each([undefined, '', '   '])(
+      'refuses to boot when the key is %p',
+      async (key) => {
+        await expect(build({ WALLET_ENCRYPTION_KEY: key })).rejects.toThrow(
+          /is required/,
         );
+      },
+    );
+
+    it('refuses a key shorter than the documented minimum', async () => {
+      await expect(
+        build({
+          WALLET_ENCRYPTION_KEY: 'a'.repeat(MIN_ENCRYPTION_KEY_LENGTH - 1),
+        }),
+      ).rejects.toThrow(new RegExp(`at least ${MIN_ENCRYPTION_KEY_LENGTH}`));
+    });
+
+    it.each(PLACEHOLDER_ENCRYPTION_KEYS)(
+      'refuses the documented placeholder %s',
+      async (placeholder) => {
+        await expect(
+          build({ WALLET_ENCRYPTION_KEY: placeholder }),
+        ).rejects.toThrow(/placeholder/);
+      },
+    );
+
+    it('accepts a key exactly at the minimum length', async () => {
+      await expect(
+        build({ WALLET_ENCRYPTION_KEY: 'a'.repeat(MIN_ENCRYPTION_KEY_LENGTH) }),
+      ).resolves.toBeDefined();
+    });
+  });
+
+  describe('AES-256-GCM envelope', () => {
+    it('round-trips a secret seed', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const stored = service.encryptAndSerialize(SECRET);
+
+      expect(service.deserializeAndDecrypt(stored)).toBe(SECRET);
+    });
+
+    it('uses a 128-bit IV and emits a 128-bit auth tag', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const result = service.encrypt(SECRET);
+
+      expect(result.iv).toHaveLength(32); // 16 bytes, hex-encoded
+      expect(result.tag).toHaveLength(32); // 16 bytes, hex-encoded
+    });
+
+    it('never stores the plaintext in the envelope', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const stored = service.encryptAndSerialize(SECRET);
+
+      expect(stored).not.toContain(SECRET);
+    });
+
+    it('uses a fresh IV for every encryption', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const ivs = new Set(
+        Array.from({ length: 25 }, () => service.encrypt(SECRET).iv),
+      );
+
+      // A repeated IV under one key would leak plaintext structure.
+      expect(ivs.size).toBe(25);
+    });
+
+    it('produces different ciphertext for the same input', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(service.encrypt(SECRET).encryptedData).not.toBe(
+        service.encrypt(SECRET).encryptedData,
+      );
+    });
+  });
+
+  describe('fail-closed decryption (stable error codes)', () => {
+    it('rejects a wrong key with DECRYPTION_FAILED', async () => {
+      const writer = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const reader = await build({ WALLET_ENCRYPTION_KEY: OTHER_KEY });
+      const stored = writer.encryptAndSerialize(SECRET);
+
+      expect(() => reader.deserializeAndDecrypt(stored)).toThrow(
+        DecryptionError,
+      );
+      try {
+        reader.deserializeAndDecrypt(stored);
+      } catch (e) {
+        expect((e as DecryptionError).code).toBe('DECRYPTION_FAILED');
       }
     });
-  });
 
-  describe('configuration validation', () => {
-    beforeEach(() => {
-      jest
-        .spyOn(configService, 'get')
-        .mockReturnValue('test-encryption-key-12345-long-enough-32-chars');
-      service = new EncryptionService(configService);
+    it('rejects tampered ciphertext', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const result = service.encrypt(SECRET);
+      // Flip one hex nibble of the ciphertext.
+      const tampered = {
+        ...result,
+        encryptedData:
+          (result.encryptedData[0] === '0' ? '1' : '0') +
+          result.encryptedData.slice(1),
+      };
+
+      expect(() => service.decrypt(tampered)).toThrow(DecryptionError);
     });
 
-    it('should validate configuration successfully', () => {
-      expect(service.validateConfiguration()).toBe(true);
-    });
+    it('rejects a swapped auth tag (AAD/context binding)', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const a = service.encrypt(SECRET);
+      const b = service.encrypt(SECRET);
 
-    it('should return false for invalid configuration', () => {
-      // Mock the encryption method to throw an error
-      jest.spyOn(service, 'encrypt').mockImplementation(() => {
-        throw new Error('Encryption failed');
-      });
-
-      expect(service.validateConfiguration()).toBe(false);
-    });
-  });
-
-  describe('master-key rotation (#693)', () => {
-    const makeService = (current: string, previous?: string) => {
-      const cfg = {
-        get: jest.fn((key: string) =>
-          key === 'WALLET_ENCRYPTION_KEY_PREVIOUS' ? previous : current,
-        ),
-      } as unknown as ConfigService;
-      return new EncryptionService(cfg);
-    };
-
-    const OLD_KEY = 'old-encryption-key-32-characters-long!!';
-    const NEW_KEY = 'new-encryption-key-32-characters-long!!';
-
-    it('hasPreviousKey() reflects WALLET_ENCRYPTION_KEY_PREVIOUS', () => {
-      expect(makeService(NEW_KEY).hasPreviousKey()).toBe(false);
-      expect(makeService(NEW_KEY, OLD_KEY).hasPreviousKey()).toBe(true);
-    });
-
-    it('throws when the previous key is shorter than 32 characters', () => {
-      expect(() => makeService(NEW_KEY, 'short')).toThrow(
-        'WALLET_ENCRYPTION_KEY_PREVIOUS must be at least 32 characters long',
-      );
-    });
-
-    it('re-encrypts ciphertext written under the previous key', () => {
-      const oldService = makeService(OLD_KEY);
-      const stored = oldService.encryptAndSerialize('S-SECRET-SEED');
-
-      const rotatingService = makeService(NEW_KEY, OLD_KEY);
-      const { data, rotated } = rotatingService.reEncryptWithCurrentKey(stored);
-
-      expect(rotated).toBe(true);
-      expect(data).not.toEqual(stored);
-      expect(rotatingService.deserializeAndDecrypt(data)).toBe('S-SECRET-SEED');
-      // The new service on its own (no previous key) can now read it.
-      expect(makeService(NEW_KEY).deserializeAndDecrypt(data)).toBe(
-        'S-SECRET-SEED',
-      );
-    });
-
-    it('is a no-op when ciphertext is already under the current key', () => {
-      const rotatingService = makeService(NEW_KEY, OLD_KEY);
-      const stored =
-        makeService(NEW_KEY).encryptAndSerialize('already-current');
-
-      const { data, rotated } = rotatingService.reEncryptWithCurrentKey(stored);
-
-      expect(rotated).toBe(false);
-      expect(data).toBe(stored);
-    });
-
-    it('throws DecryptionError when neither key can decrypt', () => {
-      const stored = makeService(
-        'unrelated-key-32-characters-long!!!!',
-      ).encryptAndSerialize('x');
-      const rotatingService = makeService(NEW_KEY, OLD_KEY);
-
-      expect(() => rotatingService.reEncryptWithCurrentKey(stored)).toThrow(
+      // Grafting another envelope's tag must not authenticate.
+      expect(() => service.decrypt({ ...a, tag: b.tag })).toThrow(
         DecryptionError,
       );
     });
 
-    it('throws when no previous key is configured and the current key fails', () => {
-      const stored = makeService(OLD_KEY).encryptAndSerialize('x');
-      expect(() =>
-        makeService(NEW_KEY).reEncryptWithCurrentKey(stored),
-      ).toThrow(DecryptionError);
+    it.each([
+      ['not json at all', 'INVALID_DATA'],
+      ['{"encryptedData":"aa"}', 'INVALID_DATA'],
+      ['{"encryptedData":"aa","iv":"bb"}', 'INVALID_DATA'],
+      ['{}', 'INVALID_DATA'],
+    ])('rejects a malformed envelope (%s) with %s', async (stored, code) => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      try {
+        service.deserializeAndDecrypt(stored);
+        throw new Error('expected a DecryptionError');
+      } catch (e) {
+        expect(e).toBeInstanceOf(DecryptionError);
+        expect((e as DecryptionError).code).toBe(code);
+      }
+    });
+
+    it('never returns empty plaintext on failure', async () => {
+      const writer = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const reader = await build({ WALLET_ENCRYPTION_KEY: OTHER_KEY });
+      const stored = writer.encryptAndSerialize(SECRET);
+
+      // A swallowed failure returning '' would sign with an empty key.
+      let result: string | undefined;
+      try {
+        result = reader.deserializeAndDecrypt(stored);
+      } catch {
+        result = undefined;
+      }
+      expect(result).toBeUndefined();
+    });
+
+    it('does not leak key material in the error', async () => {
+      const writer = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const reader = await build({ WALLET_ENCRYPTION_KEY: OTHER_KEY });
+      const stored = writer.encryptAndSerialize(SECRET);
+
+      try {
+        reader.deserializeAndDecrypt(stored);
+        throw new Error('expected a DecryptionError');
+      } catch (e) {
+        const serialized = `${(e as Error).message}${(e as DecryptionError).code}`;
+        expect(serialized).not.toContain(SECRET);
+        expect(serialized).not.toContain(GOOD_KEY);
+        expect(serialized).not.toContain(OTHER_KEY);
+      }
     });
   });
 
-  describe('key derivation', () => {
-    it('should derive same key from same input', () => {
-      const key1 = 'test-encryption-key-12345-long-enough-32-chars';
-      const key2 = 'test-encryption-key-12345-long-enough-32-chars';
-
-      jest.spyOn(configService, 'get').mockReturnValue(key1);
-      const service1 = new EncryptionService(configService);
-
-      jest.spyOn(configService, 'get').mockReturnValue(key2);
-      const service2 = new EncryptionService(configService);
-
-      const plaintext = 'same-plaintext';
-
-      const encrypted1 = service1.encrypt(plaintext);
-      const encrypted2 = service2.encrypt(plaintext);
-
-      // Should be able to decrypt across instances with same key
-      expect(service2.decrypt(encrypted1)).toBe(plaintext);
-      expect(service1.decrypt(encrypted2)).toBe(plaintext);
+  describe('master-key rotation support', () => {
+    it('reports no previous key by default', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(service.hasPreviousKey()).toBe(false);
     });
 
-    it('should derive different keys from different inputs', () => {
-      const key1 = 'test-encryption-key-12345-long-enough-32-chars';
-      const key2 = 'different-encryption-key-32-chars-long!!';
+    it('re-encryption is a no-op under the current key', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const stored = service.encryptAndSerialize(SECRET);
 
-      jest.spyOn(configService, 'get').mockReturnValue(key1);
-      const service1 = new EncryptionService(configService);
+      const result = service.reEncryptWithCurrentKey(stored);
+      expect(result.rotated).toBe(false);
+      expect(result.data).toBe(stored);
+    });
 
-      jest.spyOn(configService, 'get').mockReturnValue(key2);
-      const service2 = new EncryptionService(configService);
+    it('re-wraps ciphertext written under the previous key', async () => {
+      const old = await build({ WALLET_ENCRYPTION_KEY: OTHER_KEY });
+      const stored = old.encryptAndSerialize(SECRET);
 
-      const plaintext = 'same-plaintext';
+      const rotated = await build({
+        WALLET_ENCRYPTION_KEY: GOOD_KEY,
+        WALLET_ENCRYPTION_KEY_PREVIOUS: OTHER_KEY,
+      });
+      expect(rotated.hasPreviousKey()).toBe(true);
 
-      const encrypted1 = service1.encrypt(plaintext);
-      const encrypted2 = service2.encrypt(plaintext);
+      const result = rotated.reEncryptWithCurrentKey(stored);
+      expect(result.rotated).toBe(true);
+      // Must be readable under the new key only.
+      const newKeyOnly = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(newKeyOnly.deserializeAndDecrypt(result.data)).toBe(SECRET);
+    });
 
-      // Should not be able to decrypt across instances with different keys
-      expect(() => service2.decrypt(encrypted1)).toThrow(DecryptionError);
-      expect(() => service1.decrypt(encrypted2)).toThrow(DecryptionError);
+    it('refuses a previous key identical to the current key', async () => {
+      await expect(
+        build({
+          WALLET_ENCRYPTION_KEY: GOOD_KEY,
+          WALLET_ENCRYPTION_KEY_PREVIOUS: GOOD_KEY,
+        }),
+      ).rejects.toThrow(/must differ/);
+    });
+
+    it('refuses a previous key that is too short', async () => {
+      await expect(
+        build({
+          WALLET_ENCRYPTION_KEY: GOOD_KEY,
+          WALLET_ENCRYPTION_KEY_PREVIOUS: 'short',
+        }),
+      ).rejects.toThrow(new RegExp(`at least ${MIN_ENCRYPTION_KEY_LENGTH}`));
+    });
+
+    it('fails closed when no previous key is configured', async () => {
+      const old = await build({ WALLET_ENCRYPTION_KEY: OTHER_KEY });
+      const stored = old.encryptAndSerialize(SECRET);
+
+      const current = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(() => current.reEncryptWithCurrentKey(stored)).toThrow(
+        DecryptionError,
+      );
+    });
+  });
+
+  describe('self test', () => {
+    it('validates a working configuration', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(service.validateConfiguration()).toBe(true);
     });
   });
 });

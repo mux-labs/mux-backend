@@ -1,2 +1,1 @@
-export { ResponseSanitizerInterceptor } from './response-sanitizer.interceptor';
-export { IsoUtcTimestampInterceptor } from './iso-utc-timestamp.interceptor';
+export { IsoUtcTimestampInterceptor } from './request-id.interceptor';

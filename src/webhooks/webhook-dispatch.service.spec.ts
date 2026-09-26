@@ -7,6 +7,10 @@ import {
 import { WebhookSignerService } from './webhook-signer.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ConfigService } from '@nestjs/config';
+import {
+  WebhookUrlAllowlistService,
+  WEBHOOK_ALLOWED_HOSTS_ENV,
+} from './webhook-url-allowlist.service';
 import axios from 'axios';
 
 jest.mock('axios');
@@ -48,7 +52,11 @@ describe('WebhookDispatchService', () => {
     };
 
     mockConfigService = {
-      get: jest.fn((key: string, defaultValue: any) => defaultValue),
+      get: jest.fn((key: string, defaultValue: any) =>
+        key === WEBHOOK_ALLOWED_HOSTS_ENV
+          ? 'example.com, secure.example.com, hooks.example.com'
+          : defaultValue,
+      ),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -57,6 +65,7 @@ describe('WebhookDispatchService', () => {
         { provide: WebhookSignerService, useValue: mockSigner },
         { provide: MetricsService, useValue: mockMetrics },
         { provide: ConfigService, useValue: mockConfigService },
+        WebhookUrlAllowlistService,
       ],
     }).compile();
 
@@ -139,6 +148,51 @@ describe('WebhookDispatchService', () => {
 
       // Verify the interceptor was registered
       expect(mockAxiosInstance.interceptors.request.use).toHaveBeenCalled();
+    });
+
+    describe('SSRF allowlist (defense in depth)', () => {
+      it('never opens a socket to a non-allowlisted host', async () => {
+        const result = await service.deliverWebhook(
+          'https://attacker.example.net/webhook',
+          { test: 'payload' },
+          'wallet.created',
+          'evt-ssrf',
+          'whsec_secret',
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorMessage).toContain('WEBHOOK_URL_NOT_ALLOWLISTED');
+        expect(mockAxiosInstance.post).not.toHaveBeenCalled();
+        expect(mockMetrics.incrementCounter).toHaveBeenCalledWith(
+          'webhook_delivery_blocked_by_ssrf_allowlist',
+        );
+      });
+
+      it('blocks a cloud-metadata target even if it somehow got persisted', async () => {
+        const result = await service.deliverWebhook(
+          'https://169.254.169.254/latest/meta-data/',
+          { test: 'payload' },
+          'wallet.created',
+          'evt-metadata',
+          'whsec_secret',
+        );
+
+        expect(result.success).toBe(false);
+        expect(result.errorMessage).toContain('WEBHOOK_URL_BLOCKED_HOST');
+        expect(mockAxiosInstance.post).not.toHaveBeenCalled();
+      });
+
+      it('does not leak the signing secret into the rejection message', async () => {
+        const result = await service.deliverWebhook(
+          'https://attacker.example.net/webhook',
+          { test: 'payload' },
+          'wallet.created',
+          'evt-ssrf',
+          'whsec_super_secret',
+        );
+
+        expect(result.errorMessage).not.toContain('whsec_super_secret');
+      });
     });
 
     describe('mTLS support', () => {

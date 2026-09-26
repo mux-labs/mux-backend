@@ -1,153 +1,298 @@
 # Security Policy
 
-## Vulnerability Disclosure
+Mux Protocol provides invisible wallets and account abstraction on **Stellar/Soroban**.
+`mux-backend` custodies Stellar keypairs on the server, signs and relays sponsored
+transactions, and exposes authorized internal cron/cleanup surfaces. This document is
+the source of truth for how security issues are reported and handled, and for the
+production security requirements that every contributor and operator must respect.
 
-Mux Backend is a custody and blockchain relay platform that manages private keys, signs transactions, and handles sensitive financial operations. **Vulnerabilities must be reported privately** to prevent exploitation or public disclosure of attack vectors.
+---
 
-### Reporting a Vulnerability
+## Reporting a Vulnerability
 
-**DO NOT file public GitHub issues for security vulnerabilities.**
+If you discover a security vulnerability in Mux Protocol, please report it responsibly
+and **in private**.
 
-Instead, report security vulnerabilities privately via email:
+**DO NOT file public GitHub issues for security vulnerabilities.** Making a finding
+public before a fix ships can expose user funds, keys, or infrastructure.
 
-**📧 Email:** [security@mux.com](mailto:security@mux.com)
+Instead, email us at **security@muxprotocol.io** with:
 
-Include the following in your report:
-- Description of the vulnerability and its impact
-- Steps to reproduce (if applicable)
-- Affected components or endpoints
-- Suggested fix (if you have one)
-- Your name and contact information (optional)
+- A description of the vulnerability and its potential impact
+- Steps to reproduce (proof-of-concept if possible)
+- Affected components (contracts, backend, SDK, frontend)
+- Any suggested remediation
+
+We will acknowledge receipt within 48 hours and aim to provide a resolution timeline
+within 5 business days. We ask that you give us reasonable time to address the issue
+before public disclosure.
 
 ### Response SLA
 
-We commit to the following security response times:
+| Severity | Initial response | Update cadence |
+| --- | --- | --- |
+| **Critical** | Within 4 hours | Every 24 hours |
+| **High** | Within 24 hours | Every 2 business days |
+| **Medium** | Within 3 business days | Weekly |
+| **Low** | Within 5 business days | Weekly |
 
-| Severity | Initial Response | Resolution Target |
-|----------|------------------|-------------------|
-| **Critical** (e.g., key leakage, unauthorized transaction signing, custody breach) | 4 hours | 48 hours |
-| **High** (e.g., auth bypass, unencrypted keys at rest, privilege escalation) | 24 hours | 7 days |
-| **Medium** (e.g., timing attacks, rate limit bypass, data exposure) | 48 hours | 14 days |
-| **Low** (e.g., info disclosure, best practice violations) | 1 week | 30 days |
+Initial response means a human reply confirming the report was received and triaged.
+Critical includes compromise of wallet encryption keys, uncontrolled custody signing,
+or unauthorized access to internal privileged surfaces.
 
-### Scope: Critical Security Domains
+## Scope
 
-The following are considered **in scope** for private disclosure and will be treated as critical:
+This policy covers:
 
-1. **Wallet Encryption & Key Management**
-   - Private key exposure at any point
-   - Unencrypted key storage or transmission
-   - `WALLET_ENCRYPTION_KEY` compromise
-   - Key derivation or seed exposure
+- Soroban smart contracts (`mux-contracts`)
+- Backend services and APIs (`mux-backend`)
+- SDKs and client libraries
+- Web application
 
-2. **Custody & Transaction Signing**
-   - Unauthorized transaction signature generation
-   - Double-signing vulnerabilities
-   - Sponsored transaction authorization bypass
-   - Relayer funding account compromise
+### In-scope vulnerability categories
 
-3. **Internal Endpoint Access Control**
-   - Authentication bypass on cron/internal endpoints
-   - Missing or insufficient `CRON_SECRET` validation
-   - Unauthorized access to transaction polling or relayer funding
-   - Background job manipulation
+- **Wallet Encryption & Key Management** — generation, encryption at rest, key
+  versioning, rotation, and re-encryption of Stellar key material.
+- **Custody & Transaction Signing** — server-side custody of private keys, signing,
+  fee-bump relaying, and sponsor-account handling.
+- **Internal Endpoint Access Control** — cron-triggered jobs, recovery administration,
+  maintenance mode, and other privileged/internal endpoints.
+- **API Key & Authentication** — JWT verification, API key lifecycle (hashing, expiry,
+  revocation), user status enforcement, and rate limiting.
+- **Data Integrity & Confidentiality** — idempotency, replay protection, webhook
+  signature verification, and redaction of secrets from logs and responses.
 
-4. **API Key & Authentication**
-   - API key validation bypass
-   - Token reuse or replay attacks
-   - Session hijacking
-   - Privilege escalation to other projects/tenants
+## Custody & Transaction Signing
+
+Mux Backend uses a **server-side custodial model**: Stellar private keys are generated,
+encrypted with AES-256-GCM, and held exclusively on the server. Private key material
+never crosses the client boundary and is never returned from any API. All signing and
+transaction relaying happen server-side.
 
 5. **Data Integrity & Confidentiality**
    - Unencrypted sensitive data (keys, seeds, private data)
    - Cross-tenant data exposure
    - Audit log tampering
    - Unauthorized access to wallet balances or transaction history
+   - SSRF via webhook endpoint registration (see Webhook SSRF Allowlist below)
 
-### Scope: Out of Scope
+- Custody and **relayer** vulnerabilities are treated as high severity. Wallet
+  encryption keys, signing secrets, and sponsor/relayer accounts are **private** and
+  must never be committed, logged, or exposed in error responses.
+- The server remains the source of truth for spends, recovery, and admin decisions;
+  clients cannot bypass authz policy, idempotency, or the mainnet gates.
+- See [docs/custody-security-model.md](docs/custody-security-model.md) for the full
+  custody model (key generation, encryption envelope, rotation, fail-closed decrypt).
 
-The following are typically **out of scope** (though context matters):
+## Internal Cron Jobs & Secret Guard
 
-- Denial of service (unless critical to availability)
-- Brute force attacks on rate-limited endpoints
-- Social engineering or phishing
-- Third-party dependency vulnerabilities (report to upstream maintainers)
-- XSS in OpenAPI documentation (frontend concerns)
-- General best practice violations without security impact
+Internal, cron-triggered endpoints (cleanup workers, reconciliation jobs, and other
+scheduled maintenance tasks) are **not** part of the public API surface. They are
+guarded by a shared cron secret and are **deny-by-default**: if the secret is
+missing, unset, or does not match, the request is rejected before any job logic
+runs.
 
-### Disclosure Timeline
+### Configuration
 
-**Responsible Disclosure Window:** 90 days from confirmation
+- `CRON_SECRET` — required shared secret used to authenticate internal cron
+  triggers. Must be a high-entropy random value (e.g. 32+ bytes, base64/hex
+  encoded). Never commit this value to the repository.
+- The secret is supplied to the backend via environment/secret manager only.
+  It must never appear in source, logs, error responses, or metrics.
+- Cron callers must present the secret on every request (e.g. via the
+  `x-cron-secret` header). Requests without a valid secret receive a stable
+  `401`/`403` error code and are not executed.
 
-1. **Day 0:** Vulnerability reported
-2. **Day 0-4:** Initial assessment and response (critical issues)
-3. **Day 1-7:** Patch development and testing
-4. **Day 7-14:** Release to production (staged rollout if needed)
-5. **Day 30:** Public disclosure via advisory (after fix is widely deployed)
-6. **Day 90:** Full public disclosure if unresolved (rare)
+### Rotation
 
-### What to Expect
+1. Generate a new high-entropy secret in the secret manager.
+2. Update the cron scheduler / trigger configuration to send the new value.
+3. Roll the backend deployment so it reads the new `CRON_SECRET`.
+4. Verify scheduled jobs still succeed and that unauthenticated requests are
+   rejected.
+5. Revoke the previous secret.
 
-1. **Confirmation:** We'll confirm receipt and provide a tracking reference
-2. **Assessment:** We'll evaluate severity and impact
-3. **Collaboration:** We may ask follow-up questions or request proof-of-concept code
-4. **Updates:** We'll provide regular status updates
-5. **Credit:** With your permission, we'll credit the reporter in the security advisory
+Rotation should be performed on a regular schedule and immediately if a secret
+is suspected to be compromised. Because the guard is fail-closed, a missing or
+mismatched secret disables the internal jobs rather than exposing them.
 
-### Code of Conduct
+### Operational Notes
 
-- **Do not exploit** the vulnerability beyond proof-of-concept
-- **Do not access** data beyond what's necessary to demonstrate the issue
-- **Do not share** the vulnerability with others until we've publicly disclosed
-- **Do not demand** payment or threaten disclosure (extortion is illegal)
-
-### Safe Harbor
-
-We commit to not taking legal action against researchers who:
-- Report vulnerabilities in good faith
-- Follow responsible disclosure practices
-- Avoid privacy violations or data exfiltration
-- Do not exploit the vulnerability for personal gain
-
----
+- **Schedules, cadences, and the operator runbook** for every cron job are
+  documented in [docs/CRON-SCHEDULES.md](docs/CRON-SCHEDULES.md). That document
+  is the source of truth for *when* each job runs and *what to do when it fails*;
+  this section remains the source of truth for *who may call it*.
+- Adding a new scheduled job requires updating the schedule table in
+  `docs/CRON-SCHEDULES.md` **and** `test/cron-schedule-docs.e2e-spec.ts` in the
+  same PR, so the documented surface cannot drift from the implemented one.
+- Auth failures are logged with a correlation/request id and a stable error
+  code, but **never** log the secret value or raw key material.
+- Internal job endpoints are rate-limited and idempotent; replayed or
+  concurrent triggers must not cause duplicate side effects.
+- On dependency outages (RPC/DB/Horizon), internal write paths fail closed.
+- **Idempotency TTL cleanup** is fail-closed on database outage and deletes
+  only rows whose TTL has already elapsed, so it can never cause a duplicate
+  payment on the money path. It is opt-in and logs counts/cutoffs only — never
+  idempotency keys or cached response payloads. Contract:
+  [docs/IDEMPOTENCY-TTL.md](docs/IDEMPOTENCY-TTL.md).
+- Coverage: `test/cron-secret-guard.e2e-spec.ts` verifies missing/invalid/missing
+  config behavior and that secrets never leak into error messages.
 
 ## Production Security Requirements
 
-To safely custody Stellar keys, relay sponsored transactions, and expose a production `/v1` API to the dashboard/SDK, the following controls **must** be in place:
+The following requirements are enforced at application startup and at runtime.
+A violation is an incident — do not ship code that relaxes them.
 
-### Required Environment Variables (Production)
+- **`WALLET_ENCRYPTION_KEY`** — master key used to encrypt Stellar wallet private
+  keys (AES-256-GCM). Required in all environments; the application refuses to
+  start without it, refuses placeholders, and requires at least 32 characters.
+  **Never log** this value or any derived key material.
+- **`CRON_SECRET`** — required shared secret for internal cron triggers. Missing
+  or mismatched values are rejected before any job logic runs.
+- **`WEBHOOK_SIGNING_KEY`** / **`EXPORT_SIGNING_SECRET`** — required in production;
+  the application fails closed at startup when they are missing or placeholders.
+  Only hashes of webhook signing secrets are stored at rest.
+- **Fail-Closed** — every privileged and money-path surface is deny-by-default:
+  - Mainnet payments and fee-bump submissions are denied unless explicitly
+    enabled (`FEATURE_MAINNET_PAYMENT_SUBMIT` / `PAYMENT_MAINNET_ENABLED`);
+    see [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md).
+  - The testnet faucet refuses all requests on mainnet and on unresolved network
+    misconfiguration (no default-allow path).
+  - Custody decryption never falls back to plaintext; unknown key versions and
+    tampered envelopes fail with stable `CUSTODY_*` error codes.
+  - On RPC/DB/Horizon outages, writes fail closed rather than proceeding blind.
+- **Deny-by-default authz** — owner/delegate/guardian/API-key/JWT authorization is
+  enforced server-side on every privileged surface. Revoked delegates, expired
+  credentials, and wrong roles are rejected before any side effect.
 
-- ✅ `WALLET_ENCRYPTION_KEY` — AES-256-GCM key for encrypting private keys at rest
-- ✅ `CRON_SECRET` — Shared secret for internal cron/background job endpoints
-- ✅ `MAINTENANCE_ADMIN_SECRET` — Secret for maintenance mode authentication
-- ✅ `AUTH_PROVIDER` — Identity provider (CLERK, BETTER_AUTH, etc.)
-- ✅ `DATABASE_URL` — PostgreSQL connection string (must use SSL in production)
-- ✅ `HORIZON_URL` — Stellar Horizon endpoint URL
-- ✅ `STELLAR_NETWORK_PASSPHRASE` — Mainnet or Testnet passphrase
+## Responsible Disclosure
 
-### Deployment Checklist
+We ask researchers and contributors to follow responsible disclosure:
 
-Before deploying to production:
+1. Report the vulnerability **privately** to `security@muxprotocol.io` first.
+2. Allow **90 days** from the date of your report before beginning public
+   disclosure, so a fix (and, if needed, a coordinated deployment) can ship.
+3. Do not publish exploit code, key material, or internal endpoint secrets.
 
-- [ ] All secrets are stored in secure environment (not hardcoded, not in .env file)
-- [ ] `WALLET_ENCRYPTION_KEY` is randomly generated and never logged
-- [ ] `CRON_SECRET` is randomly generated (e.g., `openssl rand -hex 32`)
-- [ ] `MAINTENANCE_ADMIN_SECRET` is set and validated at startup
-- [ ] Database uses TLS/SSL for all connections
-- [ ] API runs behind reverse proxy with rate limiting and WAF
-- [ ] Request logging does not include API keys, secrets, or private keys
-- [ ] Audit logs are enabled and immutable
-- [ ] Monitoring and alerting are configured for security events
-- [ ] Incident response plan is documented
+We will not threaten legal action against good-faith researchers who follow this
+policy and the safe harbor below.
 
-### Runtime Guardrails
+## Safe Harbor
 
-- **Fail-Closed:** Missing critical secrets (WALLET_ENCRYPTION_KEY, CRON_SECRET) cause startup failure, not silent degradation
-- **Logging:** Never log `WALLET_ENCRYPTION_KEY`, API keys, seeds, or secret tokens
-- **Error Messages:** Do not expose internal paths, stack traces, or secrets in error responses
-- **Request IDs:** All logs include request IDs for traceability and forensics
-- **Rate Limiting:** API key rate limits prevent brute force and abuse
-- **Tenant Scoping:** Data is isolated per project/tenant; cross-tenant access is impossible
+We consider security research conducted under this policy to be authorized. In
+good faith, you may test systems within scope, provided you:
+
+- Make a reasonable effort to avoid privacy violations, data destruction, and
+  disruption of production services (including mainnet money paths).
+- Do not access, exfiltrate, or store user funds or secret material
+  (`WALLET_ENCRYPTION_KEY`, `CRON_SECRET`, JWTs, API keys, webhook secrets,
+  private keys, or seed phrases).
+- Do not publicly disclose a vulnerability before our 90-day responsible
+  disclosure window has elapsed, unless we agree otherwise.
+
+We will not pursue civil or criminal action — and will not report you to
+platforms or law enforcement — for research that complies with this policy.
+
+### Webhook SSRF Allowlist
+
+Outbound webhook delivery is an SSRF surface: an endpoint URL is attacker-supplied
+input, and the backend makes the request. Every webhook target is therefore
+validated by `WebhookUrlAllowlistService` (`src/webhooks/webhook-url-allowlist.service.ts`).
+
+- **Deny-by-default.** A URL is accepted only if its host is listed in
+  `WEBHOOK_ALLOWED_HOSTS`. An empty or unset allowlist accepts **no** URLs, so a
+  deploy that forgets to configure it cannot be used as an internal prober.
+- **https only, fixed ports.** Plaintext `http` is refused, and only ports
+  443/8443 are permitted (plus anything an operator adds to
+  `WEBHOOK_BLOCKED_PORTS`).
+- **No internal targets.** Literal IPs in loopback, RFC1918, CGNAT, link-local
+  (including the `169.254.169.254` cloud-metadata address) and IPv6
+  unique-local/mapped ranges are rejected. This also covers the
+  IPv4-mapped-IPv6 spellings that `new URL()` normalizes to hex.
+- **No credential-bearing URLs.** `https://user:pass@host` is rejected.
+- **Enforced at two layers.** Registration and update
+  (`WebhookService.createEndpoint`/`updateEndpoint`) reject the write, and
+  `WebhookDispatchService.deliverWebhook` re-checks immediately before the
+  socket opens, so endpoints persisted before this control existed are still
+  never called.
+- **Stable error codes.** `WEBHOOK_URL_INVALID`, `WEBHOOK_URL_SCHEME_NOT_ALLOWED`,
+  `WEBHOOK_URL_BLOCKED_HOST`, `WEBHOOK_URL_PORT_NOT_ALLOWED`,
+  `WEBHOOK_URL_NOT_ALLOWLISTED`.
+- **Kill-switch.** `WEBHOOK_SSRF_PROTECTION_ENABLED=false` disables all outbound
+  webhooks. There is no "allow everything" bypass — turning the protection off
+  turns webhooks off.
+- **No leakage.** Rejection logs and the dispatch counter carry only the stable
+  code and the host; webhook secrets and full URLs (which may embed a token in
+  the query string) are never logged.
+
+Operational notes: set `WEBHOOK_ALLOWED_HOSTS` to your customer domains before
+enabling webhooks — with the default empty allowlist, endpoint registration
+returns `400 WEBHOOK_URL_NOT_ALLOWLISTED` by design. See
+[docs/webhook-ssrf-allowlist.md](docs/webhook-ssrf-allowlist.md) for the full
+runbook.
+
+### Balance Indexer Lag
+
+The balance index is a cache of on-chain state. When it lags, every read served
+from it is wrong — a user can be shown a stale balance while a payment is in
+flight — so indexer lag is treated as a first-class, alertable signal.
+
+- **Fail-closed on measurement.** `GET /balances/lag` and
+  `GET /balances/lag/:walletId` return `503` with
+  `BALANCE_LAG_DEPENDENCY_UNAVAILABLE` when the balance store cannot be read.
+  They never report a lag of `0` in that case: "the index is fresh" and "we
+  could not measure" must be distinguishable, or a database outage would look
+  healthy and silently disable the alerting.
+- **A never-synced row is maximally stale**, not fresh. Rows with no
+  `lastSyncedAt` report `breaching: true` and bucket `24h+`.
+- **Bounded work and bounded labels.** At most 10 000 rows are scanned per
+  report, and only the fixed `bucket` enum and a boolean are usable as metric
+  labels — never a wallet id, public key, or asset issuer.
+- **No secrets or key material** appear in the report, the log line, or the
+  metric. The report carries counts and durations only.
+- **Never emits `NaN`.** A malformed timestamp is rejected with
+  `BALANCE_LAG_MALFORMED_TIMESTAMP`; a future timestamp from clock skew collapses
+  to `0s` instead of going negative and firing a false alert.
+- **Fail-closed threshold.** `BALANCE_LAG_ALERT_THRESHOLD_MS` that is missing,
+  unparsable, zero, or negative falls back to the 300 000 ms default, so a typo
+  cannot disable alerting.
+
+See [docs/indexer-lag-metrics.md](docs/indexer-lag-metrics.md) for the runbook.
+
+### Wallet Nickname Store
+
+A wallet nickname is a user-supplied label rendered in dashboards, so the store
+treats it as untrusted input. `PATCH /v1/wallets/:id/nickname` is bounded and
+normalized by `resolveNicknameToStore` (`src/wallets/wallet-nickname-safety.ts`)
+before any database work.
+
+- **Bounded work, then bounded result.** The raw input is length-checked *before*
+  sanitization, so an oversized "nickname" is rejected without running the
+  sanitizer's regex chain or a database round trip over it.
+- **Length is counted in Unicode code points, not UTF-16 units.** A 100-character
+  label made of emoji is 200 UTF-16 units and is within the documented limit;
+  counting units would wrongly reject it. The limit is enforced in exactly one
+  place — the store — so the DTO and the service cannot disagree.
+- **Rejection, never silent truncation.** A label that is too long after
+  sanitization is rejected, not cut. A truncated label can collide with another
+  wallet's nickname and produce a duplicate the uniqueness check cannot explain.
+- **No coercion.** A non-string (`123`, `{}`) is rejected rather than becoming
+  `"123"` or `"[object Object]"`.
+- **NFC-normalized.** Two visually identical labels typed with different Unicode
+  normalizations collapse to the same string, so they collide in the per-owner
+  uniqueness check instead of coexisting as indistinguishable duplicates.
+- **Stored XSS defense in depth.** Tag-like sequences, `javascript:` schemes,
+  inline `on*` handlers, and control characters are stripped, and internal
+  whitespace runs left behind by a stripped tag are collapsed. The response is
+  still escaped by consumers; this is a second layer, not a replacement.
+- **Fail-closed on a store outage.** A database failure returns `503` and no
+  write is reported as successful. The raw Prisma/driver message is never
+  returned to the client — it can carry connection strings or table names.
+- **Stable error codes.** `WALLET_NICKNAME_INVALID_INPUT`,
+  `WALLET_NICKNAME_DUPLICATE`, `WALLET_NICKNAME_DEPENDENCY_UNAVAILABLE`.
+
+Rejections log the request id and the stable code only — never the submitted
+label, which is user-supplied and untrusted.
 
 ### Wallet Creation Sponsorship Limits
 
@@ -183,27 +328,140 @@ per replica. See [docs/WALLET-API.md](docs/WALLET-API.md#wallet-creation-sponsor
 
 ## Security Contacts
 
-- **Security Email:** [security@mux.com](mailto:security@mux.com)
-- **PGP Key:** Available at [mux.com/security.pgp](https://mux.com/security.pgp) (coming soon)
-- **Response Time:** See SLA section above
+- **Security issues / vulnerability reports**: `security@muxprotocol.io`
+- **Key-material incidents**: follow [docs/custody-security-model.md](docs/custody-security-model.md)
+  and [docs/migration-recovery-runbook.md](docs/migration-recovery-runbook.md);
+  rotate encryption/relayer keys immediately if exposure is suspected.
+- **Webhook secret rotation**: [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md)
 
----
+## Container Hardening
 
-## References
+The production `Dockerfile` runs the API as a non-root user (`mux`, UID 1001)
+and applies defense-in-depth controls. This section documents the
+invariants and operational expectations.
 
-- [OWASP: Vulnerability Disclosure Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Vulnerability_Disclosure_Cheat_Sheet.html)
-- [Stellar Security Policy](https://developers.stellar.org/docs/learn/security)
-- [NestJS Security Checklist](https://docs.nestjs.com/security/helmet)
+### Invariants
 
----
+1. The container **never runs as root**. The `mux` user (UID 1001) owns
+   all application files and executes the process.
+2. New privileges are **denied at runtime** (`no-new-privileges:true`).
+   The container cannot gain additional Linux capabilities after start.
+3. The production image is **minimal**: only runtime dependencies,
+   built artifacts, and Prisma migrations are present. Build tools,
+   source code, and dev dependencies are excluded.
+4. Secrets are **never baked into the image**. They are injected at
+   runtime via environment variables or a secret manager.
+5. Migration failures are **fail-closed**: `docker-entrypoint.sh` exits
+   non-zero if `prisma migrate deploy` fails, so orchestrators
+   (Kubernetes, ECS) detect the failure and restart rather than running
+   against a stale schema.
+6. No secrets, JWTs, or raw key material appear in container logs,
+   error responses, or metrics.
 
-## Version History
+### Operational notes
 
-| Date | Version | Changes |
-|------|---------|---------|
-| 2026-08-30 | 1.0 | Initial security policy; private disclosure process and SLA |
+- For local development, `docker compose up --build` runs the `api`
+  service as user `mux` (UID 1001). Use `docker compose exec --user
+  root api sh` only for debugging, and never in production.
+- For Kubernetes/ECS, apply the same `USER` and `securityOpt` settings
+  from `docker-compose.yml`, and consider `readOnlyRootFilesystem`
+  with `tmpfs` for `/tmp` and Prisma cache writes.
 
----
+## Security Best Practices for Contributors
 
-**Last Updated:** 2026-08-30  
-**Status:** Active
+- Never commit secrets, private keys, or credentials to the repository.
+- Use environment variables or a secret manager for all sensitive configuration.
+- Follow the principle of least privilege for all service accounts and API keys.
+- Keep dependencies up to date and review security advisories regularly.
+- All privileged surfaces are deny-by-default; new internal entrypoints must be
+  authorized and rate-limited before they are exposed.
+- **Never log** secrets, raw key material, JWTs, or webhook secrets; include
+  correlation ids and stable error codes instead.
+
+## Verification Scripts (CI Gates)
+
+The repository ships fail-closed verification scripts that assert the documented
+security invariants for custody, wallet orchestration, and idempotent user
+creation. They run as the `verify-scripts` CI job and exit non-zero on any
+violation; a failing script blocks merge:
+
+- `verify-encryption.sh` — key encryption at rest, controlled decryption, safe
+  decryption-failure handling, strong cipher, boot-time key validation.
+- `verify-orchestrator.sh` — atomic/idempotent wallet creation, one wallet per
+  user, fail-closed dependency outages, authz, feature-flag gating.
+- `verify-idempotent-user.sh` — `findOrCreateUser`, `authId` uniqueness,
+  existing-user return, authz gating, schema invariants.
+- `scripts/verify-key-management-consolidation.sh` — key-management
+  consolidation invariants.
+
+The scripts never print raw key material, JWTs, or webhook secrets. If an
+invariant changes, update the script **and** its cited reference document in the
+same PR (see README § Verification Scripts and `docs/custody-security-model.md`).
+Do not bypass these gates with `continue-on-error`.
+
+### Fee Sponsorship Budgets
+
+Fee sponsorship budgets control how much a sponsor is willing to pay in
+transaction fees on behalf of a sponsored wallet. This is a money-path
+surface and must be treated with extra care.
+
+- All fee sponsorship write endpoints are gated by the `FEE_SPONSORSHIP_ENABLED`
+  feature flag for mainnet. Default OFF (fail-closed).
+- Authz is enforced on every operation: only the wallet owner or an authorized
+  delegate/guardian may manage budgets.
+- Idempotency keys prevent concurrent/replayed requests from creating duplicate
+  budgets or double-spending.
+- No secrets, JWTs, or raw key material appear in fee sponsorship logs, error
+  responses, or metrics.
+- See [README.md](README.md#fee-sponsorship-budgets) for the full API reference
+  and operational guidance.
+
+## Stellar Wave Contributors
+
+If you are contributing through Stellar Wave, please review this document and
+the relevant runbooks before touching money-path or mainnet-affecting code.
+Changes to internal cron guards, authz, or secret handling must include tests
+covering the auth negatives and be landed behind a feature flag or kill-switch
+when they affect production behavior.
+
+Transaction money-path configuration is validated at boot by
+`TransactionEnvValidatorService` (fail-closed in production). Any new
+mainnet-affecting entrypoint or flag must stay consistent with that validator
+and its tests (`test/transaction-env-validator.e2e-spec.ts`,
+`src/transactions/transaction-env-validator.service.spec.ts`) and with the
+runbook in `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`.
+
+### Custody Key Management Verification
+
+The codebase includes a fail-closed static verification gate for the custody-key
+management consolidation invariants:
+
+- **Script**: `scripts/verify-key-management-consolidation.ts` &
+  `scripts/verify-key-management-consolidation.sh`
+- **Run**: `pnpm verify:key-consolidation` (required CI check)
+- **Docs verified against**:
+  - [Custody Security Model](docs/custody-security-model.md)
+  - [Key Management Consolidation](docs/key-management-consolidation.md)
+  - [Mainnet Payment Feature Flag](docs/MAINNET-PAYMENT-FEATURE-FLAG.md)
+  - [Key Management Migration Guide](docs/MIGRATION-KEY-MANAGEMENT.md)
+
+Invariants checked: no direct key generation in money-path services, no committed
+private key material, envelope-at-rest schema fields, deny-by-default authz,
+correlation ids, stable error codes, fail-closed dependency handling, response
+redaction, and mainnet pay-path kill-switch defaults.
+
+The gate always runs offline (no database or RPC required), uses stable exit codes
+(0=pass, 1=findings, 2/3=infra/misuse), and rejects any environment override that
+would disable it (deny-by-default). Findings report `file:line` locations without
+raw key material — secrets are never echoed in output.
+
+## Supported Versions
+
+We provide security updates for the latest release of each component. Please
+ensure you are running a supported version before reporting issues.
+
+## Recognition
+
+We appreciate the efforts of security researchers and contributors who help
+keep Mux Protocol and its users safe. With your permission, we will acknowledge
+your contribution in our security acknowledgements.
