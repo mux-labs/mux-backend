@@ -1,510 +1,75 @@
 # Key Management Module
 
+The Key Management module provides centralized key generation, encoding, decoding, and validation for Stellar wallet operations in the Mux Protocol.
+
 ## Overview
 
-The Key Management Module provides a secure, centralized service for cryptographic key operations in the Mux Protocol. This module is the **ONLY** layer that has access to private keys and ensures they are never exposed outside the service boundary.
+This module uses the StrKeyHelper utility for all StrKey encoding and decoding operations, ensuring consistent and validated handling of Stellar keys.
 
-## Core Principles
-
-1. **Private keys are NEVER returned** from this service
-2. **Private keys are NEVER logged** to any output
-3. **All key operations are audited** for security monitoring
-4. **Keys are encrypted immediately** after generation
-5. **Provider abstraction** allows swapping between implementations (in-memory, HSM, KMS)
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────┐
-│              KeyManagementService                        │
-│  (Orchestrates key operations, audit, encryption)       │
-└────────────────┬────────────────────────────────────────┘
-                 │
-         ┌───────┴────────┐
-         │                │
-    ┌────▼─────┐    ┌────▼─────┐
-    │ Stellar  │    │  Future  │
-    │ Provider │    │ Providers│
-    │ (Ed25519)│    │ (HSM/KMS)│
-    └──────────┘    └──────────┘
-```
-
-## Key Components
-
-### StrKeyHelper
-
-Utility class for encoding and decoding Stellar keys using the StrKey format.
-
-**Methods:**
-- `encodeEd25519PublicKey(buffer)` - Encodes raw public key to G... format
-- `encodeEd25519SecretSeed(buffer)` - Encodes raw secret seed to S... format
-- `decodeEd25519PublicKey(encoded)` - Decodes G... format to raw bytes
-- `decodeEd25519SecretSeed(encoded)` - Decodes S... format to raw bytes
-- `isValidEd25519PublicKey(key)` - Validates public key format
-- `isValidEd25519SecretSeed(seed)` - Validates secret seed format
-- `getStrKeyType(value)` - Identifies key type (publicKey, secretSeed, etc.)
-- `maskKey(key)` - Masks key for safe logging
-- `looksLikeSecretSeed(value)` - Quick secret seed detection
-
-See [utils/README.md](./utils/README.md) for detailed documentation.
+## Components
 
 ### KeyManagementService
 
-Main service that coordinates all key operations.
+The primary service for Stellar key operations.
 
-**Methods:**
-- `generateKey(request)` - Generates and encrypts a new keypair
-- `sign(request)` - Signs data without exposing the private key
-- `validateKey(...)` - Validates encrypted key material
-- `reEncryptKey(...)` - Re-encrypts keys (for rotation or version upgrade)
-- `getAuditLog(limit)` - Returns audit trail of key operations
-- `getStatistics(query)` - Returns key usage statistics
-- `getDetailedStatistics(query)` - Returns detailed statistics with metrics and time series
+#### Methods
 
-### IKeyProvider Interface
+| Method | Description |
+|--------|-------------|
+| `generateKey()` | Generate a new Stellar keypair with StrKey encoding |
+| `rotateKey(keyId)` | Rotate a key, returning a new key with incremented version |
+| `validatePublicKey(publicKey)` | Validate a StrKey-formatted public key |
+| `validateSecretSeed(secretSeed)` | Validate a StrKey-formatted secret seed |
+| `getStrKeyType(value)` | Get the type of a StrKey-formatted value |
+| `maskKey(key)` | Mask a key for safe logging |
 
-Abstraction for different key generation implementations.
+### StrKeyHelper
 
-**Methods:**
-- `generateKeyPair(keyType)` - Creates a new keypair
-- `sign(encryptedMaterial, data)` - Signs data with encrypted key
-- `validateKeyPair(publicKey, encryptedMaterial)` - Validates keypair
-- `getProviderName()` - Returns provider identifier
+The underlying utility for StrKey encoding, decoding, and validation.
 
-### StellarKeyProvider
+#### Features
 
-Implementation for Stellar blockchain Ed25519 keys.
-
-Uses `stellar-sdk` for proper Stellar key generation and signing.
+- Encoding: Ed25519 public keys (G...), secret seeds (S...), pre-auth tx (T...), SHA256 hashes (X...)
+- Decoding: Convert StrKey-formatted strings back to raw 32-byte buffers
+- Validation: Verify StrKey format, prefix, and checksum
+- Type detection: Identify the type of any StrKey-formatted value
+- Security: Masking utility for safe logging, secret detection
 
 ## Usage
 
-### Generating a New Key
-
 ```typescript
 import { KeyManagementService } from './key-management/key-management.service';
-import { KeyType } from './key-management/domain/key-types';
 
-// Inject the service
-constructor(
-  private keyManagementService: KeyManagementService,
-) {}
+const keyManagementService = app.get(KeyManagementService);
 
-// Generate a new key
-async createWallet() {
-  const encryptedKeyMaterial = await this.keyManagementService.generateKey({
-    keyType: KeyType.STELLAR_ED25519,
-    metadata: { userId: 'user-123', purpose: 'wallet' },
-  });
+// Generate a new keypair
+const keypair = await keyManagementService.generateKey();
 
-  // Result contains:
-  // - encryptedData: string (encrypted private key)
-  // - publicKey: string (Stellar public key)
-  // - keyType: KeyType
-  // - encryptionVersion: number
-  
-  // Store encryptedData and publicKey in database
-  // NEVER store or return the plaintext private key
-}
+// The public key is safe to log. The secret seed is NOT: never write it to a
+// log, a response body, or the database in plaintext.
+logger.log(`generated public key ${keypair.publicKey}`); // GABC...
+
+// Encrypt the secret seed with EncryptionService before persisting it. Only
+// the envelope (ciphertext + iv + tag) may reach the database.
+const encryptedSecret = encryptionService.encryptAndSerialize(keypair.privateKey);
+
+// Validate a public key
+const isValid = keyManagementService.validatePublicKey('GABC...');
+
+// Mask a key for logging
+const masked = keyManagementService.maskKey(keypair.publicKey);
 ```
 
-### Signing Data
-
-```typescript
-async signTransaction(walletId: string, transactionData: Buffer) {
-  // Retrieve encrypted key material from database
-  const wallet = await this.getWallet(walletId);
-  
-  // Sign without ever exposing the private key
-  const signature = await this.keyManagementService.sign({
-    encryptedKeyMaterial: wallet.encryptedSecret,
-    dataToSign: transactionData,
-    publicKey: wallet.publicKey,
-  });
-
-  // Result contains:
-  // - signature: string
-  // - publicKey: string
-  // - algorithm: string
-  // - timestamp: Date
-  
-  return signature;
-}
-```
-
-### Validating a Key
-
-```typescript
-async validateWalletKey(walletId: string) {
-  const wallet = await this.getWallet(walletId);
-  
-  const isValid = await this.keyManagementService.validateKey(
-    wallet.publicKey,
-    wallet.encryptedSecret,
-    KeyType.STELLAR_ED25519,
-  );
-
-  return isValid;
-}
-```
-
-## Security Features
-
-### Internal-only HTTP access (issue #690)
-
-`KeyManagementController` (`/v1/internal/key-management/*`) is protected by **two**
-independent guards:
-
-| Guard | Purpose | Failure |
-| --- | --- | --- |
-| `FeatureFlagGuard` (`key_management_api`) | Master on/off switch (`FEATURE_KEY_MANAGEMENT_API=true`) | `403` when the flag is off |
-| `InternalServiceGuard` | Authorises the caller as an internal service | `503` when `KEY_MANAGEMENT_INTERNAL_API_KEY` is unset; `401` when the `x-internal-api-key` header is missing or wrong |
-
-The secret comparison is constant-time and the guard fails **closed** — there is
-no default credential and no implicit allow path. These application-layer checks
-sit behind, not instead of, network/service-mesh restrictions.
-
-```bash
-curl -X POST https://internal.mux/v1/internal/key-management/validate \
-  -H "x-internal-api-key: $KEY_MANAGEMENT_INTERNAL_API_KEY" \
-  -H 'content-type: application/json' \
-  -d '{ "publicKey": "G...", "encryptedKeyMaterial": "...", "keyType": "STELLAR_ED25519" }'
-```
-
-### Key-validation cache backend (issue #689)
-
-`KeyValidationCacheService` short-circuits repeated validations of the same
-keypair. Its backend is chosen by `KEY_VALIDATION_CACHE_MODE`:
-
-| Mode | Behaviour |
-| --- | --- |
-| `memory` | In-process `Map`. Per-replica, lost on restart. Default outside production. |
-| `disabled` | No cache — every validation is recomputed (fail-closed; a rotated/revoked key can never be masked). |
-
-In `NODE_ENV=production` the variable **must** be set explicitly; the service
-throws on construction otherwise, so a silent in-process stub can never run in
-production. A shared Redis-backed store plugs in behind the same switch once the
-infrastructure exists.
-
-### Wallet key rotation (issues #691, #692)
-
-Rotation uses a single implementation — the **successor model**
-(`KeyManagementService.rotateKey`): a new wallet is created with fresh key
-material and the predecessor is transitioned to `ROTATING` with its
-`successorId` set. `WalletsService.rotateWalletKey` now delegates here instead of
-overwriting keys in place, and never returns private-key material. Rotation is
-internal-only (`POST /v1/internal/key-management/rotate`) and is not exposed on
-the public `/v1/wallets` API. See
-[docs/key-management-consolidation.md](../../docs/key-management-consolidation.md).
-
-### Audit Logging
-
-All operations are automatically logged:
-
-```typescript
-const auditLog = keyManagementService.getAuditLog(100);
-// Returns array of audit entries:
-[
-  {
-    operation: 'GENERATE',
-    keyId: 'new',
-    publicKey: 'GABC...XYZ',
-    timestamp: '2024-01-15T10:30:00Z',
-    success: true,
-    metadata: { userId: 'user-123' }
-  },
-  {
-    operation: 'SIGN',
-    keyId: 'wallet-456',
-    publicKey: 'GDEF...ABC',
-    timestamp: '2024-01-15T10:31:00Z',
-    success: true
-  }
-]
-```
-
-### Encryption Flow
-
-```
-1. Generate keypair
-   ├─ Create Ed25519 keypair using stellar-sdk
-   └─ Private key exists ONLY in memory
-
-2. Encrypt immediately
-   ├─ Pass private key to EncryptionService
-   ├─ AES-256-GCM encryption with authenticated encryption
-   └─ Clear private key from memory
-
-3. Return encrypted material
-   ├─ Encrypted data (ciphertext)
-   ├─ Public key (plaintext)
-   └─ Metadata (encryption version, key type)
-```
-
-### Signing Flow
-
-```
-1. Receive encrypted key material
-   └─ From database or secure storage
-
-2. Temporarily decrypt
-   ├─ Decrypt in memory only
-   ├─ NEVER log or store plaintext
-   └─ Use immediately
-
-3. Sign data
-   ├─ Use stellar-sdk signing
-   └─ Produce cryptographic signature
-
-4. Clear private key
-   └─ Ensure plaintext is cleared from memory
-
-5. Return signature
-   └─ Signature + metadata, NO private key
-```
-
-## Error Handling
-
-### Graceful Degradation
-
-The service handles various failure states:
-
-```typescript
-// Invalid key type
-try {
-  await keyManagementService.generateKey({ 
-    keyType: 'INVALID_TYPE' as KeyType 
-  });
-} catch (error) {
-  // Throws NotFoundException: "No provider registered for key type: INVALID_TYPE"
-}
-
-// Decryption failure (corrupted data)
-try {
-  await keyManagementService.sign({
-    encryptedKeyMaterial: 'corrupted-data',
-    dataToSign: buffer,
-    publicKey: 'GABC...',
-  });
-} catch (error) {
-  // Throws Error: "Signing operation failed"
-  // Original error is logged but not exposed
-}
-
-// Invalid state (disconnected provider)
-// Provider can be in disconnected state
-// Service will throw appropriate error without exposing sensitive details
-```
-
-## Testing
-
-### Unit Tests
-
-```typescript
-import { Test, TestingModule } from '@nestjs/testing';
-import { KeyManagementService } from './key-management.service';
-import { EncryptionService } from '../encryption/encryption.service';
-import { KeyType } from './domain/key-types';
-
-describe('KeyManagementService', () => {
-  let service: KeyManagementService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        KeyManagementService,
-        EncryptionService,
-        ConfigService,
-      ],
-    }).compile();
-
-    service = module.get<KeyManagementService>(KeyManagementService);
-  });
-
-  it('should generate encrypted key without exposing private key', async () => {
-    const result = await service.generateKey({
-      keyType: KeyType.STELLAR_ED25519,
-    });
-
-    expect(result.encryptedData).toBeDefined();
-    expect(result.publicKey).toBeDefined();
-    expect(result).not.toHaveProperty('privateKey');
-    expect(result).not.toHaveProperty('privateKeyMaterial');
-  });
-});
-```
-
-### Integration Tests
-
-See `src/wallets/wallets-keygen-integration.spec.ts` for examples of testing the service with real consumers.
-
-## Adding New Key Providers
-
-### 1. Create Provider Class
-
-```typescript
-import { Injectable } from '@nestjs/common';
-import { IKeyProvider } from '../interfaces/key-provider.interface';
-import { GeneratedKeyPair, SignatureResult, KeyType } from '../domain/key-types';
-
-@Injectable()
-export class MyNewKeyProvider implements IKeyProvider {
-  async generateKeyPair(keyType: KeyType): Promise<GeneratedKeyPair> {
-    // Implement key generation for your blockchain/system
-    return {
-      publicKey: 'generated-public-key',
-      privateKeyMaterial: 'generated-private-key',
-      keyType,
-      metadata: { algorithm: 'your-algorithm' },
-    };
-  }
-
-  async sign(
-    encryptedKeyMaterial: string,
-    dataToSign: Buffer,
-  ): Promise<SignatureResult> {
-    // Implement signing logic
-    return {
-      signature: 'signature-data',
-      publicKey: 'public-key',
-      algorithm: 'your-algorithm',
-      timestamp: new Date(),
-    };
-  }
-
-  async validateKeyPair(
-    publicKey: string,
-    encryptedKeyMaterial: string,
-  ): Promise<boolean> {
-    // Implement validation logic
-    return true;
-  }
-
-  getProviderName(): string {
-    return 'MyNewKeyProvider';
-  }
-}
-```
-
-### 2. Register Provider
-
-```typescript
-// In KeyManagementService constructor
-constructor(
-  private readonly encryptionService: EncryptionService,
-  private readonly configService: ConfigService,
-) {
-  this.providers = new Map();
-
-  // Existing providers
-  const stellarProvider = new StellarKeyProvider(this.encryptionService);
-  this.providers.set(KeyType.STELLAR_ED25519, stellarProvider);
-
-  // Register your new provider
-  const myProvider = new MyNewKeyProvider();
-  this.providers.set(KeyType.YOUR_NEW_TYPE, myProvider);
-}
-```
-
-### 3. Add Key Type
-
-```typescript
-// In src/key-management/domain/key-types.ts
-export enum KeyType {
-  STELLAR_ED25519 = 'STELLAR_ED25519',
-  ETHEREUM_SECP256K1 = 'ETHEREUM_SECP256K1',
-  YOUR_NEW_TYPE = 'YOUR_NEW_TYPE', // Add here
-}
-```
-
-## Module Configuration
-
-### Module Setup
-
-```typescript
-import { Module } from '@nestjs/common';
-import { KeyManagementService } from './key-management.service';
-import { KeyManagementController } from './key-management.controller';
-import { StellarKeyProvider } from './providers/stellar-key.provider';
-import { EncryptionModule } from '../encryption/encryption.module';
-
-@Module({
-  imports: [EncryptionModule],
-  controllers: [KeyManagementController],
-  providers: [KeyManagementService, StellarKeyProvider],
-  exports: [KeyManagementService], // Export for use in other modules
-})
-export class KeyManagementModule {}
-```
-
-### Importing in Other Modules
-
-```typescript
-import { Module } from '@nestjs/common';
-import { KeyManagementModule } from '../key-management/key-management.module';
-import { YourService } from './your.service';
-
-@Module({
-  imports: [KeyManagementModule], // Import the module
-  providers: [YourService],
-})
-export class YourModule {}
-```
-
-## Best Practices
-
-### DO ✅
-
-- Use `KeyManagementService` for all key generation
-- Store only encrypted key material in databases
-- Use the audit log for security monitoring
-- Handle errors gracefully without exposing sensitive details
-- Test with mocked `KeyManagementService` in unit tests
-- Add metadata to help with debugging and audit trails
-
-### DON'T ❌
-
-- Never generate keys directly with `crypto` or other libraries
-- Never return plaintext private keys from any service
-- Never log private keys or encrypted key material
-- Never bypass the key management service
-- Never store plaintext private keys in databases
-- Never transmit private keys over network in plaintext
-
-## Roadmap
-
-### Planned Features
-
-1. **HSM Integration** - Hardware security module support
-2. **KMS Integration** - AWS KMS, Google Cloud KMS support
-3. **Key Rotation Automation** - Scheduled key rotation
-4. **Multi-Signature Support** - Threshold signatures
-5. **Key Derivation** - HD wallet support (BIP32/BIP44)
-6. **External Audit Export** - Push audit logs to SIEM systems
-7. **Rate Limiting** - Prevent abuse of signing operations
-8. **Key Usage Policies** - Time-based or usage-based restrictions
-
-## Support & Maintenance
-
-### Monitoring
-
-Monitor audit logs for:
-- Unusual key generation patterns
-- Failed signing attempts
-- Validation failures
-- Rate limit violations
-
-### Alerts
-
-Set up alerts for:
-- High failure rates (> 5% of operations)
-- Unexpected key types
-- Large batches of key generation
-- Operations outside business hours
-
-## References
-
-- [Stellar SDK Documentation](https://stellar.github.io/js-stellar-sdk/)
-- [Ed25519 Signature Scheme](https://ed25519.cr.yp.to/)
-- [NIST Key Management Guidelines](https://csrc.nist.gov/publications/detail/sp/800-57-part-1/rev-5/final)
-- [OWASP Cryptographic Storage Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Cryptographic_Storage_Cheat_Sheet.html)
+## Security
+
+- Private keys are never logged or returned in API responses
+- All key material is generated using a CSPRNG
+- Key rotation is tracked via a version counter
+- StrKey encoding/decoding is validated with checksum verification
+- Input validation prevents type confusion and buffer overflows
+
+## Integration
+
+The KeyManagementModule is registered in the AppModule and provides:
+- `KeyManagementService` - Primary key management operations
+- `StrKeyHelper` - StrKey encoding/decoding/validation utility

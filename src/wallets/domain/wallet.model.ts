@@ -1,145 +1,20 @@
-/**
- * Internal Wallet domain model (chain-agnostic).
- *
- * Wallets are "invisible" to end users but must be tracked for custody,
- * recovery, rotation, and auditing.
- */
-
 export enum WalletNetwork {
-  MAINNET = 'MAINNET',
   TESTNET = 'TESTNET',
+  MAINNET = 'MAINNET',
 }
 
 export enum WalletStatus {
-  PROVISIONING = 'PROVISIONING',
   ACTIVE = 'ACTIVE',
-  ROTATING = 'ROTATING',
+  INACTIVE = 'INACTIVE',
   SUSPENDED = 'SUSPENDED',
-  DISABLED = 'DISABLED',
-  COMPROMISED = 'COMPROMISED',
-  ARCHIVED = 'ARCHIVED',
 }
-
-export type WalletId = string;
 
 export interface Wallet {
-  id: WalletId;
-  userId: string;
-
-  /** Chain-agnostic public identifier (address/public key). */
-  publicKey: string;
-
-  /** Optional user-defined label for this wallet (max 100 chars). */
-  nickname?: string | null;
-
-  /** Chain-agnostic encrypted secret material (envelope/serialized payload). */
-  encryptedSecret: string;
-
-  /** Supports future crypto upgrades (KMS provider, envelope format, etc.). */
-  encryptionVersion: number;
-
-  /** Supports rotation by incrementing secret material while preserving history. */
-  secretVersion: number;
-
-  /**
-   * Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
-   * Increment when the key algorithm or derivation path changes so consumers can detect
-   * stale material and trigger re-encryption or re-issuance.
-   */
-  keyVersion: number;
-
-  /** Mainnet/testnet separation. */
-  network: WalletNetwork;
-
-  /** Internal lifecycle status. */
-  status: WalletStatus;
-  statusReason?: string | null;
-  statusChangedAt: Date;
-
-  /** Rotation lineage (if this wallet is a successor). */
-  rotatedFromId?: WalletId | null;
-
-  /** Direct link to the wallet that replaced this one during rotation. */
-  successorId?: WalletId | null;
-
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-/**
- * Explicit, audit-friendly status transition rules.
- * Keep this strict to avoid accidental reactivation after compromise/disable.
- */
-const ALLOWED_TRANSITIONS: Readonly<
-  Record<WalletStatus, ReadonlySet<WalletStatus>>
-> = {
-  [WalletStatus.PROVISIONING]: new Set([
-    WalletStatus.ACTIVE,
-    WalletStatus.SUSPENDED,
-    WalletStatus.DISABLED,
-  ]),
-  [WalletStatus.ACTIVE]: new Set([
-    WalletStatus.ROTATING,
-    WalletStatus.SUSPENDED,
-    WalletStatus.DISABLED,
-    WalletStatus.COMPROMISED,
-    WalletStatus.ARCHIVED,
-  ]),
-  [WalletStatus.ROTATING]: new Set([
-    WalletStatus.ACTIVE,
-    WalletStatus.SUSPENDED,
-    WalletStatus.DISABLED,
-    WalletStatus.COMPROMISED,
-  ]),
-  [WalletStatus.SUSPENDED]: new Set([
-    WalletStatus.ACTIVE,
-    WalletStatus.DISABLED,
-    WalletStatus.COMPROMISED,
-    WalletStatus.ARCHIVED,
-  ]),
-  [WalletStatus.DISABLED]: new Set([WalletStatus.ARCHIVED]),
-  [WalletStatus.COMPROMISED]: new Set([]),
-  [WalletStatus.ARCHIVED]: new Set([]),
-};
-
-export function canTransitionWalletStatus(
-  from: WalletStatus,
-  to: WalletStatus,
-): boolean {
-  return ALLOWED_TRANSITIONS[from].has(to);
-}
-
-export function transitionWalletStatus(
-  wallet: Wallet,
-  to: WalletStatus,
-  statusReason?: string,
-  at: Date = new Date(),
-): Wallet {
-  if (wallet.status === to) return wallet;
-  if (!canTransitionWalletStatus(wallet.status, to)) {
-    throw new Error(
-      `Invalid wallet status transition: ${wallet.status} -> ${to}`,
-    );
-  }
-  return {
-    ...wallet,
-    status: to,
-    statusReason: statusReason ?? null,
-    statusChangedAt: at,
-    updatedAt: at,
-  };
-}
-
-/**
- * Status response DTO exposed via the status endpoint.
- */
-export interface WalletStatusResponse {
   id: string;
-  status: WalletStatus;
-  statusReason: string | null;
-  statusChangedAt: Date;
-  network: WalletNetwork;
-  publicKey: string;
   userId: string;
+  publicKey: string;
+  network: WalletNetwork;
+  status: WalletStatus;
+  createdAt: Date;
   updatedAt: Date;
 }

@@ -9,6 +9,10 @@ import { AppModule } from './../src/app.module';
  * reachable under the versioned prefix, accepts a well-formed login
  * payload, and rejects a malformed one — without asserting on downstream
  * infra (DB/Horizon) behavior.
+ *
+ * This spec is wired into CI as a required check (see .github/workflows/ci.yml).
+ * It must fail closed: a missing or failing login smoke spec fails the check
+ * rather than being silently skipped.
  */
 describe('Login flow smoke test (e2e)', () => {
   let app: INestApplication<App>;

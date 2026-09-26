@@ -27,7 +27,7 @@ Mux Backend API  ← JwtVerificationService verifies JWT sig, extracts identity
      ├── KeyManagementService  ← only layer that touches plaintext keys (briefly)
      │        │
      │        ├── StellarKeyProvider  (stellar-sdk Keypair generation + signing)
-     │        └── EncryptionService   (AES-256-GCM envelope)
+     │        └── EncryptionService   (AES-256-GCM versioned envelope)
      │
      └── PostgreSQL  ← stores encrypted key material + user status
 ```
@@ -133,6 +133,67 @@ The `encryptionVersion` column tracks the envelope format version to support fut
 
 ---
 
+## Key Versions & Envelope Scheme
+
+Custody key material is encrypted at rest using a **versioned envelope scheme**. Every encrypted record carries an explicit key version so that decryption always selects the exact key that produced the ciphertext — there is no implicit "current key" fallback.
+
+### Envelope format
+
+```json
+{
+  "v": 2,
+  "keyVersion": 3,
+  "encryptedData": "<hex>",
+  "iv": "<hex>",
+  "tag": "<hex>"
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `v` | Envelope format version (structure of this JSON). |
+| `keyVersion` | Identifier of the encryption key used. Recorded per wallet/key record. |
+| `encryptedData` / `iv` / `tag` | AES-256-GCM ciphertext, IV, and auth tag. |
+
+### Key version registry
+
+- Encryption keys are addressed by an integer `keyVersion` (monotonically increasing).
+- The active key version is configured via `WALLET_ENCRYPTION_KEY_VERSION`; the key material for each version is supplied via `WALLET_ENCRYPTION_KEY_<version>` (or a KMS/secret-manager reference).
+- New writes always use the active key version and record it in the envelope.
+- Reads select the key by the envelope's `keyVersion` — never by the active version.
+
+### Typed API
+
+`EncryptionService` exposes a stable, typed surface:
+
+- `encrypt(plaintext, keyVersion?)` → `EncryptedEnvelope` (defaults to the active key version).
+- `decrypt(envelope)` → plaintext, selecting the key from `envelope.keyVersion`.
+- `encryptAndSerialize` / `deserializeAndDecrypt` wrap the same logic for the persisted column format.
+
+### Fail-closed decryption
+
+Decryption **never** falls back to plaintext and never guesses a key version. The following conditions fail closed with stable error codes:
+
+| Condition | Error code |
+|---|---|
+| Envelope missing / malformed | `CUSTODY_ENVELOPE_INVALID` |
+| Unknown `keyVersion` (no key configured) | `CUSTODY_KEY_VERSION_UNKNOWN` |
+| Auth tag mismatch (tampered / wrong key) | `CUSTODY_DECRYPT_FAILED` |
+| Missing key material for a version | `CUSTODY_KEY_MATERIAL_MISSING` |
+
+Errors carry a correlation id and **never** include raw key material, ciphertext, IVs, tags, or secrets. Logs redact the same fields.
+
+### Rotation of encryption keys
+
+Encryption-key rotation is independent of wallet rotation:
+
+1. Introduce a new key version and set it active.
+2. New writes use the new version; existing records keep their recorded `keyVersion` and remain decryptable.
+3. Re-encrypt records lazily or via a background job, updating `keyVersion` on each record.
+4. Retire old key versions only after all records referencing them are re-encrypted.
+
+---
+
 ## Signing
 
 Private keys are **never returned** from any service or API. The only way to use a private key is through `KeyManagementService.sign()`:
@@ -173,102 +234,6 @@ Both fields together allow traversal of the full rotation history in either dire
 
 ### Rotation guards
 
-- Only `ACTIVE` or `ROTATING` wallets can be rotated.
-- A wallet that already has a `successorId` cannot be rotated again (prevents double-rotation).
-- All DB writes (create successor + update predecessor) are atomic via `prisma.$transaction`.
-- The `/internal/key-management/rotate` route is gated by `FeatureFlagGuard` **and**
-  `InternalServiceGuard` (`x-internal-api-key` header, issue #690).
-- `KeyManagementService.rotateKey` is the **only** rotation implementation.
-  `WalletsService.rotateWalletKey` delegates to it (issue #692) and rotation is
-  never exposed on the public `/v1/wallets` API (issue #691).
+- Only `ACTIVE` or `ROTATING` 
 
-### Wallet status lifecycle
-
-```
-PROVISIONING → ACTIVE → ROTATING → (successor takes over)
-                      ↘ SUSPENDED → ACTIVE
-                      ↘ DISABLED   (terminal)
-                      ↘ COMPROMISED (terminal)
-```
-
-`DISABLED` and `COMPROMISED` are terminal states — no further transitions are allowed.
-
----
-
-## Audit Logging
-
-Every key operation is recorded in an in-memory audit log via `KeyManagementService.auditKeyOperation()`. No sensitive data is ever included.
-
-| Operation | Triggered by |
-|---|---|
-| `GENERATE` | `generateKey()` |
-| `SIGN` | `sign()` |
-| `ROTATE` | `rotateKey()` |
-
-Each entry contains: `operation`, `keyId`, `publicKey` (first 12 chars in logs), `timestamp`, `success`, and optional `errorMessage`.
-
-The log is capped at 1,000 entries in memory. In production, entries should be forwarded to an external audit system (e.g., CloudWatch, Datadog).
-
-Retrieve via: `GET /internal/key-management/audit?limit=100`
-
----
-
-## Internal API Endpoints
-
-All endpoints are under `/internal/key-management` and must **not** be exposed to public traffic. They are intended for internal service-to-service calls only.
-
-| Method | Path | Description |
-|---|---|---|
-| `POST` | `/internal/key-management/generate` | Generate a new encrypted keypair |
-| `POST` | `/internal/key-management/sign` | Sign data without exposing the private key |
-| `POST` | `/internal/key-management/validate` | Validate that a public key matches encrypted material |
-| `POST` | `/internal/key-management/rotate` | Rotate a wallet's key and link the successor |
-| `GET` | `/internal/key-management/audit` | Retrieve the in-memory audit log |
-| `GET` | `/internal/key-management/security-model` | Machine-readable summary of this security model |
-
----
-
-## Provider Abstraction
-
-`KeyManagementService` delegates all cryptographic operations to `IKeyProvider` implementations. The current provider is `StellarKeyProvider` (Ed25519 via `stellar-sdk`).
-
-This abstraction allows future migration to:
-- **HSM** (Hardware Security Module) — keys never leave hardware
-- **AWS KMS / GCP Cloud KMS** — cloud-managed key material
-- **Ethereum secp256k1** — for EVM chain support
-
-The `KeyType` enum (`STELLAR_ED25519`, `ETHEREUM_SECP256K1`) is the discriminator for provider selection.
-
----
-
-## Security Properties (Summary)
-
-| Property | Status |
-|---|---|
-| Private keys never returned to clients | ✅ Enforced |
-| Private keys never logged | ✅ Enforced |
-| Encryption at rest (AES-256-GCM) | ✅ Active |
-| Random IV per encryption | ✅ Active |
-| GCM authentication tag (tamper detection) | ✅ Active |
-| All key operations audited | ✅ Active |
-| Rotation chain preserved (forward + backward links) | ✅ Active |
-| Atomic rotation (no partial state) | ✅ Enforced via DB transaction |
-| Terminal states for compromised/disabled wallets | ✅ Enforced |
-
----
-
-## Known Limitations (MVP)
-
-- The encryption key (`WALLET_ENCRYPTION_KEY`) is a single symmetric key. Compromise of this key compromises all stored secrets. Production should use a KMS with envelope encryption.
-- The audit log is in-memory only. Restarts lose history. Production should persist to an external audit store.
-- There is no automatic key rotation schedule. Rotation must be triggered manually via the API.
-- `reEncryptKey()` currently generates a throwaway keypair to satisfy the return type — this method needs a proper implementation before use in production.
-
----
-
-## Environment Variables
-
-| Variable | Required | Description |
-|---|---|---|
-| `WALLET_ENCRYPTION_KEY` | Yes | Master encryption key for AES-256-GCM. Must be kept secret. |
-| `DATABASE_URL` | Yes | PostgreSQL connection string for encrypted key storage. |
+/* … truncated 4601 chars — edit only what you need near the top … */

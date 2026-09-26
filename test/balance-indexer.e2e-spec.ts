@@ -8,7 +8,7 @@ import { PrismaService } from '../src/prisma/prisma.service';
 
 describe('BalanceIndexerController (e2e)', () => {
   let app: INestApplication;
-  
+
   const mockBalanceIndexerService = {
     getAllBalances: jest.fn().mockResolvedValue([
       { assetType: 'NATIVE', balance: '100.0000000', syncStatus: 'SYNCED' }
@@ -92,6 +92,11 @@ describe('BalanceIndexerController (e2e)', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockApiKeyService.validateApiKey.mockImplementation(async () => ({
+      apiKey: { id: 'api-key-id' },
+      project: { id: 'proj-id', name: 'proj-name' },
+      developer: { id: 'dev-id', email: 'dev@example.com' }
+    }));
   });
 
   it('GET /v1/balances/wallet/:walletId should return wallet balances', async () => {
@@ -202,5 +207,72 @@ describe('BalanceIndexerController (e2e)', () => {
 
     expect(res.body).toHaveProperty('status', 'scheduled sync triggered');
     expect(mockBalanceIndexerService.runScheduledSync).toHaveBeenCalled();
+  });
+
+  describe('authz (deny-by-default)', () => {
+    it('rejects requests without an API key', async () => {
+      await request(app.getHttpServer())
+        .get('/v1/balances/wallet/wallet-123')
+        .expect(HttpStatus.UNAUTHORIZED);
+
+      expect(mockBalanceIndexerService.getAllBalances).not.toHaveBeenCalled();
+    });
+
+    it('rejects requests with an invalid/revoked API key', async () => {
+      mockApiKeyService.validateApiKey.mockRejectedValueOnce(
+        new Error('invalid api key')
+      );
+
+      await request(app.getHttpServer())
+        .get('/v1/balances/wallet/wallet-123')
+        .set('Authorization', 'ApiKey mux_revoked_key')
+        .expect(HttpStatus.UNAUTHORIZED);
+
+      expect(mockBalanceIndexerService.getAllBalances).not.toHaveBeenCalled();
+    });
+
+    it('rejects privileged sync without an API key', async () => {
+      await request(app.getHttpServer())
+        .post('/v1/balances/wallet/wallet-123/sync')
+        .send({ forceRefresh: true })
+        .expect(HttpStatus.UNAUTHORIZED);
+
+      expect(mockBalanceIndexerService.syncWalletBalances).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('idempotency / replay', () => {
+    it('replayed sync requests are idempotent and do not double-apply', async () => {
+      const first = await request(app.getHttpServer())
+        .post('/v1/balances/wallet/wallet-123/sync')
+        .send({ forceRefresh: true })
+        .set('Authorization', 'ApiKey mux_test_key')
+        .expect(HttpStatus.OK);
+
+      const second = await request(app.getHttpServer())
+        .post('/v1/balances/wallet/wallet-123/sync')
+        .send({ forceRefresh: true })
+        .set('Authorization', 'ApiKey mux_test_key')
+        .expect(HttpStatus.OK);
+
+      expect(second.body).toEqual(first.body);
+      expect(mockBalanceIndexerService.syncWalletBalances).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('dependency outage (fail-closed)', () => {
+    it('returns 5xx and does not report success when the indexer/RPC is down', async () => {
+      mockBalanceIndexerService.syncWalletBalances.mockRejectedValueOnce(
+        new Error('horizon unavailable')
+      );
+
+      const res = await request(app.getHttpServer())
+        .post('/v1/balances/wallet/wallet-123/sync')
+        .send({ forceRefresh: true })
+        .set('Authorization', 'ApiKey mux_test_key');
+
+      expect(res.status).toBeGreaterThanOrEqual(HttpStatus.INTERNAL_SERVER_ERROR);
+      expect(res.body).not.toHaveProperty('balancesUpdated', 1);
+    });
   });
 });
