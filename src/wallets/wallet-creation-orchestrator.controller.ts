@@ -1,68 +1,58 @@
 import {
-  Controller,
-  Post,
+  BadRequestException,
   Body,
+  ConflictException,
+  Controller,
   Get,
-  Param,
-  Query,
+  Headers,
   HttpCode,
   HttpStatus,
-  Headers,
-  ConflictException,
-  NotFoundException,
-  BadRequestException,
-  UseGuards,
-  UseInterceptors,
   InternalServerErrorException,
+  NotFoundException,
+  Param,
+  Post,
+  ServiceUnavailableException,
+  UseGuards,
 } from '@nestjs/common';
 import {
-  ApiTags,
-  ApiSecurity,
   ApiOperation,
   ApiParam,
-  ApiQuery,
   ApiResponse,
+  ApiSecurity,
+  ApiTags,
 } from '@nestjs/swagger';
 import {
   WalletCreationOrchestrator,
-  type CreateWalletOrchestratorRequest,
+  WalletOrchestrationError,
+  VALID_NETWORKS,
   type WalletOrchestrationResult,
-  type OrchestratorListResult,
 } from './wallet-creation-orchestrator.service';
-import { WalletNetwork, WalletStatus } from './domain/wallet.model';
+import { CreateWalletOrchestrationDto } from './dto/create-wallet-orchestration.dto';
+import { WalletNetwork } from './domain/wallet.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import {
-  RateLimitGuard,
-  SensitiveEndpoint,
-} from '../rate-limit/rate-limit.guard';
-import { ResponseSanitizerInterceptor } from '../common/interceptors/response-sanitizer.interceptor';
-import {
-  FeatureFlagGuard,
   FeatureFlag,
+  FeatureFlagGuard,
 } from '../common/feature-flags/feature-flag.guard';
 
-function parsePaginationParam(
-  value: string | undefined,
-  name: string,
-  max = 100,
-): number | undefined {
-  if (value === undefined) return undefined;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new BadRequestException(`${name} must be a non-negative integer`);
+/**
+ * Asserts that `value` is a supported `WalletNetwork`, failing closed with a
+ * 400 rather than letting an unknown network reach the orchestrator.
+ */
+function assertValidNetwork(value: string): asserts value is WalletNetwork {
+  if (!VALID_NETWORKS.has(value)) {
+    throw new BadRequestException({
+      code: 'WALLET_ORCHESTRATION_INVALID_NETWORK',
+      message: `network must be one of: ${Array.from(VALID_NETWORKS).join(', ')}`,
+    });
   }
-  if (name === 'limit' && n > max) {
-    throw new BadRequestException(`limit must not exceed ${max}`);
-  }
-  return n;
 }
 
 @ApiTags('wallets-orchestration')
 @ApiSecurity('api-key')
 @Controller('wallets/orchestration')
 @FeatureFlag('wallet_orchestrator')
-@UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
-@UseInterceptors(ResponseSanitizerInterceptor)
+@UseGuards(FeatureFlagGuard, ApiKeyGuard)
 export class WalletCreationOrchestratorController {
   constructor(
     private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
@@ -71,138 +61,84 @@ export class WalletCreationOrchestratorController {
   @ApiOperation({
     summary: 'Create or retrieve a wallet for a user',
     description:
-      'Orchestrates the full wallet creation lifecycle including key generation, ' +
-      'encryption, and two-phase DB commit. Supports idempotency via the optional ' +
-      'idempotencyKey field. Returns an existing wallet if the user already has one ' +
-      'on the requested network.',
+      'Creates a wallet for the given user and network, or returns the existing ' +
+      'one. Retries are safe: supplying an `idempotencyKey` replays the original ' +
+      'result instead of minting a second custody key.',
+  })
+  @ApiResponse({ status: 200, description: 'Wallet created or retrieved' })
+  @ApiResponse({ status: 400, description: 'Invalid userId or network' })
+  @ApiResponse({
+    status: 401,
+    description: 'Missing or invalid API key',
   })
   @ApiResponse({
-    status: 200,
-    description: 'Wallet created or retrieved successfully',
+    status: 403,
+    description: 'Wallet orchestrator feature flag disabled',
   })
-  @ApiResponse({ status: 409, description: 'Idempotency key conflict' })
-  @ApiResponse({ status: 404, description: 'User not found' })
+  @ApiResponse({
+    status: 409,
+    description: 'Idempotency key conflict or concurrent in-flight request',
+  })
   @Post('create')
   @HttpCode(HttpStatus.OK)
-  @SensitiveEndpoint()
   async createWallet(
-    @Body() createWalletRequest: CreateWalletOrchestratorRequest,
+    @Body() body: CreateWalletOrchestrationDto,
     @Headers('x-request-id') requestId?: string,
   ): Promise<WalletOrchestrationResult> {
-    // Explicit input validation — the global ValidationPipe covers class-validator
-    // decorators on the DTO, but we guard against stale/null state here as well.
-    if (!createWalletRequest?.userId?.trim()) {
-      throw new BadRequestException('userId must not be empty');
+    // Explicit validation: the global ValidationPipe does not cover the
+    // plain-object request body, so guard against blank/missing input here.
+    if (!body?.userId?.trim()) {
+      throw new BadRequestException({
+        code: 'WALLET_ORCHESTRATION_INVALID_USER_ID',
+        message: 'userId must not be empty',
+      });
     }
-    if (!createWalletRequest?.network) {
-      throw new BadRequestException(
-        `network is required and must be one of: ${Array.from(VALID_NETWORKS).join(', ')}`,
-      );
+    if (!body?.network) {
+      throw new BadRequestException({
+        code: 'WALLET_ORCHESTRATION_INVALID_NETWORK',
+        message: `network is required and must be one of: ${Array.from(VALID_NETWORKS).join(', ')}`,
+      });
     }
-    assertValidNetwork(createWalletRequest.network);
+    assertValidNetwork(body.network);
 
     try {
-      return await this.walletCreationOrchestrator.createWallet(
-        createWalletRequest,
-        requestId,
-      );
-    } catch (error) {
-      // Pass through typed HTTP exceptions unchanged
-      if (error instanceof NotFoundException) throw error;
-      if (error instanceof ConflictException) throw error;
-      if (error instanceof BadRequestException) throw error;
-
-      // Map orchestration-phase errors to 500 with a stable message
-      if (error instanceof WalletOrchestrationError) {
-        throw new InternalServerErrorException(
-          `Wallet creation orchestration failed (phase: ${error.phase})`,
-        );
+      return await this.walletCreationOrchestrator.createWallet(body);
+    } catch (err) {
+      // Pass typed client-facing errors through unchanged so the caller keeps
+      // the stable 4xx code rather than receiving an opaque 500.
+      // Pass typed client-facing errors through unchanged so the caller keeps
+      // the stable status/code. This includes 503: a dependency outage is
+      // retryable, and masking it as a 500 would make the orchestrator give up
+      // on a request that would succeed on retry.
+      if (
+        err instanceof NotFoundException ||
+        err instanceof ConflictException ||
+        err instanceof BadRequestException ||
+        err instanceof ServiceUnavailableException
+      ) {
+        throw err;
       }
-
-      throw new InternalServerErrorException(
-        'Wallet creation orchestration failed',
-      );
+      if (err instanceof WalletOrchestrationError) {
+        throw new InternalServerErrorException({
+          code: 'WALLET_ORCHESTRATION_FAILED',
+          message: `Wallet creation orchestration failed (phase: ${err.phase})`,
+          requestId,
+        });
+      }
+      throw new InternalServerErrorException({
+        code: 'WALLET_ORCHESTRATION_FAILED',
+        message: 'Wallet creation orchestration failed',
+        requestId,
+      });
     }
-  }
-
-  @ApiOperation({
-    summary: 'List wallets with optional filters and pagination',
-    description:
-      'Returns a paginated list of wallets. All filter parameters are optional ' +
-      'and may be combined freely. Results are ordered newest-first.',
-  })
-  @ApiQuery({
-    name: 'userId',
-    required: false,
-    description: 'Filter by owning user ID',
-  })
-  @ApiQuery({
-    name: 'network',
-    required: false,
-    enum: WalletNetwork,
-    description: 'Filter by blockchain network',
-  })
-  @ApiQuery({
-    name: 'status',
-    required: false,
-    enum: WalletStatus,
-    description: 'Filter by wallet status',
-  })
-  @ApiQuery({
-    name: 'limit',
-    required: false,
-    description: 'Maximum records to return (1–100, default 20)',
-    example: 20,
-  })
-  @ApiQuery({
-    name: 'offset',
-    required: false,
-    description: 'Number of records to skip for pagination (default 0)',
-    example: 0,
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Paginated list of wallets',
-    schema: {
-      example: {
-        data: [],
-        total: 0,
-        limit: 20,
-        offset: 0,
-        hasMore: false,
-      },
-    },
-  })
-  @ApiResponse({ status: 400, description: 'Invalid pagination parameters' })
-  @Get()
-  async listWallets(
-    @Query('userId') userId?: string,
-    @Query('network') network?: WalletNetwork,
-    @Query('status') status?: WalletStatus,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
-  ): Promise<OrchestratorListResult> {
-    return this.walletCreationOrchestrator.listWallets({
-      userId,
-      network,
-      status,
-      limit: parsePaginationParam(limit, 'limit'),
-      offset: parsePaginationParam(offset, 'offset'),
-    });
   }
 
   @ApiOperation({
     summary: 'Get wallet by user and network',
-    description:
-      'Returns the wallet belonging to the specified user on the specified network, ' +
-      'or 404 if none exists.',
+    description: 'Returns the wallet for the user on the network, or 404.',
   })
   @ApiParam({ name: 'userId', description: 'The user ID' })
-  @ApiParam({
-    name: 'network',
-    enum: WalletNetwork,
-    description: 'The blockchain network',
-  })
+  @ApiParam({ name: 'network', description: 'The blockchain network' })
   @ApiResponse({ status: 200, description: 'Wallet found' })
   @ApiResponse({ status: 404, description: 'Wallet not found' })
   @Get('user/:userId/:network')
@@ -214,15 +150,14 @@ export class WalletCreationOrchestratorController {
 
     const wallet = await this.walletCreationOrchestrator.getWalletByUser(
       userId,
-      network as WalletNetwork,
+      network,
     );
-
     if (!wallet) {
-      throw new NotFoundException(
-        `Wallet not found for user ${userId} on ${network}`,
-      );
+      throw new NotFoundException({
+        code: 'WALLET_NOT_FOUND',
+        message: `Wallet not found for user ${userId} on ${network}`,
+      });
     }
-
     return wallet;
   }
 
@@ -230,19 +165,11 @@ export class WalletCreationOrchestratorController {
     summary: 'Check whether a user can create a wallet on a network',
     description:
       'Returns `{ canCreate: true }` when the user has no existing wallet on the ' +
-      'specified network, and `{ canCreate: false }` when one already exists.',
+      'network, and `{ canCreate: false }` when one already exists.',
   })
   @ApiParam({ name: 'userId', description: 'The user ID' })
-  @ApiParam({
-    name: 'network',
-    enum: WalletNetwork,
-    description: 'The blockchain network',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Validation result',
-    schema: { example: { canCreate: true } },
-  })
+  @ApiParam({ name: 'network', description: 'The blockchain network' })
+  @ApiResponse({ status: 200, description: 'Validation result' })
   @Get('validate/:userId/:network')
   async validateUserCanCreateWallet(
     @Param('userId') userId: string,
@@ -253,7 +180,7 @@ export class WalletCreationOrchestratorController {
     const canCreate =
       await this.walletCreationOrchestrator.validateUserCanCreateWallet(
         userId,
-        network as WalletNetwork,
+        network,
       );
     return { canCreate };
   }

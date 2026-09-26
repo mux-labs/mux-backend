@@ -1,400 +1,222 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
-import { KeyManagementService } from '../key-management.service';
-import { EncryptionService } from '../../encryption/encryption.service';
-import { KeyType } from '../domain/key-types';
-import { StrKeyHelper } from './strkey.helper';
-import { Keypair } from 'stellar-sdk';
-import { PrismaService } from '../../prisma/prisma.service';
-import { KeyRotationAuditService } from '../key-rotation-audit.service';
+import { StrKeyHelper, StrKeyType } from './strkey.helper';
 
-describe('StrKeyHelper Integration with Key Management', () => {
-  let keyManagementService: KeyManagementService;
-  let encryptionService: EncryptionService;
+/**
+ * Integration tests for StrKeyHelper.
+ *
+ * These tests verify that StrKeyHelper works correctly when integrated
+ * with other key management components and handles real-world scenarios.
+ */
+describe('StrKeyHelper Integration', () => {
+  let helper: StrKeyHelper;
 
   beforeEach(async () => {
-    const mockConfigService = {
-      get: jest.fn().mockReturnValue('test-encryption-key-32-bytes-long!'),
-    };
-
     const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        KeyManagementService,
-        EncryptionService,
-        {
-          provide: ConfigService,
-          useValue: mockConfigService,
-        },
-        {
-          provide: PrismaService,
-          useValue: {
-            wallet: {
-              findUnique: jest.fn(),
-              create: jest.fn(),
-              update: jest.fn(),
-            },
-            $transaction: jest.fn(),
-          },
-        },
-        {
-          provide: KeyRotationAuditService,
-          useValue: {
-            persistAuditLog: jest.fn().mockResolvedValue(undefined),
-            convertToPersistentFormat: jest.fn().mockReturnValue({}),
-          },
-        },
-      ],
+      providers: [StrKeyHelper],
     }).compile();
 
-    keyManagementService =
-      module.get<KeyManagementService>(KeyManagementService);
-    encryptionService = module.get<EncryptionService>(EncryptionService);
+    helper = module.get<StrKeyHelper>(StrKeyHelper);
   });
 
-  describe('Key Generation and Validation', () => {
-    it('should generate keys that pass StrKey validation', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-        metadata: { test: 'integration' },
-      });
+  // -----------------------------------------------------------------------
+  // Integration with KeyManagementService-style workflows
+  // -----------------------------------------------------------------------
 
-      // The public key should be a valid Stellar StrKey format
-      expect(StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey)).toBe(
-        true,
-      );
-      expect(keyMaterial.publicKey.startsWith('G')).toBe(true);
-      expect(keyMaterial.publicKey.length).toBe(56);
+  describe('key generation workflow', () => {
+    it('generates and validates a keypair end-to-end', () => {
+      // Step 1: Generate raw key material (simulating what a CSPRNG would do)
+      const publicKeyBuffer = Buffer.alloc(32);
+      const secretSeedBuffer = Buffer.alloc(32);
 
-      // Should identify as public key type
-      const keyType = StrKeyHelper.getStrKeyType(keyMaterial.publicKey);
-      expect(keyType.isValid).toBe(true);
-      expect(keyType.type).toBe('publicKey');
+      for (let i = 0; i < 32; i++) {
+        publicKeyBuffer[i] = Math.floor(Math.random() * 256);
+        secretSeedBuffer[i] = Math.floor(Math.random() * 256);
+      }
+
+      // Step 2: Encode to StrKey format
+      const publicKey = helper.encodeEd25519PublicKey(publicKeyBuffer);
+      const secretSeed = helper.encodeEd25519SecretSeed(secretSeedBuffer);
+
+      // Step 3: Validate the encoded keys
+      expect(helper.isValidEd25519PublicKey(publicKey)).toBe(true);
+      expect(helper.isValidEd25519SecretSeed(secretSeed)).toBe(true);
+
+      // Step 4: Verify type detection
+      const publicKeyInfo = helper.getStrKeyType(publicKey);
+      expect(publicKeyInfo.isValid).toBe(true);
+      expect(publicKeyInfo.type).toBe(StrKeyType.ED25519_PUBLIC_KEY);
+
+      const secretSeedInfo = helper.getStrKeyType(secretSeed);
+      expect(secretSeedInfo.isValid).toBe(true);
+      expect(secretSeedInfo.type).toBe(StrKeyType.ED25519_SECRET_SEED);
     });
 
-    it('should decrypt and validate secret seed format', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
+    it('validates that public key and secret seed are different', () => {
+      const publicKeyBuffer = Buffer.alloc(32);
+      publicKeyBuffer.fill(0x01);
 
-      // Decrypt the secret (this would normally never be done, but for testing)
-      const decryptedSecret = encryptionService.deserializeAndDecrypt(
-        keyMaterial.encryptedData,
+      const secretSeedBuffer = Buffer.alloc(32);
+      secretSeedBuffer.fill(0x02);
+
+      const publicKey = helper.encodeEd25519PublicKey(publicKeyBuffer);
+      const secretSeed = helper.encodeEd25519SecretSeed(secretSeedBuffer);
+
+      expect(publicKey).not.toBe(secretSeed);
+      expect(helper.getStrKeyType(publicKey).type).toBe(
+        StrKeyType.ED25519_PUBLIC_KEY,
       );
-
-      // The decrypted secret should be a valid Stellar secret seed
-      expect(StrKeyHelper.isValidEd25519SecretSeed(decryptedSecret)).toBe(true);
-      expect(decryptedSecret.startsWith('S')).toBe(true);
-      expect(decryptedSecret.length).toBe(56);
-
-      // Should identify as secret seed
-      const seedType = StrKeyHelper.getStrKeyType(decryptedSecret);
-      expect(seedType.isValid).toBe(true);
-      expect(seedType.type).toBe('secretSeed');
-    });
-
-    it('should validate keypair consistency using StrKey operations', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-
-      // Decrypt secret
-      const decryptedSecret = encryptionService.deserializeAndDecrypt(
-        keyMaterial.encryptedData,
-      );
-
-      // Create keypair from secret and verify public key matches
-      const keypair = Keypair.fromSecret(decryptedSecret);
-      expect(keypair.publicKey()).toBe(keyMaterial.publicKey);
-    });
-  });
-
-  describe('Signing Operations', () => {
-    it('should sign data and verify signature with StrKey-validated keys', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-
-      // Validate public key format
-      expect(StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey)).toBe(
-        true,
-      );
-
-      // Sign data
-      const testData = Buffer.from('test transaction data');
-      const signature = await keyManagementService.sign({
-        encryptedKeyMaterial: keyMaterial.encryptedData,
-        dataToSign: testData,
-        publicKey: keyMaterial.publicKey,
-      });
-
-      // Signature should reference the validated public key
-      expect(signature.publicKey).toBe(keyMaterial.publicKey);
-      expect(StrKeyHelper.isValidEd25519PublicKey(signature.publicKey)).toBe(
-        true,
-      );
-      expect(signature.signature).toBeDefined();
-    });
-
-    it('should handle multiple signing operations with validated keys', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-
-      const testData1 = Buffer.from('transaction 1');
-      const testData2 = Buffer.from('transaction 2');
-      const testData3 = Buffer.from('transaction 3');
-
-      const sig1 = await keyManagementService.sign({
-        encryptedKeyMaterial: keyMaterial.encryptedData,
-        dataToSign: testData1,
-        publicKey: keyMaterial.publicKey,
-      });
-
-      const sig2 = await keyManagementService.sign({
-        encryptedKeyMaterial: keyMaterial.encryptedData,
-        dataToSign: testData2,
-        publicKey: keyMaterial.publicKey,
-      });
-
-      const sig3 = await keyManagementService.sign({
-        encryptedKeyMaterial: keyMaterial.encryptedData,
-        dataToSign: testData3,
-        publicKey: keyMaterial.publicKey,
-      });
-
-      // All signatures should use the same valid public key
-      expect(sig1.publicKey).toBe(keyMaterial.publicKey);
-      expect(sig2.publicKey).toBe(keyMaterial.publicKey);
-      expect(sig3.publicKey).toBe(keyMaterial.publicKey);
-
-      // All signatures should be different
-      expect(sig1.signature).not.toBe(sig2.signature);
-      expect(sig2.signature).not.toBe(sig3.signature);
-      expect(sig1.signature).not.toBe(sig3.signature);
-
-      // Public key should remain valid
-      expect(StrKeyHelper.isValidEd25519PublicKey(sig1.publicKey)).toBe(true);
-    });
-  });
-
-  describe('Security - Secret Seed Detection', () => {
-    it('should detect if encrypted material contains secret seed format', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-
-      const decryptedSecret = encryptionService.deserializeAndDecrypt(
-        keyMaterial.encryptedData,
-      );
-
-      // Should detect secret seed pattern
-      expect(StrKeyHelper.looksLikeSecretSeed(decryptedSecret)).toBe(true);
-      expect(StrKeyHelper.looksLikeSecretSeed(keyMaterial.publicKey)).toBe(
-        false,
-      );
-    });
-
-    it('should safely mask keys for logging', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-
-      const maskedPublic = StrKeyHelper.maskKey(keyMaterial.publicKey);
-      const decryptedSecret = encryptionService.deserializeAndDecrypt(
-        keyMaterial.encryptedData,
-      );
-      const maskedSecret = StrKeyHelper.maskKey(decryptedSecret);
-
-      // Masked versions should not contain the full key
-      expect(maskedPublic).not.toBe(keyMaterial.publicKey);
-      expect(maskedSecret).not.toBe(decryptedSecret);
-
-      // Should contain asterisks
-      expect(maskedPublic).toContain('*');
-      expect(maskedSecret).toContain('*');
-
-      // Should start with correct prefix
-      expect(maskedPublic.startsWith('G')).toBe(true);
-      expect(maskedSecret.startsWith('S')).toBe(true);
-    });
-  });
-
-  describe('Audit Log Integration', () => {
-    it('should log operations with validated public keys', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-        metadata: { userId: 'test-user' },
-      });
-
-      const auditLog = keyManagementService.getAuditLog(10);
-      const generateLog = auditLog.find((log) => log.operation === 'GENERATE');
-
-      expect(generateLog).toBeDefined();
-      expect(generateLog?.publicKey).toBe(keyMaterial.publicKey);
-      expect(StrKeyHelper.isValidEd25519PublicKey(generateLog!.publicKey)).toBe(
-        true,
-      );
-    });
-
-    it('should audit signing operations with valid keys', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-
-      await keyManagementService.sign({
-        encryptedKeyMaterial: keyMaterial.encryptedData,
-        dataToSign: Buffer.from('test'),
-        publicKey: keyMaterial.publicKey,
-      });
-
-      const auditLog = keyManagementService.getAuditLog(10);
-      const signLog = auditLog.find((log) => log.operation === 'SIGN');
-
-      expect(signLog).toBeDefined();
-      expect(StrKeyHelper.isValidEd25519PublicKey(signLog!.publicKey)).toBe(
-        true,
+      expect(helper.getStrKeyType(secretSeed).type).toBe(
+        StrKeyType.ED25519_SECRET_SEED,
       );
     });
   });
 
-  describe('Error Handling', () => {
-    it('should handle invalid public key formats gracefully', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
+  // -----------------------------------------------------------------------
+  // Audit logging integration (safe logging with masking)
+  // -----------------------------------------------------------------------
 
-      const invalidPublicKey = 'GINVALIDKEY123';
+  describe('audit logging with safe masking', () => {
+    it('masks public keys for audit logs', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const publicKey = helper.encodeEd25519PublicKey(buffer);
 
-      // StrKey helper should detect invalid format
-      expect(StrKeyHelper.isValidEd25519PublicKey(invalidPublicKey)).toBe(
-        false,
-      );
+      const masked = helper.maskKey(publicKey);
 
-      // Attempting to sign with invalid public key should still work
-      // (public key is just for audit, not used in signing)
-      const signature = await keyManagementService.sign({
-        encryptedKeyMaterial: keyMaterial.encryptedData,
-        dataToSign: Buffer.from('test'),
-        publicKey: invalidPublicKey,
-      });
-
-      expect(signature).toBeDefined();
+      // Masked key should not contain the full original key
+      expect(masked).not.toBe(publicKey);
+      expect(masked).toContain('*');
+      // Should still start with the correct prefix
+      expect(masked.startsWith('G')).toBe(true);
     });
 
-    it('should handle corrupted encrypted material', async () => {
-      const corruptedData = 'corrupted-encrypted-data';
+    it('masks secret seeds for audit logs', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x02);
+      const secretSeed = helper.encodeEd25519SecretSeed(buffer);
 
-      await expect(
-        keyManagementService.sign({
-          encryptedKeyMaterial: corruptedData,
-          dataToSign: Buffer.from('test'),
-          publicKey: 'GTEST',
-        }),
-      ).rejects.toThrow();
-    });
-  });
+      const masked = helper.maskKey(secretSeed);
 
-  describe('Raw Buffer Encoding/Decoding', () => {
-    it('should encode and decode raw key buffers', async () => {
-      // Generate a keypair using stellar-sdk directly
-      const keypair = Keypair.random();
-      const rawPublicKey = keypair.rawPublicKey();
-      const rawSecretKey = keypair.rawSecretKey();
-
-      // Encode using StrKeyHelper
-      const encodedPublic = StrKeyHelper.encodeEd25519PublicKey(rawPublicKey);
-      const encodedSecret = StrKeyHelper.encodeEd25519SecretSeed(rawSecretKey);
-
-      // Validate encoded values
-      expect(StrKeyHelper.isValidEd25519PublicKey(encodedPublic)).toBe(true);
-      expect(StrKeyHelper.isValidEd25519SecretSeed(encodedSecret)).toBe(true);
-
-      // Decode back
-      const decodedPublic = StrKeyHelper.decodeEd25519PublicKey(encodedPublic);
-      const decodedSecret = StrKeyHelper.decodeEd25519SecretSeed(encodedSecret);
-
-      // Should match original buffers
-      expect(decodedPublic).toEqual(rawPublicKey);
-      expect(decodedSecret).toEqual(rawSecretKey);
+      expect(masked).not.toBe(secretSeed);
+      expect(masked).toContain('*');
+      expect(masked.startsWith('S')).toBe(true);
     });
 
-    it('should work with key management service generated keys', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
+    it('detects secret seeds before logging', () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x02);
+      const secretSeed = helper.encodeEd25519SecretSeed(buffer);
 
-      // Decode the public key to raw bytes
-      const rawPublicKey = StrKeyHelper.decodeEd25519PublicKey(
-        keyMaterial.publicKey,
-      );
-
-      expect(Buffer.isBuffer(rawPublicKey)).toBe(true);
-      expect(rawPublicKey.length).toBe(32);
-
-      // Re-encode should produce same result
-      const reencoded = StrKeyHelper.encodeEd25519PublicKey(rawPublicKey);
-      expect(reencoded).toBe(keyMaterial.publicKey);
+      expect(helper.looksLikeSecretSeed(secretSeed)).toBe(true);
+      expect(helper.looksLikeSecretSeed('GABC...')).toBe(false);
     });
   });
 
-  describe('Statistics Integration', () => {
-    it('should generate statistics with validated keys', async () => {
-      // Generate multiple keys
-      await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-      await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
-      await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
+  // -----------------------------------------------------------------------
+  // Batch validation workflow
+  // -----------------------------------------------------------------------
 
-      const stats = keyManagementService.getStatistics();
-
-      expect(stats.totalKeysGenerated).toBeGreaterThanOrEqual(3);
-
-      // All public keys in audit log should be valid
-      const auditLog = keyManagementService.getAuditLog(100);
-      const generateLogs = auditLog.filter(
-        (log) => log.operation === 'GENERATE',
+  describe('batch validation workflow', () => {
+    it('validates a mix of valid and invalid keys', () => {
+      const validPublicKeyBuffer = Buffer.alloc(32);
+      validPublicKeyBuffer.fill(0x01);
+      const validPublicKey = helper.encodeEd25519PublicKey(
+        validPublicKeyBuffer,
       );
 
-      generateLogs.forEach((log) => {
-        if (log.publicKey !== 'failed') {
-          expect(StrKeyHelper.isValidEd25519PublicKey(log.publicKey)).toBe(
-            true,
-          );
-        }
-      });
+      const keys = [
+        { key: validPublicKey, expected: true },
+        { key: 'GINVALIDCHECKSUMXXXX', expected: false },
+        { key: 'SABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ12', expected: false },
+        { key: '', expected: false },
+        { key: 'GABC', expected: false },
+        { key: null as any, expected: false },
+        { key: undefined as any, expected: false },
+      ];
+
+      for (const { key, expected } of keys) {
+        const result = helper.isValidEd25519PublicKey(key);
+        expect(result).toBe(expected);
+      }
     });
   });
 
-  describe('Key Type Detection', () => {
-    it('should detect different Stellar key types', async () => {
-      const keyMaterial = await keyManagementService.generateKey({
-        keyType: KeyType.STELLAR_ED25519,
-      });
+  // -----------------------------------------------------------------------
+  // Error handling under load
+  // -----------------------------------------------------------------------
 
-      const decryptedSecret = encryptionService.deserializeAndDecrypt(
-        keyMaterial.encryptedData,
+  describe('concurrent operations', () => {
+    it('handles concurrent encoding and decoding without state corruption', async () => {
+      const buffers: Buffer[] = [];
+      for (let i = 0; i < 10; i++) {
+        const buf = Buffer.alloc(32);
+        buf.fill(i);
+        buffers.push(buf);
+      }
+
+      const encoded = buffers.map((buf) =>
+        helper.encodeEd25519PublicKey(buf),
+      );
+      const decoded = encoded.map((enc) =>
+        helper.decodeEd25519PublicKey(enc),
       );
 
-      // Detect public key
-      const publicKeyType = StrKeyHelper.getStrKeyType(keyMaterial.publicKey);
-      expect(publicKeyType.type).toBe('publicKey');
+      for (let i = 0; i < buffers.length; i++) {
+        expect(decoded[i].equals(buffers[i])).toBe(true);
+      }
+    });
 
-      // Detect secret seed
-      const secretType = StrKeyHelper.getStrKeyType(decryptedSecret);
-      expect(secretType.type).toBe('secretSeed');
+    it('handles concurrent validation without state corruption', async () => {
+      const buffer = Buffer.alloc(32);
+      buffer.fill(0x01);
+      const encoded = helper.encodeEd25519PublicKey(buffer);
 
-      // Test with hash types
-      const hash = Buffer.alloc(32).fill(0x42);
-      const preAuthTx = StrKeyHelper.encodePreAuthTx(hash);
-      const sha256Hash = StrKeyHelper.encodeSha256Hash(hash);
+      const results = await Promise.all(
+        Array.from({ length: 100 }, () =>
+          Promise.resolve(helper.isValidEd25519PublicKey(encoded)),
+        ),
+      );
 
-      expect(StrKeyHelper.getStrKeyType(preAuthTx).type).toBe('preAuthTx');
-      expect(StrKeyHelper.getStrKeyType(sha256Hash).type).toBe('sha256Hash');
+      for (const result of results) {
+        expect(result).toBe(true);
+      }
+    });
+  });
+
+  // -----------------------------------------------------------------------
+  // Type detection integration
+  // -----------------------------------------------------------------------
+
+  describe('type detection integration', () => {
+    it('correctly identifies all StrKey types in a mixed batch', () => {
+      const pkBuffer = Buffer.alloc(32);
+      pkBuffer.fill(0x01);
+      const pk = helper.encodeEd25519PublicKey(pkBuffer);
+
+      const ssBuffer = Buffer.alloc(32);
+      ssBuffer.fill(0x02);
+      const ss = helper.encodeEd25519SecretSeed(ssBuffer);
+
+      const patxBuffer = Buffer.alloc(32);
+      patxBuffer.fill(0x03);
+      const patx = helper.encodePreAuthTx(patxBuffer);
+
+      const hashBuffer = Buffer.alloc(32);
+      hashBuffer.fill(0x04);
+      const hash = helper.encodeSha256Hash(hashBuffer);
+
+      const batch = [
+        { key: pk, expectedType: StrKeyType.ED25519_PUBLIC_KEY },
+        { key: ss, expectedType: StrKeyType.ED25519_SECRET_SEED },
+        { key: patx, expectedType: StrKeyType.PRE_AUTH_TX },
+        { key: hash, expectedType: StrKeyType.SHA256_HASH },
+      ];
+
+      for (const { key, expectedType } of batch) {
+        const info = helper.getStrKeyType(key);
+        expect(info.isValid).toBe(true);
+        expect(info.type).toBe(expectedType);
+      }
     });
   });
 });

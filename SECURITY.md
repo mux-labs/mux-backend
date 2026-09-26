@@ -159,6 +159,45 @@ Before deploying to production:
 
 ---
 
+## Cross-Origin Access Control (CORS)
+
+Browser access to this API is governed by the `CORS_ORIGINS` allowlist, matched
+**exactly** — no suffix, subdomain, or wildcard matching. Wildcard entries are
+rejected rather than honoured, and `Access-Control-Allow-Origin` is never `*`
+(credentials are enabled, so a wildcard would grant every origin access to
+authenticated responses). The effective policy is inspectable via the
+authenticated, read-only `GET /v1/internal/cors-allowlist` endpoint.
+
+- A request with no `Origin` header is allowed: CORS is browser-enforced and is
+  **not** an authentication layer. Server-to-server callers are authenticated by
+  API key / JWT as usual.
+- Contributors adding CORS behaviour must keep the exact-match rule. Do not
+  introduce suffix, regex, or subdomain matching to "simplify" configuration.
+- `src/common/http/cors.spec.ts` and `test/cors-allowlist.e2e-spec.ts` assert
+  the deny-by-default rules, including subdomain and credential-injection
+  lookalikes. See [README.md § Cross-origin browser access](README.md#cross-origin-browser-access-cors).
+
+## Security Response Headers
+
+Every HTTP response carries a baseline set of security headers (`nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a deny-all
+`Permissions-Policy`, and no `X-Powered-By`), applied before any route so error
+and 404 responses carry them too. `Strict-Transport-Security` is **opt-in** via
+`SECURITY_HEADERS_HSTS=true` and must be enabled in any deployment that
+terminates TLS. See [README.md § Security headers](README.md#security-headers).
+
+- Contributors changing middleware, proxies, or the bootstrap path in
+  `src/main.ts` must keep these headers applied and must not remove them for a
+  specific route. Narrow a header deliberately, never delete it.
+- No `Content-Security-Policy` is set here: this service returns JSON only, and
+  a CSP on a non-document response is a no-op that implies protection that does
+  not exist. Any HTML surface sets its own CSP.
+- `test/security-headers.e2e-spec.ts` and
+  `src/common/http/security-headers.spec.ts` assert the baseline, including on
+  404/500 responses. Treat a failure there as a regression, not a flake.
+
+---
+
 ## References
 
 - [OWASP: Vulnerability Disclosure Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Vulnerability_Disclosure_Cheat_Sheet.html)

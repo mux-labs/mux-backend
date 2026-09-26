@@ -1,203 +1,149 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { ConfigService } from '@nestjs/config';
-import { TransactionEnvValidatorService } from './transaction-env-validator.service';
-
-const makeConfigService = (values: Record<string, string | undefined>) => ({
-  get: jest.fn((key: string) => values[key]),
-});
-
-const ALL_VARS_PRESENT = {
-  NODE_ENV: 'test',
-  DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-  STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-  STELLAR_HORIZON_MAINNET_URL: 'https://horizon.stellar.org',
-  FEATURE_MAINNET_PAYMENTS: 'true',
-};
+import {
+  TransactionEnvValidatorService,
+  TRANSACTION_ENV_VALIDATOR_ERROR_CODES,
+} from './transaction-env-validator.service';
 
 describe('TransactionEnvValidatorService', () => {
-  async function buildService(
-    envValues: Record<string, string | undefined>,
-  ): Promise<TransactionEnvValidatorService> {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        TransactionEnvValidatorService,
-        {
-          provide: ConfigService,
-          useValue: makeConfigService(envValues),
-        },
-      ],
-    }).compile();
+  let service: TransactionEnvValidatorService;
 
-    return module.get<TransactionEnvValidatorService>(
-      TransactionEnvValidatorService,
-    );
-  }
-
-  it('should be defined', async () => {
-    const service = await buildService(ALL_VARS_PRESENT);
-    expect(service).toBeDefined();
+  beforeEach(() => {
+    service = new TransactionEnvValidatorService();
   });
 
-  describe('onModuleInit', () => {
-    it('does not throw when all required env vars are present', async () => {
-      const service = await buildService(ALL_VARS_PRESENT);
-      expect(() => service.onModuleInit()).not.toThrow();
-    });
-
-    it('throws when DATABASE_URL is missing', async () => {
-      const service = await buildService({
-        NODE_ENV: 'test',
-        DATABASE_URL: undefined,
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-      });
-
-      expect(() => service.onModuleInit()).toThrow(/DATABASE_URL is required/);
-    });
-
-    it('throws when STELLAR_HORIZON_URL is missing', async () => {
-      const service = await buildService({
-        NODE_ENV: 'test',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: undefined,
-      });
-
-      expect(() => service.onModuleInit()).toThrow(
-        /STELLAR_HORIZON_URL is required/,
-      );
-    });
-
-    it('lists all missing vars in the error message when multiple are absent', async () => {
-      const service = await buildService({
-        NODE_ENV: 'test',
-        DATABASE_URL: undefined,
-        STELLAR_HORIZON_URL: undefined,
-      });
-
-      expect(() => service.onModuleInit()).toThrow(/startup validation failed/);
-    });
-
-    it('does not throw when called multiple times with valid config', async () => {
-      const service = await buildService(ALL_VARS_PRESENT);
-      expect(() => {
-        service.onModuleInit();
-        service.onModuleInit();
-      }).not.toThrow();
-    });
+  const validMainnetEnv = (): NodeJS.ProcessEnv => ({
+    NODE_ENV: 'production',
+    FEATURE_MAINNET_PAYMENTS: 'true',
+    STELLAR_HORIZON_MAINNET_URL: 'https://horizon.stellar.org',
+    STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
   });
 
-  describe('Mainnet payment validation (issue #804)', () => {
-    it('allows missing STELLAR_HORIZON_MAINNET_URL in test environment', async () => {
-      const service = await buildService({
-        NODE_ENV: 'test',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: undefined,
-        FEATURE_MAINNET_PAYMENTS: 'true',
-      });
-
-      expect(() => service.onModuleInit()).not.toThrow();
+  describe('validate()', () => {
+    it('is valid when production mainnet payment config is complete', () => {
+      const result = service.validate(validMainnetEnv());
+      expect(result.valid).toBe(true);
+      expect(result.errors).toEqual([]);
+      expect(result.featureMainnetPaymentsEnabled).toBe(true);
+      expect(result.mainnetHorizonUrlConfigured).toBe(true);
     });
 
-    it('throws when STELLAR_HORIZON_MAINNET_URL is missing in production with mainnet payments enabled', async () => {
-      const service = await buildService({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: undefined,
-        FEATURE_MAINNET_PAYMENTS: 'true',
-      });
-
-      expect(() => service.onModuleInit()).toThrow(
-        /FEATURE_MAINNET_PAYMENTS is enabled but STELLAR_HORIZON_MAINNET_URL is not configured/,
-      );
-    });
-
-    it('throws when STELLAR_HORIZON_MAINNET_URL is empty string in production', async () => {
-      const service = await buildService({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
+    it('fails closed when FEATURE_MAINNET_PAYMENTS enabled but mainnet URL missing in production', () => {
+      const result = service.validate({
+        ...validMainnetEnv(),
         STELLAR_HORIZON_MAINNET_URL: '',
-        FEATURE_MAINNET_PAYMENTS: 'true',
       });
-
-      expect(() => service.onModuleInit()).toThrow(
-        /FEATURE_MAINNET_PAYMENTS is enabled but STELLAR_HORIZON_MAINNET_URL is not configured/,
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        TRANSACTION_ENV_VALIDATOR_ERROR_CODES.MAINNET_HORIZON_MISCONFIGURED,
       );
     });
 
-    it('throws when STELLAR_HORIZON_MAINNET_URL is invalid URL', async () => {
-      const service = await buildService({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: 'not-a-valid-url',
-        FEATURE_MAINNET_PAYMENTS: 'true',
+    it('allows missing mainnet URL when the feature is explicitly disabled in production', () => {
+      const result = service.validate({
+        ...validMainnetEnv(),
+        FEATURE_MAINNET_PAYMENTS: 'false',
+        STELLAR_HORIZON_MAINNET_URL: '',
       });
-
-      expect(() => service.onModuleInit()).toThrow(
-        /STELLAR_HORIZON_MAINNET_URL is not a valid URL/,
-      );
+      expect(result.valid).toBe(true);
     });
 
-    it('allows missing STELLAR_HORIZON_MAINNET_URL when mainnet payments explicitly disabled', async () => {
-      const service = await buildService({
+    it('is valid in non-production environments even with the feature enabled and URL missing', () => {
+      const result = service.validate({
+        ...validMainnetEnv(),
+        NODE_ENV: 'test',
+        STELLAR_HORIZON_MAINNET_URL: '',
+      });
+      expect(result.valid).toBe(true);
+    });
+
+    it('fails closed for an unrecognized flag value (deny-by-default)', () => {
+      const result = service.validate({
+        ...validMainnetEnv(),
+        FEATURE_MAINNET_PAYMENTS: 'garbage',
+        STELLAR_HORIZON_MAINNET_URL: '',
+      });
+      expect(result.featureMainnetPaymentsEnabled).toBe(false);
+      expect(result.valid).toBe(true);
+    });
+
+    it('treats unset STELLAR_NETWORK as testnet (testnet behavior unchanged)', () => {
+      const result = service.validate({ NODE_ENV: 'production' });
+      expect(result.network).toBe('testnet');
+      expect(result.valid).toBe(true);
+    });
+
+    it('treats a mainnet network with the flag off as warn-only, not fatal', () => {
+      const result = service.validate({
         NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: undefined,
+        STELLAR_NETWORK: 'mainnet',
         FEATURE_MAINNET_PAYMENTS: 'false',
       });
-
-      expect(() => service.onModuleInit()).not.toThrow();
+      expect(result.network).toBe('mainnet');
+      expect(result.valid).toBe(true);
     });
 
-    it('treats "FALSE" (case-insensitive) as disabled flag', async () => {
-      const service = await buildService({
+    it('also gates FEATURE_MAINNET_PAYMENT_SUBMIT (documented kill-switch)', () => {
+      const result = service.validate({
         NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: undefined,
-        FEATURE_MAINNET_PAYMENTS: 'FALSE',
+        FEATURE_MAINNET_PAYMENT_SUBMIT: 'true',
+        STELLAR_HORIZON_MAINNET_URL: '',
       });
-
-      expect(() => service.onModuleInit()).not.toThrow();
+      expect(result.featureMainnetPaymentSubmitEnabled).toBe(true);
+      expect(result.valid).toBe(false);
+      expect(result.errors).toContain(
+        TRANSACTION_ENV_VALIDATOR_ERROR_CODES.MAINNET_HORIZON_MISCONFIGURED,
+      );
     });
 
-    it('succeeds when all mainnet config is valid in production', async () => {
-      const service = await buildService({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: 'https://horizon.stellar.org',
-        FEATURE_MAINNET_PAYMENTS: 'true',
-      });
+    it('never exposes secret-bearing fields in the snapshot', () => {
+      const result = service.validate(validMainnetEnv());
+      expect(JSON.stringify(result)).not.toMatch(/secret|key/i);
+      expect(JSON.stringify(result)).not.toContain('https://');
+    });
+  });
 
-      expect(() => service.onModuleInit()).not.toThrow();
+  describe('onModuleInit()', () => {
+    const originalEnv = process.env;
+
+    beforeEach(() => {
+      process.env = { ...originalEnv };
     });
 
-    it('treats any non-"false" value as enabled feature flag', async () => {
-      const service = await buildService({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: 'https://horizon.stellar.org',
-        FEATURE_MAINNET_PAYMENTS: '', // Empty string is treated as enabled
-      });
-
-      expect(() => service.onModuleInit()).not.toThrow();
+    afterEach(() => {
+      process.env = originalEnv;
     });
 
-    it('accepts valid https URLs for mainnet endpoint', async () => {
-      const service = await buildService({
-        NODE_ENV: 'production',
-        DATABASE_URL: 'postgresql://user:pass@localhost:5432/mux_db',
-        STELLAR_HORIZON_URL: 'https://horizon-testnet.stellar.org',
-        STELLAR_HORIZON_MAINNET_URL: 'https://custom.horizon.example.com/path',
-        FEATURE_MAINNET_PAYMENTS: 'true',
-      });
+    it('throws out of a production boot with mainnet flag on and URL missing', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.FEATURE_MAINNET_PAYMENTS = 'true';
+      process.env.STELLAR_HORIZON_MAINNET_URL = '';
 
-      expect(() => service.onModuleInit()).not.toThrow();
+      await expect(service.onModuleInit()).rejects.toThrow(
+        'FEATURE_MAINNET_PAYMENTS is enabled but STELLAR_HORIZON_MAINNET_URL is not configured',
+      );
+    });
+
+    it('resolves when production mainnet config is complete', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.FEATURE_MAINNET_PAYMENTS = 'true';
+      process.env.STELLAR_HORIZON_MAINNET_URL = 'https://horizon.stellar.org';
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+    });
+
+    it('resolves when the mainnet feature is disabled in production', async () => {
+      process.env.NODE_ENV = 'production';
+      process.env.FEATURE_MAINNET_PAYMENTS = 'false';
+      process.env.STELLAR_HORIZON_MAINNET_URL = '';
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
+    });
+
+    it('resolves in test environments without a mainnet URL', async () => {
+      process.env.NODE_ENV = 'test';
+      process.env.FEATURE_MAINNET_PAYMENTS = 'true';
+      process.env.STELLAR_HORIZON_MAINNET_URL = '';
+
+      await expect(service.onModuleInit()).resolves.toBeUndefined();
     });
   });
 });

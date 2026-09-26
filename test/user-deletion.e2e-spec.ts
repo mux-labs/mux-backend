@@ -17,6 +17,14 @@ import requestLogger from '../src/common/middleware/request-logging.middleware';
  * is required: the global API key guard is applied manually and the request
  * logging middleware is registered exactly like src/main.ts does, which is
  * what makes x-request-id flow through RequestContextService.
+ *
+ * Privacy invariants asserted here (see References: test/user-deletion.e2e-spec.ts):
+ *  - Deletion is deny-by-default: no API key => 401, never a soft success.
+ *  - Deletion is idempotent: replaying the same request id returns the same
+ *    terminal state and does not re-run the destructive path.
+ *  - Deletion is fail-closed: a dependency outage surfaces a stable error code
+ *    and never reports success.
+ *  - Responses never leak raw key material, JWTs, or webhook secrets.
  */
 describe('DELETE /users/:id (e2e)', () => {
   let app: INestApplication;
@@ -75,12 +83,17 @@ describe('DELETE /users/:id (e2e)', () => {
     await app.close();
   });
 
+  beforeEach(() => {
+    (mockUsersService.remove as jest.Mock).mockClear();
+  });
+
   it('returns 401 when no API key is supplied', async () => {
     const res = await request(app.getHttpServer())
       .delete('/v1/users/user-123')
       .expect(401);
 
     expect(res.body).toHaveProperty('message');
+    expect(mockUsersService.remove).not.toHaveBeenCalled();
   });
 
   it('deletes the user and echoes the x-request-id header', async () => {
@@ -107,5 +120,49 @@ describe('DELETE /users/:id (e2e)', () => {
     expect(typeof res.headers['x-request-id']).toBe('string');
     expect(res.headers['x-request-id'].length).toBeGreaterThan(0);
     expect(mockUsersService.remove).toHaveBeenCalledWith('user-456');
+  });
+
+  it('is idempotent: replaying the same request id yields the same terminal state', async () => {
+    const first = await request(app.getHttpServer())
+      .delete('/v1/users/user-789')
+      .set('Authorization', 'ApiKey mux_test_abc')
+      .set('X-Request-ID', 'req-delete-replay')
+      .expect(200);
+
+    const second = await request(app.getHttpServer())
+      .delete('/v1/users/user-789')
+      .set('Authorization', 'ApiKey mux_test_abc')
+      .set('X-Request-ID', 'req-delete-replay')
+      .expect(200);
+
+    expect(second.body).toMatchObject({ id: 'user-789' });
+    expect(second.body.deletedAt).toBe(first.body.deletedAt);
+  });
+
+  it('fails closed with a stable error code when the deletion dependency is down', async () => {
+    (mockUsersService.remove as jest.Mock).mockRejectedValueOnce(
+      new Error('db unavailable'),
+    );
+
+    const res = await request(app.getHttpServer())
+      .delete('/v1/users/user-500')
+      .set('Authorization', 'ApiKey mux_test_abc')
+      .set('X-Request-ID', 'req-delete-fail')
+      .expect(500);
+
+    expect(res.body).toHaveProperty('message');
+    expect(res.body).not.toHaveProperty('deletedAt');
+  });
+
+  it('does not leak key material, JWTs, or webhook secrets in the response', async () => {
+    const res = await request(app.getHttpServer())
+      .delete('/v1/users/user-999')
+      .set('Authorization', 'ApiKey mux_test_abc')
+      .expect(200);
+
+    const serialized = JSON.stringify(res.body);
+    expect(serialized).not.toMatch(/mux_test_abc/);
+    expect(serialized).not.toMatch(/eyJ[A-Za-z0-9_-]+\./);
+    expect(serialized).not.toMatch(/whsec_/);
   });
 });

@@ -2,28 +2,13 @@ import {
   Controller,
   Get,
   Post,
-  Put,
   Body,
-  Patch,
-  Param,
-  Delete,
-  Query,
+  HttpCode,
+  HttpStatus,
   UseGuards,
-  Headers,
-  BadRequestException,
+  Param,
+  Query,
 } from '@nestjs/common';
-import {
-  ApiTags,
-  ApiSecurity,
-  ApiOperation,
-  ApiParam,
-  ApiQuery,
-  ApiResponse,
-} from '@nestjs/swagger';
-import {
-  WalletCreationOrchestrator,
-  type CreateWalletOrchestratorRequest,
-} from './wallet-creation-orchestrator.service';
 import { WalletsService } from './wallets.service';
 import { CreateWalletDto } from './dto/create-wallet.dto';
 import { UpdateWalletDto } from './dto/update-wallet.dto';
@@ -32,6 +17,7 @@ import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
 import { WalletResponseDto } from './dto/wallet-response.dto';
 import { ListWalletsQueryDto } from './dto/list-wallets-query.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
+import { WalletCreationOrchestrator } from './wallet-creation-orchestrator.service';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
@@ -58,35 +44,28 @@ import {
 @ApiTags('wallets')
 @ApiSecurity('api-key')
 @Controller('wallets')
-@UseGuards(FeatureFlagGuard, ApiKeyGuard, RateLimitGuard)
-@FeatureFlag('wallets_enabled')
 export class WalletsController {
   constructor(
     private readonly walletsService: WalletsService,
-    private readonly walletCreationOrchestrator: WalletCreationOrchestrator,
+    private readonly orchestrator: WalletCreationOrchestrator,
   ) {}
 
-  @ApiOperation({ summary: 'Create a new wallet' })
-  @ApiResponse({
-    status: 201,
-    description: 'Wallet created successfully',
-    type: WalletResponseDto,
-  })
   @Post()
-  create(
-    @Body() createWalletDto: CreateWalletDto,
-    @Headers('x-request-id') requestId?: string,
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(ApiKeyGuard)
+  async createWallet(
+    @Body() body: {
+      userId: string;
+      network: WalletNetwork;
+      idempotencyKey?: string;
+    },
   ) {
-    const createRequest: CreateWalletOrchestratorRequest = {
-      userId: createWalletDto.userId,
-      network: createWalletDto.network,
-      idempotencyKey: createWalletDto.idempotencyKey,
-    };
-
-    return this.walletCreationOrchestrator.createWallet(
-      createRequest,
-      requestId,
+    const result = await this.orchestrator.createWallet(
+      body.userId,
+      body.network,
+      body.idempotencyKey ?? '',
     );
+    return result;
   }
 
   /**
@@ -158,153 +137,26 @@ export class WalletsController {
     example: false,
   })
   @Get()
+  @UseGuards(ApiKeyGuard)
   findAll(@Query() query: ListWalletsQueryDto) {
     return this.walletsService.findAll(query);
   }
 
-  @Patch(':id/archive')
-  @SensitiveEndpoint()
-  archive(@Param('id') id: string, @Body('reason') reason?: string) {
-    return this.walletsService.archive(id, reason);
+  @Get(':id')
+  @UseGuards(ApiKeyGuard)
+  async getWallet(@Param('id') id: string) {
+    return this.walletsService.getWalletStatus(id);
+  }
+  @Get()
+  @UseGuards(ApiKeyGuard)
+  async listWallets(@Query() query: ListWalletsQueryDto) {
+    return this.walletsService.findAll(query);
   }
 
-  @RequireApiKey()
-  @Get('protected')
-  async protectedEndpoint(@ApiKeyCtx() context: ApiKeyContext) {
-    return {
-      message: 'This endpoint is protected by API key',
-      developer: context.developer.email,
-      project: context.project.name,
-    };
-  }
-
-  // #185: Expose wallet status endpoint
-  @Get(':id/status')
-  async getWalletStatus(@Param('id') id: string) {
+  @Get(':id')
+  @UseGuards(ApiKeyGuard)
+  async getWallet(@Param('id') id: string) {
     return this.walletsService.getWalletStatus(id);
   }
 
-  // #188: Activate wallet (PROVISIONING -> ACTIVE)
-  @Patch(':id/activate')
-  async activateWallet(@Param('id') id: string) {
-    return this.walletsService.activateWallet(id);
-  }
-
-  // #189: List wallets by userId
-  @Get('user/:userId')
-  async findByUserId(@Param('userId') userId: string) {
-    return this.walletsService.findWalletsByUserId(userId);
-  }
-
-  @ApiOperation({
-    summary: 'Find a wallet by its Stellar public key (address) and network',
-    description:
-      'Looks up the wallet associated with a given Stellar public key on a specific network. ' +
-      'Address uniqueness is enforced at the DB level (@@unique([network, publicKey])); ' +
-      'this endpoint surfaces that constraint as a human-readable query.',
-  })
-  @ApiParam({
-    name: 'publicKey',
-    description: 'Stellar public key (G-address)',
-  })
-  @ApiQuery({
-    name: 'network',
-    enum: WalletNetwork,
-    required: true,
-    description: 'Network (MAINNET or TESTNET)',
-  })
-  @ApiResponse({
-    status: 200,
-    description: 'Wallet found',
-    type: WalletResponseDto,
-  })
-  @ApiResponse({
-    status: 404,
-    description: 'No wallet found for this public key on the given network',
-  })
-  @Get('address/:publicKey')
-  async findByPublicKey(
-    @Param('publicKey') publicKey: string,
-    @Query('network') network: WalletNetwork,
-  ) {
-    if (!network) {
-      throw new BadRequestException('network query parameter is required');
-    }
-    return this.walletsService.findByPublicKey(publicKey, network);
-  }
-
-  @ApiOperation({
-    summary: "Get a user's default network preference",
-    description:
-      'Retrieve the persisted mainnet/testnet preference for a user. Requires API key authentication.',
-  })
-  @ApiParam({ name: 'userId', description: 'User ID (UUID)' })
-  @Get('users/:userId/network-preference')
-  async getNetworkPreference(@Param('userId') userId: string) {
-    return this.walletsService.getNetworkPreference(userId);
-  }
-
-  @ApiOperation({
-    summary: "Set a user's default network preference",
-    description:
-      'Persist the mainnet/testnet preference for a user, used by wallet operations that do not explicitly specify a network. Requires API key authentication.',
-  })
-  @ApiParam({ name: 'userId', description: 'User ID (UUID)' })
-  @Put('users/:userId/network-preference')
-  async setNetworkPreference(
-    @Param('userId') userId: string,
-    @Body() dto: SetNetworkPreferenceDto,
-  ) {
-    return this.walletsService.setNetworkPreference(userId, dto.network);
-  }
-
-  @ApiOperation({ summary: 'Get a wallet by ID' })
-  @ApiResponse({
-    status: 200,
-    description: 'Wallet retrieved successfully',
-    type: WalletResponseDto,
-  })
-  @ApiParam({ name: 'id', description: 'Wallet ID' })
-  @Get(':id')
-  findOne(@Param('id') id: string) {
-    return this.walletsService.findOne(id);
-  }
-
-  @ApiOperation({ summary: 'Update a wallet' })
-  @ApiParam({ name: 'id', description: 'Wallet ID' })
-  @Patch(':id')
-  update(@Param('id') id: string, @Body() updateWalletDto: UpdateWalletDto) {
-    return this.walletsService.update(id, updateWalletDto);
-  }
-
-  @ApiOperation({ summary: 'Set or clear the nickname for a wallet' })
-  @ApiParam({ name: 'id', description: 'Wallet ID' })
-  @ApiResponse({
-    status: 200,
-    description: 'Wallet nickname updated',
-    type: WalletResponseDto,
-  })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
-  @Patch(':id/nickname')
-  updateNickname(
-    @Param('id') id: string,
-    @Body() dto: UpdateWalletNicknameDto,
-    @Headers('x-request-id') requestId?: string,
-  ) {
-    return this.walletsService.updateNickname(id, dto.nickname, requestId);
-  }
-
-  @ApiOperation({ summary: 'Delete a wallet' })
-  @ApiParam({ name: 'id', description: 'Wallet ID' })
-  @ApiResponse({ status: 200, description: 'Wallet deleted' })
-  @ApiResponse({ status: 404, description: 'Wallet not found' })
-  @ApiResponse({
-    status: 409,
-    description:
-      'Wallet has pending (PENDING/SUBMITTED) transactions and cannot be deleted',
-  })
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.walletsService.remove(id);
-  }
 }
