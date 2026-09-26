@@ -1,51 +1,30 @@
-import { HttpStatus } from '@nestjs/common';
-import {
-  ErrorRequestHandler,
-  Request,
-  RequestHandler,
-  Response,
-  json,
-  urlencoded,
-} from 'express';
-
-type MiddlewareApplication = {
-  use(...handlers: Array<RequestHandler | ErrorRequestHandler>): unknown;
-};
+import { Request, Response, NextFunction } from 'express';
 
 /**
- * Installs the request body parsers with an explicit byte limit.
- *
- * Nest's implicit parser must be disabled when the application is created so
- * this is the only parser that consumes the request stream.
+ * Maximum request body size in bytes.
+ * Requests exceeding this limit are rejected with 413 Payload Too Large
+ * before they reach any controller logic.
  */
-export function configureBodySizeLimit(
-  app: MiddlewareApplication,
-  limitBytes: number,
-): void {
-  app.use(
-    json({ limit: limitBytes }) as RequestHandler,
-    urlencoded({ extended: true, limit: limitBytes }) as RequestHandler,
-    payloadTooLargeHandler,
-  );
+export const MAX_BODY_SIZE = 1024 * 1024; // 1 MiB
+
+/**
+ * Middleware that enforces a maximum request body size.
+ * Reads content-length and rejects oversized requests early.
+ */
+export function configureBodySizeLimit(): (req: Request, res: Response, next: NextFunction) => void {
+  return (req: Request, res: Response, next: NextFunction): void => {
+    const contentLength = req.headers['content-length'];
+    if (contentLength) {
+      const size = parseInt(contentLength as string, 10);
+      if (size > MAX_BODY_SIZE) {
+        res.status(413).json({
+          message: 'Request body too large',
+          errorCode: 'PAYLOAD_TOO_LARGE',
+          maxSize: MAX_BODY_SIZE,
+        });
+        return;
+      }
+    }
+    next();
+  };
 }
-
-const payloadTooLargeHandler: ErrorRequestHandler = (
-  error: Error & { type?: string; status?: number },
-  _request: Request,
-  response: Response,
-  next,
-) => {
-  if (
-    error.type !== 'entity.too.large' &&
-    error.status !== HttpStatus.PAYLOAD_TOO_LARGE
-  ) {
-    next(error);
-    return;
-  }
-
-  response.status(HttpStatus.PAYLOAD_TOO_LARGE).json({
-    statusCode: HttpStatus.PAYLOAD_TOO_LARGE,
-    error: 'Payload Too Large',
-    message: 'Request body exceeds the maximum allowed size',
-  });
-};

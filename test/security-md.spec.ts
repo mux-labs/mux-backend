@@ -16,7 +16,7 @@ describe('SECURITY.md', () => {
 
   it('should define a private vulnerability disclosure process', () => {
     expect(securityContent).toContain('private');
-    expect(securityContent).toContain('security@mux.com');
+    expect(securityContent).toContain('security@muxprotocol.io');
     expect(securityContent).toContain('DO NOT file public GitHub issues');
   });
 
@@ -71,6 +71,6 @@ describe('SECURITY.md', () => {
 
   it('should include security contacts', () => {
     expect(securityContent).toContain('Security Contacts');
-    expect(securityContent).toContain('security@mux.com');
+    expect(securityContent).toContain('security@muxprotocol.io');
   });
 });
