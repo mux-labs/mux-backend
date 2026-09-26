@@ -68,6 +68,59 @@ jobs:
           DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
           WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
 
+  wallet-nickname-store:
+    # #958: Fail-closed required check for the wallet nickname store.
+    # The bounding/normalization invariants (code-point length, no coercion,
+    # reject-don't-truncate) are what stop a user-supplied label from becoming
+    # an unbounded write or an indistinguishable duplicate. Pure unit tests:
+    # no DB, network, or secrets.
+    name: Wallet Nickname Store (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify nickname safety spec is present
+        # Fail closed if the spec is missing so the contract cannot be
+        # silently un-gated.
+        run: test -f src/wallets/wallet-nickname-safety.spec.ts
+
+      - name: Run wallet nickname store tests
+        run: >
+          pnpm exec jest --runTestsByPath
+          src/wallets/wallet-nickname-safety.spec.ts
+          src/wallets/wallet-nickname.spec.ts
+        env:
+          NODE_ENV: test
+
+      - name: Verify nickname e2e spec is present
+        run: test -f test/wallet-nickname.e2e-spec.ts
+
+      - name: Run wallet nickname e2e
+        # In-memory suite: only the wallet controller and its guards are
+        # mounted, so no database or RPC is required.
+        run: pnpm test:e2e -- test/wallet-nickname.e2e-spec.ts
+        env:
+          NODE_ENV: test
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest

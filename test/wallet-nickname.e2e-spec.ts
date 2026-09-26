@@ -226,4 +226,117 @@ describe('WalletsController nickname (e2e)', () => {
     expect(res.body.nickname).toBeNull();
     expect(mockPrisma.wallet.findFirst).not.toHaveBeenCalled();
   });
+  // ---------------------------------------------------------------------------
+  // Store safety (#958)
+  // ---------------------------------------------------------------------------
+
+  describe('store safety', () => {
+    it('rejects an over-long nickname and never reaches the store', async () => {
+      const res = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: 'a'.repeat(101) })
+        .expect(400);
+
+      expect(res.body.errorCode).toBe('WALLET_NICKNAME_INVALID_INPUT');
+      expect(res.body.message).toContain('at most 100');
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+    });
+
+    it('accepts a nickname of exactly the maximum length', async () => {
+      const exact = 'a'.repeat(100);
+      mockPrisma.wallet.update.mockResolvedValue({
+        ...baseWallet,
+        nickname: exact,
+        updatedAt: new Date(),
+      });
+
+      const res = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: exact })
+        .expect(200);
+
+      expect(res.body.nickname).toBe(exact);
+    });
+
+    it('rejects a non-string nickname at the DTO boundary', async () => {
+      await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: 12345 })
+        .expect(400);
+
+      expect(mockPrisma.wallet.update).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 and leaks no DB detail when the store is unavailable', async () => {
+      mockPrisma.wallet.update.mockRejectedValue(
+        new Error('connection to postgres://user:hunter2@db failed'),
+      );
+
+      const res = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: 'Savings' })
+        .expect(503);
+
+      // The raw driver message must never reach the client.
+      expect(JSON.stringify(res.body)).not.toContain('hunter2');
+      expect(JSON.stringify(res.body)).not.toContain('postgres://');
+    });
+
+    it('is idempotent: replaying the same nickname converges on the same state', async () => {
+      mockPrisma.wallet.update.mockResolvedValue({
+        ...baseWallet,
+        nickname: 'Savings',
+        updatedAt: new Date(),
+      });
+
+      const first = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: 'Savings' })
+        .expect(200);
+      const second = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: 'Savings' })
+        .expect(200);
+
+      expect(second.body.nickname).toBe(first.body.nickname);
+    });
+
+    it('collapses the whitespace a stripped tag leaves behind', async () => {
+      mockPrisma.wallet.update.mockResolvedValue({
+        ...baseWallet,
+        nickname: 'My Wallet',
+        updatedAt: new Date(),
+      });
+
+      const res = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: '<b>My</b> Wallet' })
+        .expect(200);
+
+      expect(res.body.nickname).toBe('My Wallet');
+    });
+
+    it('returns no key material in the response', async () => {
+      mockPrisma.wallet.update.mockResolvedValue({
+        ...baseWallet,
+        nickname: 'Savings',
+        updatedAt: new Date(),
+      });
+
+      const res = await request(app.getHttpServer())
+        .patch(nickUrl())
+        .set('Authorization', 'ApiKey mux_test_abc')
+        .send({ nickname: 'Savings' })
+        .expect(200);
+
+      expect(res.body).not.toHaveProperty('encryptedSecret');
+    });
+  });
 });

@@ -1,10 +1,12 @@
 import {
   ConflictException,
+  BadRequestException,
   ForbiddenException,
   Injectable,
   NotFoundException,
   OnModuleDestroy,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaClient } from '../generated/prisma/client';
@@ -28,6 +30,10 @@ import {
   type WalletApiOperation,
 } from './wallet-api-metrics.service';
 import { WalletRetryService } from './wallet-retry.service';
+import {
+  resolveNicknameToStore,
+  sanitizeWalletNickname,
+} from './wallet-nickname-safety';
 import * as crypto from 'crypto';
 import { TransactionBuilder, Keypair } from 'stellar-sdk';
 import {
@@ -659,14 +665,35 @@ export class WalletsService implements OnModuleDestroy {
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     }
 
-    // Normalize before checking uniqueness so the stored value is exactly what
-    // is verified. An empty/null/whitespace-after-sanitize input clears.
-    const sanitized =
-      nickname === null || nickname === undefined
-        ? null
-        : this.sanitizeNickname(nickname);
-    const nextNickname =
-      sanitized !== null && sanitized.length > 0 ? sanitized : null;
+    // Bound and normalize the input BEFORE any store work, so an oversized or
+    // adversarial label costs no database round trip and cannot be persisted.
+    // An empty/null/whitespace-after-sanitize input clears.
+    const resolved = resolveNicknameToStore(nickname);
+    if (!resolved.ok) {
+      this.logger.warnWithContext('Rejected wallet nickname', {
+        operation: 'update_nickname',
+        entityType: 'wallet',
+        entityId: walletId,
+        requestId,
+        userId: existing.userId,
+        outcome: 'rejected',
+        code: resolved.code,
+      });
+      this.recordMetric(
+        'update_nickname',
+        'failure',
+        startedAt,
+        existing.network as WalletNetwork,
+      );
+      // `errorCode` is the field the global HttpExceptionFilter surfaces to
+      // clients; `code` is kept for consistency with the other wallet errors.
+      throw new BadRequestException({
+        code: resolved.code,
+        errorCode: resolved.code,
+        message: resolved.message,
+      });
+    }
+    const nextNickname = resolved.value;
 
     // Per-owner uniqueness: the label must be unique across the non-archived
     // wallets the same user owns (excluding this wallet). Comparison is
@@ -701,13 +728,30 @@ export class WalletsService implements OnModuleDestroy {
       }
     }
 
-    const updated = await this.prisma.wallet.update({
-      where: { id: walletId },
-      data: {
-        nickname: nextNickname,
-        updatedAt: new Date(),
-      },
-    });
+    let updated;
+    try {
+      updated = await this.prisma.wallet.update({
+        where: { id: walletId },
+        data: {
+          nickname: nextNickname,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (error) {
+      // Fail-closed on a store outage. Without this the raw Prisma error
+      // escapes, and a caller cannot tell "the label was rejected" from "the
+      // database is down" — a silent-partial-state risk on a write path.
+      this.logger.error('Failed to persist wallet nickname:', error);
+      this.recordMetric(
+        'update_nickname',
+        'failure',
+        startedAt,
+        existing.network as WalletNetwork,
+      );
+      throw new ServiceUnavailableException(
+        'Wallet nickname store is temporarily unavailable',
+      );
+    }
 
     this.logger.logWithContext('Updated wallet nickname', {
       operation: 'update_nickname',
@@ -737,12 +781,7 @@ export class WalletsService implements OnModuleDestroy {
    * or returned to the dashboard. Only ever contains the label text afterwards.
    */
   private sanitizeNickname(value: string): string {
-    return value
-      .replace(/<[^>]*>/g, ' ')
-      .replace(/javascript\s*:/gi, '')
-      .replace(/\s+on\w*\s*=/gi, ' ')
-      .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '')
-      .trim();
+    return sanitizeWalletNickname(value) as string;
   }
 
   /**
