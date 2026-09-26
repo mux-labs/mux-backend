@@ -231,6 +231,34 @@ returns `400 WEBHOOK_URL_NOT_ALLOWLISTED` by design. See
 [docs/webhook-ssrf-allowlist.md](docs/webhook-ssrf-allowlist.md) for the full
 runbook.
 
+### Balance Indexer Lag
+
+The balance index is a cache of on-chain state. When it lags, every read served
+from it is wrong — a user can be shown a stale balance while a payment is in
+flight — so indexer lag is treated as a first-class, alertable signal.
+
+- **Fail-closed on measurement.** `GET /balances/lag` and
+  `GET /balances/lag/:walletId` return `503` with
+  `BALANCE_LAG_DEPENDENCY_UNAVAILABLE` when the balance store cannot be read.
+  They never report a lag of `0` in that case: "the index is fresh" and "we
+  could not measure" must be distinguishable, or a database outage would look
+  healthy and silently disable the alerting.
+- **A never-synced row is maximally stale**, not fresh. Rows with no
+  `lastSyncedAt` report `breaching: true` and bucket `24h+`.
+- **Bounded work and bounded labels.** At most 10 000 rows are scanned per
+  report, and only the fixed `bucket` enum and a boolean are usable as metric
+  labels — never a wallet id, public key, or asset issuer.
+- **No secrets or key material** appear in the report, the log line, or the
+  metric. The report carries counts and durations only.
+- **Never emits `NaN`.** A malformed timestamp is rejected with
+  `BALANCE_LAG_MALFORMED_TIMESTAMP`; a future timestamp from clock skew collapses
+  to `0s` instead of going negative and firing a false alert.
+- **Fail-closed threshold.** `BALANCE_LAG_ALERT_THRESHOLD_MS` that is missing,
+  unparsable, zero, or negative falls back to the 300 000 ms default, so a typo
+  cannot disable alerting.
+
+See [docs/indexer-lag-metrics.md](docs/indexer-lag-metrics.md) for the runbook.
+
 ---
 
 ## Security Contacts

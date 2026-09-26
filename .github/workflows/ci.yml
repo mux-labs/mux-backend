@@ -246,6 +246,13 @@ jobs:
           WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
           WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
 
+  indexer-lag-metrics:
+    # #959: Fail-closed required check for indexer lag reporting.
+    # The lag invariants (never-synced reads as stale, a store outage never
+    # reads as zero lag, bounded labels) are the contract that keeps a stale
+    # index from looking healthy. Pure unit tests: no DB, network, or secrets.
+    name: Indexer Lag Metrics (required)
+
   webhook-ssrf-allowlist:
     # #960: Fail-closed required check for the webhook SSRF allowlist.
     # The allowlist is the only thing standing between an attacker-supplied
@@ -271,6 +278,19 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify indexer lag spec is present
+        # Fail closed if the spec is missing so the contract cannot be
+        # silently un-gated.
+        run: test -f src/balance-indexer/balance-indexer-lag.spec.ts
+
+      - name: Run indexer lag tests
+        run: >
+          pnpm exec jest --runTestsByPath
+          src/balance-indexer/balance-indexer-lag.spec.ts
+          src/balance-indexer/balance-indexer-metrics.service.spec.ts
+        env:
+          NODE_ENV: test
 
       - name: Verify SSRF allowlist spec is present
         # Fail closed if the spec is missing so the contract cannot be
@@ -299,8 +319,8 @@ jobs:
         # error-severity finding, 2/3 on verifier misuse.
         run: pnpm verify:key-consolidation
 
-  login-smoke-e2e:
-    name: Login Smoke E2E (required)
+  e2e-tests:
+    name: E2E Tests
     runs-on: ubuntu-latest
 
     services:
