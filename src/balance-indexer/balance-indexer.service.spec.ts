@@ -69,6 +69,7 @@ describe('BalanceIndexerService', () => {
 
   const mockMetrics = {
     record: jest.fn(),
+    recordLag: jest.fn(),
   };
 
   beforeEach(async () => {
@@ -419,6 +420,95 @@ describe('BalanceIndexerService', () => {
 
       expect(repo.findAll).toHaveBeenCalledWith(WALLET_ID);
       expect(result).toEqual(balances);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getIndexerLag — fail-closed observability (#959)
+  // ---------------------------------------------------------------------------
+
+  describe('getIndexerLag', () => {
+    afterEach(() => {
+      delete process.env.BALANCE_LAG_ALERT_THRESHOLD_MS;
+    });
+
+    it('reports lag for a freshly synced index', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([
+        makeBalance({ lastSyncedAt: new Date() }),
+      ]);
+
+      const report = await service.getIndexerLag();
+
+      expect(report.breaching).toBe(false);
+      expect(report.neverSynced).toBe(0);
+      expect(mockMetrics.recordLag).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lag: expect.objectContaining({ breaching: false }),
+        }),
+      );
+    });
+
+    it('scopes the query to a wallet when one is supplied', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([]);
+
+      await service.getIndexerLag(WALLET_ID);
+
+      expect(mockPrisma.walletBalance.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { walletId: WALLET_ID } }),
+      );
+    });
+
+    it('caps the scan so a huge index cannot become an outage', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([]);
+
+      await service.getIndexerLag();
+
+      expect(mockPrisma.walletBalance.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 10_000 }),
+      );
+    });
+
+    it('honours BALANCE_LAG_ALERT_THRESHOLD_MS', async () => {
+      process.env.BALANCE_LAG_ALERT_THRESHOLD_MS = '1000';
+      mockPrisma.walletBalance.findMany.mockResolvedValue([
+        makeBalance({ lastSyncedAt: new Date(Date.now() - 5_000) }),
+      ]);
+
+      const report = await service.getIndexerLag();
+
+      expect(report.thresholdMs).toBe(1_000);
+      expect(report.breaching).toBe(true);
+    });
+
+    it('fails closed with a stable code when the balance store is down', async () => {
+      // Reporting lag 0 during a DB outage would make an unreachable index look
+      // healthy and silently disable the alerting this exists to provide.
+      mockPrisma.walletBalance.findMany.mockRejectedValue(
+        new Error('connection terminated'),
+      );
+
+      const err = await service.getIndexerLag().catch((e) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as { code?: string }).code).toBe(
+        'BALANCE_LAG_DEPENDENCY_UNAVAILABLE',
+      );
+      // And it must not be reported as a healthy observation.
+      expect(mockMetrics.recordLag).not.toHaveBeenCalled();
+      expect(mockMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failure' }),
+      );
+    });
+
+    it('never puts a wallet id in the report', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([
+        makeBalance({ lastSyncedAt: new Date() }),
+      ]);
+
+      const report = await service.getIndexerLag(WALLET_ID);
+
+      expect(JSON.stringify(report)).not.toContain(WALLET_ID);
+      expect(JSON.stringify(report)).not.toContain(PUBLIC_KEY);
     });
   });
 });

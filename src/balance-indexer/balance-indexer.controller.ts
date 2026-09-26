@@ -92,12 +92,34 @@ export class BalanceIndexerController {
    * Gets all balances for a specific wallet with pagination and filtering.
    */
   @Get('wallet/:walletId')
-  @ApiOperation({ summary: 'Get all balances for a wallet with pagination and filtering' })
+  @ApiOperation({
+    summary: 'Get all balances for a wallet with pagination and filtering',
+  })
   @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
-  @ApiQuery({ name: 'page', required: false, example: 1, description: 'Page number (starting from 1)' })
-  @ApiQuery({ name: 'limit', required: false, example: 20, description: 'Items per page (max 100)' })
-  @ApiQuery({ name: 'assetType', required: false, enum: AssetType, description: 'Filter by asset type' })
-  @ApiQuery({ name: 'assetCode', required: false, example: 'USD', description: 'Filter by asset code' })
+  @ApiQuery({
+    name: 'page',
+    required: false,
+    example: 1,
+    description: 'Page number (starting from 1)',
+  })
+  @ApiQuery({
+    name: 'limit',
+    required: false,
+    example: 20,
+    description: 'Items per page (max 100)',
+  })
+  @ApiQuery({
+    name: 'assetType',
+    required: false,
+    enum: AssetType,
+    description: 'Filter by asset type',
+  })
+  @ApiQuery({
+    name: 'assetCode',
+    required: false,
+    example: 'USD',
+    description: 'Filter by asset code',
+  })
   @ApiResponse({
     status: 200,
     description: 'Paginated list of wallet balances',
@@ -153,7 +175,14 @@ export class BalanceIndexerController {
         walletId,
         asset,
       );
-      return balance ?? { balance: '0', assetType: filters.assetType, assetCode: filters.assetCode, assetIssuer: filters.assetIssuer };
+      return (
+        balance ?? {
+          balance: '0',
+          assetType: filters.assetType,
+          assetCode: filters.assetCode,
+          assetIssuer: filters.assetIssuer,
+        }
+      );
     }
 
     const asset: Asset = {
@@ -162,7 +191,10 @@ export class BalanceIndexerController {
       issuer: assetIssuer,
     };
 
-    const balance = await this.balanceIndexerService.getBalance(walletId, asset);
+    const balance = await this.balanceIndexerService.getBalance(
+      walletId,
+      asset,
+    );
 
     if (!balance) {
       throw new NotFoundException(
@@ -238,9 +270,25 @@ export class BalanceIndexerController {
   @Get('wallet/:walletId/asset')
   @ApiOperation({ summary: 'Get balance for a specific asset in a wallet' })
   @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
-  @ApiQuery({ name: 'assetType', required: false, enum: AssetType, description: 'Asset type (NATIVE, CREDIT_ALPHANUM4, CREDIT_ALPHANUM12, LIQUIDITY_POOL_SHARES)' })
-  @ApiQuery({ name: 'assetCode', required: false, example: 'USD', description: 'Asset code (required for CREDIT_ALPHANUM* types)' })
-  @ApiQuery({ name: 'assetIssuer', required: false, example: 'GBUQWP3BOUZX34ZONKXRBTLNNDOWR5HLCVPL2B4XNCLJTLMUMLTSOGBM', description: 'Asset issuer (required for CREDIT_ALPHANUM* types)' })
+  @ApiQuery({
+    name: 'assetType',
+    required: false,
+    enum: AssetType,
+    description:
+      'Asset type (NATIVE, CREDIT_ALPHANUM4, CREDIT_ALPHANUM12, LIQUIDITY_POOL_SHARES)',
+  })
+  @ApiQuery({
+    name: 'assetCode',
+    required: false,
+    example: 'USD',
+    description: 'Asset code (required for CREDIT_ALPHANUM* types)',
+  })
+  @ApiQuery({
+    name: 'assetIssuer',
+    required: false,
+    example: 'GBUQWP3BOUZX34ZONKXRBTLNNDOWR5HLCVPL2B4XNCLJTLMUMLTSOGBM',
+    description: 'Asset issuer (required for CREDIT_ALPHANUM* types)',
+  })
   @ApiResponse({
     status: 200,
     description: 'Balance found',
@@ -254,7 +302,8 @@ export class BalanceIndexerController {
       timestamp: '2024-06-24T12:34:56.789Z',
       path: '/balances/wallet/123/asset?assetType=INVALID',
       method: 'GET',
-      message: 'assetType must be one of: NATIVE, CREDIT_ALPHANUM4, CREDIT_ALPHANUM12, LIQUIDITY_POOL_SHARES',
+      message:
+        'assetType must be one of: NATIVE, CREDIT_ALPHANUM4, CREDIT_ALPHANUM12, LIQUIDITY_POOL_SHARES',
       error: 'Bad Request',
     },
   })
@@ -280,7 +329,10 @@ export class BalanceIndexerController {
       issuer: queryDto.assetIssuer,
     };
 
-    const balance = await this.balanceIndexerService.getBalance(walletId, asset);
+    const balance = await this.balanceIndexerService.getBalance(
+      walletId,
+      asset,
+    );
 
     if (!balance) {
       throw new NotFoundException('Balance not found');
@@ -416,7 +468,8 @@ export class BalanceIndexerController {
         value: {
           assetType: 'CREDIT_ALPHANUM4',
           assetCode: 'USD',
-          assetIssuer: 'GBUQWP3BOUZX34ZONKXRBTLNNDOWR5HLCVPL2B4XNCLJTLMUMLTSOGBM',
+          assetIssuer:
+            'GBUQWP3BOUZX34ZONKXRBTLNNDOWR5HLCVPL2B4XNCLJTLMUMLTSOGBM',
         },
       },
     },
@@ -434,7 +487,8 @@ export class BalanceIndexerController {
       timestamp: '2024-06-24T12:34:56.789Z',
       path: '/balances/wallet/123/reconcile',
       method: 'POST',
-      message: 'assetType must be one of: NATIVE, CREDIT_ALPHANUM4, CREDIT_ALPHANUM12, LIQUIDITY_POOL_SHARES',
+      message:
+        'assetType must be one of: NATIVE, CREDIT_ALPHANUM4, CREDIT_ALPHANUM12, LIQUIDITY_POOL_SHARES',
       error: 'Bad Request',
     },
   })
@@ -559,9 +613,20 @@ export class BalanceIndexerController {
     schema: {
       type: 'object',
       properties: {
-        walletId: { type: 'string', example: '123e4567-e89b-12d3-a456-426614174000' },
-        staleAssets: { type: 'array', items: { type: 'string' }, example: ['NATIVE', 'USD/CREDIT_ALPHANUM4'] },
-        staleSince: { type: 'string', example: '2024-06-24T10:00:00.000Z', nullable: true },
+        walletId: {
+          type: 'string',
+          example: '123e4567-e89b-12d3-a456-426614174000',
+        },
+        staleAssets: {
+          type: 'array',
+          items: { type: 'string' },
+          example: ['NATIVE', 'USD/CREDIT_ALPHANUM4'],
+        },
+        staleSince: {
+          type: 'string',
+          example: '2024-06-24T10:00:00.000Z',
+          nullable: true,
+        },
       },
     },
   })
@@ -579,5 +644,67 @@ export class BalanceIndexerController {
   })
   async detectStaleBalances(@Param('walletId') walletId: string) {
     return this.balanceIndexerService.detectStaleBalances(walletId);
+  }
+
+  /**
+   * Reports how far the balance index lags behind the chain.
+   *
+   * `GET /balances/lag` (whole index) or `GET /balances/lag/:walletId`
+   * (one wallet). The response carries counts and durations only — no wallet
+   * ids, public keys, or asset issuers — so it is safe to scrape and to log.
+   *
+   * Fail-closed: if the balance store cannot be read this returns `503` with
+   * `BALANCE_LAG_DEPENDENCY_UNAVAILABLE` rather than a lag of `0`. An operator
+   * must be able to tell "the index is fresh" apart from "we could not
+   * measure", otherwise a database outage would look like a healthy index and
+   * silently disable the alerting this endpoint exists to provide.
+   */
+  @Get('lag')
+  @ApiOperation({ summary: 'Report balance index lag (whole index)' })
+  @ApiResponse({
+    status: 200,
+    description: 'Lag report',
+    schema: {
+      type: 'object',
+      properties: {
+        rowsScanned: { type: 'integer', example: 1024 },
+        neverSynced: { type: 'integer', example: 0 },
+        maxLagMs: { type: 'number', example: 42000 },
+        medianLagMs: { type: 'number', example: 8000 },
+        bucket: {
+          type: 'string',
+          enum: ['0s', '30s', '2m', '5m', '15m', '1h', '6h', '24h', '24h+'],
+          example: '2m',
+        },
+        breaching: { type: 'boolean', example: false },
+        thresholdMs: { type: 'number', example: 300000 },
+      },
+    },
+  })
+  @ApiResponse({
+    status: 503,
+    description: 'Balance store unavailable — lag is unknown, not zero',
+    example: {
+      statusCode: 503,
+      code: 'BALANCE_LAG_DEPENDENCY_UNAVAILABLE',
+      message:
+        'Balance index lag is unavailable: the balance store could not be read',
+    },
+  })
+  async getIndexerLag() {
+    return this.balanceIndexerService.getIndexerLag();
+  }
+
+  /** Per-wallet lag, same contract as the whole-index report. */
+  @Get('lag/:walletId')
+  @ApiOperation({ summary: 'Report balance index lag for one wallet' })
+  @ApiParam({ name: 'walletId', description: 'Wallet ID (UUID)' })
+  @ApiResponse({ status: 200, description: 'Lag report' })
+  @ApiResponse({
+    status: 503,
+    description: 'Balance store unavailable — lag is unknown, not zero',
+  })
+  async getWalletIndexerLag(@Param('walletId') walletId: string) {
+    return this.balanceIndexerService.getIndexerLag(walletId);
   }
 }

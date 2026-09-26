@@ -15,6 +15,14 @@ import { BalanceRepository } from './balance.repository';
 import { BalanceCacheService } from './balance-cache.service';
 import { RequestContextService } from '../common/request-context/request-context.service';
 import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
+import {
+  BalanceLagCalculator,
+  BalanceLagErrorCode,
+  BALANCE_LAG_ALERT_THRESHOLD_ENV,
+  MAX_LAG_SCAN_ROWS,
+  resolveLagThreshold,
+} from './balance-indexer-lag';
+import type { BalanceLagReport } from './balance-indexer-lag';
 import { randomUUID } from 'crypto';
 import {
   WalletBalance,
@@ -249,6 +257,19 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
         );
       }
 
+      // Attach lag to the same metric that already reports this operation, so
+      // freshness is visible without a second scrape. A never-synced row is
+      // reported as maximally stale rather than as fresh.
+      this.metrics.recordLag({
+        operation: 'detect_stale',
+        outcome: 'success',
+        durationMs: Date.now() - startTime,
+        lag: BalanceLagCalculator.compute(
+          balances,
+          resolveLagThreshold(process.env[BALANCE_LAG_ALERT_THRESHOLD_ENV]),
+        ),
+      });
+
       this.metrics.record({
         operation: 'detect_stale',
         outcome: 'success',
@@ -366,6 +387,70 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
   }
 
   /**
+   * Reports how far the balance index lags behind the chain.
+   *
+   * Read-only and fail-closed: if the balance store is unreachable this raises
+   * `BALANCE_LAG_DEPENDENCY_UNAVAILABLE` rather than reporting a lag of 0.
+   * Reporting "no lag" during an outage would silently disable the alerting
+   * this exists to provide — an operator must be able to tell "the index is
+   * fresh" apart from "we could not measure".
+   *
+   * The response carries counts and durations only: no wallet ids, public
+   * keys, or asset issuers, so it is safe to log and to use as metric labels.
+   */
+  async getIndexerLag(walletId?: string): Promise<BalanceLagReport> {
+    const requestId = this.requestContext.getRequestId() || 'N/A';
+    const startTime = Date.now();
+    const thresholdMs = resolveLagThreshold(
+      process.env[BALANCE_LAG_ALERT_THRESHOLD_ENV],
+    );
+
+    try {
+      const rows = walletId
+        ? await this.prisma.walletBalance.findMany({
+            where: { walletId },
+            take: MAX_LAG_SCAN_ROWS,
+          })
+        : await this.prisma.walletBalance.findMany({
+            take: MAX_LAG_SCAN_ROWS,
+          });
+
+      const report = BalanceLagCalculator.compute(rows, thresholdMs);
+
+      this.metrics.recordLag({
+        operation: 'detect_stale',
+        outcome: 'success',
+        durationMs: Date.now() - startTime,
+        lag: report,
+      });
+      this.metrics.record({
+        operation: 'detect_stale',
+        outcome: 'success',
+        durationMs: Date.now() - startTime,
+      });
+
+      return report;
+    } catch (error) {
+      // A lag report must never mask the underlying store failure as "healthy".
+      this.metrics.record({
+        operation: 'detect_stale',
+        outcome: 'failure',
+        durationMs: Date.now() - startTime,
+        errorsEncountered: 1,
+      });
+      this.logger.error(
+        `[${requestId}] Indexer lag report failed; lag is unknown, not zero:`,
+        error,
+      );
+      const wrapped = new Error(
+        'Balance index lag is unavailable: the balance store could not be read',
+      ) as Error & { code: BalanceLagErrorCode };
+      wrapped.code = BalanceLagErrorCode.DEPENDENCY_UNAVAILABLE;
+      throw wrapped;
+    }
+  }
+
+  /**
    * Syncs balances from Stellar Horizon for a single wallet.
    * Creates a BalanceSyncJob record for observability.
    */
@@ -430,10 +515,11 @@ export class BalanceIndexerService implements OnModuleInit, OnModuleDestroy {
       }
 
       // Fetch balances from Horizon
-      const horizonBalances = await this.stellarHorizonService.getAccountBalances(
-        wallet.publicKey,
-        wallet.network as WalletNetwork,
-      );
+      const horizonBalances =
+        await this.stellarHorizonService.getAccountBalances(
+          wallet.publicKey,
+          wallet.network as WalletNetwork,
+        );
 
       let balancesUpdated = 0;
       let mismatchesFound = 0;
