@@ -411,6 +411,48 @@ jobs:
         # Pure documentation contract test: no DB, no secrets, no network.
         run: pnpm test:e2e -- test/cron-schedule-docs.e2e-spec.ts
 
+  migration-recovery-tabletop:
+    name: Migration Recovery Tabletop (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify migration recovery runbook is present
+        # #929: Fail closed if the runbook is missing so the recovery
+        # procedure can never be silently un-gated.
+        run: test -f docs/migration-recovery-runbook.md
+
+      - name: Verify tabletop exercise doc is present
+        run: test -f docs/migration-recovery-tabletop.md
+
+      - name: Verify tabletop contract spec is present
+        run: test -f test/migration-recovery-tabletop.e2e-spec.ts
+
+      - name: Run migration recovery tabletop contract test
+        # #929: Asserts the runbook only invokes scripts that exist in
+        # package.json (it previously named five that do not), and that the
+        # tabletop exercise covers every runbook scenario, names roles,
+        # timebox, abort conditions and after-action record, and forbids
+        # running against mainnet or real key material.
+        # Pure documentation test: no DB, no network, no secrets.
+        run: pnpm test:e2e -- test/migration-recovery-tabletop.e2e-spec.ts
+
   api-prefix-docs:
     name: API Prefix Docs Contract (required)
     runs-on: ubuntu-latest
