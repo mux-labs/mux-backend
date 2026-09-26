@@ -1139,6 +1139,10 @@ for rotation and incident response.
 ### Signing Secret Storage & Rotation
 
 * **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
+* **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-s
+### Signing Secret Storage & Rotation
+
+* **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
 * **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-secret` (rotation). Store it immediately; it is never returned again.
 * **Downtime-free rotation**: `rotate-secret` stages a new secret version. Outbound deliveries keep being signed with the previous (established) secret until the grace window (`WEBHOOK_SECRET_GRACE_SECONDS`, default `3600`s) elapses, then the new secret is promoted automatically on the next dispatch. Consumers still verifying with the old secret are never cut off.
 * **Fails closed**: In production the server refuses to boot without `WEBHOOK_SIGNING_KEY`; there is no silent default or mock.
@@ -1258,6 +1262,30 @@ Testing
 | `offset` | number | Records to skip for pagination (default 0) |
 
 Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
+
+### Transaction Memo Validation
+
+The `memo` field is client-supplied free text that is stored, indexed, searchable
+(`?memo=`), and ultimately becomes a Stellar `MemoText` on-chain. Stellar caps
+`MemoText` at **28 bytes**, so a memo that looks fine in JavaScript can still be
+un-submittable. `src/transactions/transaction-memo.ts` is the single place that
+decides admissibility, and `TransactionsService.createTransaction()` calls
+`normalizeMemo()` **before** the insert.
+
+* **Length is measured in UTF-8 bytes, not characters.** A 14-character emoji
+  memo is 28 bytes and is refused; 28 ASCII characters are accepted. Checking
+  `.length` would let an un-submittable memo through.
+* **No truncation.** An over-long memo is an error, never silently shortened to
+  something the client did not ask for.
+* **Whitespace-only is an error** (`MEMO_EMPTY`), not a stored blank, so a
+  caller cannot believe a memo was recorded when it was not.
+* **Control characters and unpaired surrogates are refused.** They cannot
+  survive XDR encoding and are a log-injection vector once stored.
+* **`undefined`/`null` mean "no memo"** and are never an error.
+
+Stable codes (`src/transactions/transaction-memo.ts`): `MEMO_TYPE_INVALID`,
+`MEMO_TOO_LONG`, `MEMO_CHARSET_INVALID`, `MEMO_EMPTY`. Error messages never
+echo the memo itself.
 
 ### Transaction Status Lifecycle (#498)
 
