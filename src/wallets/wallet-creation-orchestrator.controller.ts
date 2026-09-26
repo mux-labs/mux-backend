@@ -1,17 +1,16 @@
 import {
   BadRequestException,
   Body,
-  ConflictException,
   Controller,
   Get,
   Headers,
   HttpCode,
+  HttpException,
   HttpStatus,
   InternalServerErrorException,
   NotFoundException,
   Param,
   Post,
-  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -73,7 +72,10 @@ export class WalletCreationOrchestratorController {
   })
   @ApiResponse({
     status: 403,
-    description: 'Wallet orchestrator feature flag disabled',
+    description:
+      'Feature flag disabled, account suspended/disabled, or the API key is ' +
+      'scoped to a different network (FEATURE_FLAG_DISABLED / USER_SUSPENDED / ' +
+      'NETWORK_MISMATCH)',
   })
   @ApiResponse({
     status: 409,
@@ -102,20 +104,16 @@ export class WalletCreationOrchestratorController {
     assertValidNetwork(body.network);
 
     try {
-      return await this.walletCreationOrchestrator.createWallet(body);
+      return await this.walletCreationOrchestrator.createWallet({
+        ...body,
+        correlationId: requestId,
+      });
     } catch (err) {
       // Pass typed client-facing errors through unchanged so the caller keeps
-      // the stable 4xx code rather than receiving an opaque 500.
-      // Pass typed client-facing errors through unchanged so the caller keeps
-      // the stable status/code. This includes 503: a dependency outage is
-      // retryable, and masking it as a 500 would make the orchestrator give up
-      // on a request that would succeed on retry.
-      if (
-        err instanceof NotFoundException ||
-        err instanceof ConflictException ||
-        err instanceof BadRequestException ||
-        err instanceof ServiceUnavailableException
-      ) {
+      // the stable status/code. This includes 403 (feature flag, suspended
+      // user, network scope) and 503 (dependency outage): masking either as a
+      // 500 would hide an actionable, retryable or policy-driven failure.
+      if (err instanceof HttpException) {
         throw err;
       }
       if (err instanceof WalletOrchestrationError) {

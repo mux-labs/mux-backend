@@ -115,8 +115,37 @@ The production Dockerfile runs the API as a non-root user (`mux`, UID 1001) with
 | No new privileges | `security_opt: no-new-privileges:true` prevents the container from gaining additional capabilities at runtime. |
 | Read-only filesystem (production) | The Dockerfile copies only production artifacts; the container does not include build tools, source code, or dev dependencies. |
 | Fail-closed on migration failure | If `prisma migrate deploy` fails, the entrypoint exits non-zero and the container stops — orchestrators detect the failure immediately. |
+| Graceful shutdown drain | `stop_grace_period: 30s` gives the app time to drain in-flight payments (`GRACEFUL_SHUTDOWN_TIMEOUT_MS`, default 25s) before Docker sends `SIGKILL`. See [Graceful Shutdown](GRACEFUL-SHUTDOWN.md). |
 
-For production deployments on Kubernetes or ECS, apply the same `USER` and `securityOpt` settings from `docker-compose.yml`, and consider adding a `readOnlyRootFilesystem` root-level mount with `tmpfs` for `/tmp` and Prisma cache writes.
+For production deployments on Kubernetes or ECS, apply the same `USER` and `securityOpt` settings from `docker-compose.yml`, and consider adding a `readOnlyRootFilesystem` root-level mount with `tmpfs` for `/tmp` and Prisma cache writes. Set `terminationGracePeriodSeconds` above `GRACEFUL_SHUTDOWN_TIMEOUT_MS`.
+
+---
+
+## Connection pool sizing
+
+The bundled Postgres is fine for a single dev API, but the default Prisma pool is
+derived from the **host** CPU count. Pin it so local behaviour matches
+production:
+
+```bash
+# .env — optional; omit to keep the engine default
+DATABASE_POOL_SIZE=10
+DATABASE_POOL_TIMEOUT_SECONDS=10
+DATABASE_CONNECT_TIMEOUT_SECONDS=5
+```
+
+Verify the resolved sizing and the live connection count:
+
+```bash
+docker compose logs api | grep 'db pool'
+docker compose exec db psql -U mux -d mux_db -c \
+  "select count(*) from pg_stat_activity where datname = 'mux_db';"
+```
+
+> `postgres:16-alpine` defaults to `max_connections=100`. Keep
+> `replicas × DATABASE_POOL_SIZE` below ~80 % of that so migrations and admin
+> sessions still get a connection. Full guidance:
+> [DB Pool Sizing](DB-POOL-SIZING.md).
 
 ---
 

@@ -1,6 +1,16 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException, ConflictException, BadRequestException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  ConflictException,
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { Wallet, Prisma } from '@prisma/client';
+// Import the generated client (see generator output in prisma/schema.prisma).
+// `@prisma/client` only exists for the legacy default output path.
+import { Wallet, Prisma } from '../generated/prisma/client';
 import { randomUUID } from 'crypto';
 
 /**
@@ -78,7 +88,8 @@ export class WalletService {
     input: RegisterWalletInput,
     actor: SuccessorActor,
   ): Promise<RegisterWalletResult> {
-    const correlationId = actor.correlationId ?? input.correlationId ?? randomUUID();
+    const correlationId =
+      actor.correlationId ?? input.correlationId ?? randomUUID();
 
     // Deny-by-default: only the owner may register a wallet.
     if (actor.role !== 'owner') {
@@ -322,10 +333,11 @@ export class WalletService {
         return true;
       }
       seen.add(current);
-      const next: { successorId: string | null } | null = await tx.wallet.findUnique({
-        where: { id: current },
-        select: { successorId: true },
-      });
+      const next: { successorId: string | null } | null =
+        await tx.wallet.findUnique({
+          where: { id: current },
+          select: { successorId: true },
+        });
       current = next?.successorId ?? null;
     }
     return false;

@@ -1,30 +1,31 @@
-import { Request, Response, NextFunction } from 'express';
+import { NestExpressApplication } from '@nestjs/platform-express';
 
 /**
- * Maximum request body size in bytes.
- * Requests exceeding this limit are rejected with 413 Payload Too Large
- * before they reach any controller logic.
+ * Configures the JSON body size limit for the Express application.
+ * Oversized payloads are rejected with a 413 error.
  */
-export const MAX_BODY_SIZE = 1024 * 1024; // 1 MiB
-
-/**
- * Middleware that enforces a maximum request body size.
- * Reads content-length and rejects oversized requests early.
- */
-export function configureBodySizeLimit(): (req: Request, res: Response, next: NextFunction) => void {
-  return (req: Request, res: Response, next: NextFunction): void => {
+export function configureBodySizeLimit(
+  app: NestExpressApplication,
+  limitBytes: number = 1024 * 1024, // Default 1MB
+): void {
+  const limit = `${limitBytes}b`;
+  
+  // Apply to JSON body parser
+  app.use((req, res, next) => {
+    // Check content-length header
     const contentLength = req.headers['content-length'];
     if (contentLength) {
-      const size = parseInt(contentLength as string, 10);
-      if (size > MAX_BODY_SIZE) {
-        res.status(413).json({
-          message: 'Request body too large',
+      const length = parseInt(contentLength, 10);
+      if (length > limitBytes) {
+        return res.status(413).json({
+          statusCode: 413,
+          error: 'Payload Too Large',
+          message: `Request body exceeds maximum size of ${limitBytes} bytes`,
           errorCode: 'PAYLOAD_TOO_LARGE',
-          maxSize: MAX_BODY_SIZE,
+          requestId: req.headers['x-request-id'] || 'unknown',
         });
-        return;
       }
     }
     next();
-  };
+  });
 }

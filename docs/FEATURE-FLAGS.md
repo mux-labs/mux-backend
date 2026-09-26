@@ -168,3 +168,41 @@ description for any change touching payments, key management, or mainnet.
 - Disabling a flag prevents the API from operating; it does not create a fail-open path.
 - The server remains the source of truth for spends, recovery, and admin actions;
   clients cannot bypass policy by spoofing flag state.
+
+## Wallet Orchestrator flag (#944)
+
+`@FeatureFlag('wallet_orchestrator')` gates the `POST /v1/wallets/orchestration/*`
+surface, resolving to the env var `FEATURE_WALLET_ORCHESTRATOR`.
+
+Resolution lives in `resolveFeatureFlag()` (`src/common/feature-flags/feature-flag.guard.ts`)
+and is deliberately identical in every environment:
+
+- **Only the literal `"true"` enables the surface.** Unset, `"false"`, `"1"`,
+  `"yes"`, `"TRUE "` and any other value are all *disabled*. There is no
+  "truthy" interpretation that could silently promote a money path.
+- **The production default is safe.** Production does not get a laxer parser
+  than development, so a freshly deployed environment starts with the
+  orchestrator **off** until an operator sets `FEATURE_WALLET_ORCHESTRATOR=true`.
+- **A truthy non-literal value** (e.g. `1`) is reported with reason
+  `non_boolean_value` in the ops log so the misconfiguration is visible, while
+  still being refused.
+- **Rollback / kill-switch:** set `FEATURE_WALLET_ORCHESTRATOR=false` (or engage
+  the global `FEATURE_FLAGS_KILL_SWITCH`) and redeploy. The route immediately
+  returns `403` and no wallet is created.
+
+A denial has a stable shape:
+
+```json
+{
+  "code": "FEATURE_FLAG_DISABLED",
+  "message": "Feature is not available: FEATURE_WALLET_ORCHESTRATOR is not enabled",
+  "correlationId": "…"
+}
+```
+
+`FEATURE_FLAG_KILL_SWITCH_ENGAGED` is returned instead when the global
+kill-switch is active. Clients must branch on `code`, not on the message.
+
+Covers: `src/common/feature-flags/feature-flag.guard.spec.ts`,
+`test/wallet-orchestrator-feature-flag.e2e-spec.ts`.
+

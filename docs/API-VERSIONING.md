@@ -57,3 +57,21 @@ directly under the current `/v1` prefix — no new version is required.
 
 `/v1/health` and `/v1/ready` follow the same prefix as every other route, so
 uptime checks and readiness probes must be configured with the `/v1` path.
+
+## Stable error codes alongside the version
+
+The URI prefix (`/v1`) versions *routes*. The machine-readable `code` inside an
+error body versions *failure modes* — and it is stable within a version:
+
+- Codes are constants in code (`NetworkErrorCode`, `ApiKeyErrorCode`,
+  `UserStatusErrorCode`, `FeatureFlagErrorCode`, …), never free-form strings.
+- A code is **added or deprecated**, never repurposed: `NETWORK_MISMATCH` will
+  always mean "credential and target network disagree" inside `/v1`.
+- Every denial carries a `correlationId` (the caller's `x-request-id` when
+  present, otherwise generated) so a client can quote it in a support request.
+- Breaking a code or changing its status is a **breaking change** and requires
+  the `/v2` process described above.
+
+See [`docs/NETWORK-SCOPING.md`](./NETWORK-SCOPING.md) for the network codes and
+`SECURITY.md` for the authz codes.
+

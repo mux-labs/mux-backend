@@ -94,6 +94,29 @@ the first live invoke. A mainnet id is required only for contracts with a
 Contract ids are never written to logs. Full contract and rollback:
 [docs/SOROBAN-CONTRACT-ID-BOOT.md](docs/SOROBAN-CONTRACT-ID-BOOT.md).
 
+## API Key Audit Log
+
+Every API key authentication decision is audited: accepted
+(`API_KEY_VALIDATED`), rejected (`API_KEY_REJECTED` with a stable reason), and
+blocked by a dependency outage (`API_KEY_VALIDATION_UNAVAILABLE`).
+
+- **Key material never enters the audit trail.** The presented key is SHA-256
+  hashed and only the first 12 hex characters are retained as a fingerprint.
+  Fingerprint comparison is constant-time.
+- Audit fields are length-bounded and stripped of control characters, so a
+  hostile header cannot forge log lines in an operator's terminal.
+- The audit sink is **fail-soft**: an audit failure never changes the
+  authentication outcome and never leaks the key into an error. A key-store
+  outage fails closed with `503` and is audited distinctly, rather than being
+  reported as an invalid key.
+- The in-process buffer is bounded so a rejected-key spray cannot exhaust memory.
+  It is a debugging aid, not a compliance store — ship stdout to durable storage.
+
+Investigating a suspected key leak or enumeration: filter on the `apikey.audit`
+action, `reason`, and `fingerprint` fields, and join on `correlationId`. Full
+contract, metrics, and rollback:
+[docs/API-KEY-AUDIT-LOG.md](docs/API-KEY-AUDIT-LOG.md).
+
 ## Internal Cron Jobs & Secret Guard
 
 Internal, cron-triggered endpoints (cleanup workers, reconciliation jobs, and other
@@ -234,6 +257,11 @@ invariants and operational expectations.
    against a stale schema.
 6. No secrets, JWTs, or raw key material appear in container logs,
    error responses, or metrics.
+7. Shutdown is **drain-first**: the image declares `STOPSIGNAL SIGTERM`, and on
+   a signal the process refuses new writes (`503 SHUTDOWN_IN_PROGRESS`) while
+   draining in-flight operations for at most `GRACEFUL_SHUTDOWN_TIMEOUT_MS`
+   before closing Prisma. Escalate to `SIGKILL` only after that budget, never
+   before — see [docs/GRACEFUL-SHUTDOWN.md](docs/GRACEFUL-SHUTDOWN.md).
 
 ### Operational notes
 
@@ -293,6 +321,23 @@ surface and must be treated with extra care.
 - See [README.md](README.md#fee-sponsorship-budgets) for the full API reference
   and operational guidance.
 
+### Dependency Outages and Stable Error Codes
+
+Every failure returned to a client carries a stable, machine-readable
+`errorCode` plus a `requestId` correlation id — never a driver message, a
+connection string, a JWT, or key material. The catalog (HTTP status, category,
+retryability, recommended client action) is documented in
+[docs/ERROR-CODES.md](docs/ERROR-CODES.md) and served from the public
+`GET /v1/error-codes` endpoint.
+
+- **Horizon reads are fail-closed.** Transient Horizon failures are retried
+  (bounded, jittered) and, if the budget is exhausted, the read fails and **no
+  balance write is applied** — an outage degrades freshness, never correctness.
+  See [docs/HORIZON-RETRY.md](docs/HORIZON-RETRY.md).
+- **The database pool is explicit.** Pool sizing is opt-in and validated at boot;
+  a malformed value fails startup rather than reverting to an unbounded pool. See
+  [docs/DB-POOL-SIZING.md](docs/DB-POOL-SIZING.md).
+
 ## Stellar Wave Contributors
 
 If you are contributing through Stellar Wave, please review this document and
@@ -341,4 +386,30 @@ ensure you are running a supported version before reporting issues.
 
 We appreciate the efforts of security researchers and contributors who help
 keep Mux Protocol and its users safe. With your permission, we will acknowledge
+
+## Enforced Access-Control Invariants (issues #941–#944)
+
+Fail-closed controls that gate the money path. Each has a stable error code, a
+unit spec, and an e2e suite; all are deny-by-default.
+
+| Invariant | Stable code(s) | Tests | Docs |
+|---|---|---|---|
+| A **revoked API key** stops working on the very next request — there is no cache in front of the status read, `REVOKED` is terminal, and revocation is idempotent. | `API_KEY_REVOKED`, `API_KEY_EXPIRED`, `API_KEY_SUSPENDED` | `test/api-key-expiry.e2e-spec.ts`, `test/api-key-revoke-immediate.e2e-spec.ts`, `src/api-keys/api-key.guard.spec.ts` | `CHANGELOG-KEY-MANAGEMENT.md` |
+| A **suspended or disabled account** cannot create a wallet or move value. The status is read server-side; an unrecognised status is refused too. | `USER_SUSPENDED`, `USER_DISABLED`, `USER_STATUS_UNKNOWN`, `USER_STATUS_UNAVAILABLE` | `src/users/user-status.policy.spec.ts`, `test/suspended-user-blocked.e2e-spec.ts` | `prisma/migrations/20260831000001_add_user_status_enum/` |
+| An **API key scoped to one network** can never act on the other; the refusal happens in the guard, before any handler. | `NETWORK_MISMATCH`, `INVALID_NETWORK` | `src/common/network/network-mismatch.spec.ts`, `test/network-mismatch.e2e-spec.ts` | [`docs/NETWORK-SCOPING.md`](docs/NETWORK-SCOPING.md) |
+| The **wallet orchestrator** is off unless explicitly enabled, identically in production and development, and the global kill-switch overrides every flag. | `FEATURE_FLAG_DISABLED`, `FEATURE_FLAG_KILL_SWITCH_ENGAGED` | `src/common/feature-flags/feature-flag.guard.spec.ts`, `test/wallet-orchestrator-feature-flag.e2e-spec.ts` | [`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md) |
+
+Notes for reviewers and integrators:
+
+- **No secrets in logs.** Denials log a correlation id, a static subject label
+  (`api-key`, `wallet`), and an enum string. API keys, key hashes, JWTs,
+  webhook secrets, and seeds are never logged or returned (except the plaintext
+  key, exactly once, at creation).
+- **Dependency outage fails closed.** An unreachable key store or status store
+  returns `503` with `API_KEY_STORE_UNAVAILABLE` / `USER_STATUS_UNAVAILABLE`
+  rather than allowing the write. The offline verifier that lets the test suites
+  run without a database is compiled out of `production` and `staging`.
+- **Rate-limit and authorize every external entrypoint**; the API-key guard is
+  deny-by-default, and only routes marked `@Public()` skip it.
+
 your contribution in our security acknowledgements.
