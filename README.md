@@ -1095,6 +1095,47 @@ Webhooks allow your application to receive real-time notifications when events o
 
 All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
 
+#### Verifying an inbound signature (`WebhookSignatureService`)
+
+`src/webhooks/webhook-signature.service.ts` is the single, shared verifier for
+`X-Webhook-Signature`. Anything that accepts a Mux-signed payload (an inbound
+receiver, a partner relay, a test harness) should call it rather than
+hand-rolling a comparison, so the rules cannot drift between call sites.
+
+```ts
+verifier.verify({
+  header: req.header['x-webhook-signature'],
+  payload: rawBody, // exact bytes that were signed
+  secret, // endpoint secret; absent/blank => rejected
+});
+```
+
+Invariants, each covered by `src/webhooks/webhook-signature.service.spec.ts`:
+
+* **Constant-time.** The digest is compared with `crypto.timingSafeEqual` over
+  equal-length buffers. A length mismatch is a mismatch — it is never padded or
+  short-circuited, so a `===` on a digest can never leak a correct prefix.
+* **Fail closed on a missing secret.** No secret means every signature is
+  rejected (`WEBHOOK_SIGNATURE_SECRET_UNAVAILABLE`). There is no "skip
+  verification" path.
+* **Bounded replay window.** The signed timestamp must be within
+  `DEFAULT_SIGNATURE_TOLERANCE_SECONDS` (300s) of now, in *either* direction: a
+  stale capture and a forged future timestamp are both rejected.
+* **Bounded input.** A header larger than `MAX_SIGNATURE_HEADER_BYTES` (256) is
+  rejected before it is parsed.
+* **No leakage.** Failures throw `WebhookVerificationError` with a stable code
+  and a fixed message. The secret, the presented digest, and the payload never
+  reach a log line, a metric label, or an error body.
+
+Stable codes (`src/webhooks/webhook-signature.model.ts`):
+`WEBHOOK_SIGNATURE_MISSING`, `WEBHOOK_SIGNATURE_MALFORMED`,
+`WEBHOOK_SIGNATURE_HEADER_TOO_LARGE`, `WEBHOOK_SIGNATURE_SECRET_UNAVAILABLE`,
+`WEBHOOK_SIGNATURE_TIMESTAMP_OUT_OF_TOLERANCE`, `WEBHOOK_SIGNATURE_MISMATCH`,
+`WEBHOOK_VERIFY_INVALID_ARGUMENT`. Each rejection also increments a
+`webhook_signature_*` counter so a mismatch spike is visible without reading
+payloads. See [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md)
+for rotation and incident response.
+
 ### Signing Secret Storage & Rotation
 
 * **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
