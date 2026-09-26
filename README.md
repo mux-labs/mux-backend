@@ -1263,6 +1263,35 @@ Testing
 
 Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
 
+### Transaction Export PII Minimization
+
+An export leaves the database: it lands in object storage behind a
+time-limited download URL and gets forwarded to whoever requested it.
+`src/transactions/transaction-export-minimisation.ts` defines the allowlist that
+shapes both the CSV/JSON payload and the job record, so the two cannot disagree.
+
+* **Allowlist, not denylist.** Only `transactionId`, `stellarHash`, `assetCode`,
+  `assetIssuer`, `amount`, `status`, `senderWalletId`, `receiverWalletId`,
+  `createdAt`, `confirmedAt` are exported. A column added to the schema later
+  cannot leak into an export by default — exporting it is a reviewed decision.
+* **Never exported** (see `NEVER_EXPORTED_COLUMNS`): `email`, `displayName`,
+  `authId`, `lastLoginIp`, `lastLoginUserAgent`, `requestedBy`, `memo`,
+  `metadata` (open JSON), `statusReason` (can carry a raw upstream error).
+* **CSV formula-injection guard.** A leading `=`, `+`, `-`, or `@` is prefixed
+  with `'`, so a value that a spreadsheet would evaluate is inert.
+* **Bounded.** `MAX_EXPORT_ROWS` (10 000) is fail-closed: the filter range is
+  client-chosen, so an unbounded export is a memory-exhaustion vector on the
+  job worker.
+* **Loud on a broken row.** A row with no `transactionId` raises
+  `EXPORT_ROW_MISSING_REQUIRED_FIELD` instead of producing a file with an
+  unreconcilable blank; a nested object raises `EXPORT_ROW_INVALID_FIELD`
+  rather than being stringified into a cell. Error messages never echo the
+  offending value.
+
+Stable codes: `EXPORT_UNSUPPORTED_FORMAT`, `EXPORT_ROW_MISSING_REQUIRED_FIELD`,
+`EXPORT_ROW_INVALID_FIELD`, `EXPORT_TOO_LARGE` — the last two align with the
+existing `ErrorCode.EXPORT_*` envelope in `src/common/dto/error-envelope.dto.ts`.
+
 ### Today Usage (authoritative backend)
 
 A client that needs to know how much of its daily limit it has consumed must not
@@ -1313,6 +1342,17 @@ decides admissibility, and `TransactionsService.createTransaction()` calls
 Stable codes (`src/transactions/transaction-memo.ts`): `MEMO_TYPE_INVALID`,
 `MEMO_TOO_LONG`, `MEMO_CHARSET_INVALID`, `MEMO_EMPTY`. Error messages never
 echo the memo itself.
+
+### Transaction Status Lifecycle (#498)
+
+Internal transaction statuses and their Horizon result mappings:
+
+| Status | Description | Horizon mapping |
+|--------|-------------|-----------------|
+| `PENDING` | Created, not yet submitted | — |
+| `SUBMITTED` | Submitted to Stellar, awaiting ledger inclusion | HTTP 202, `result_code: tx_queued` |
+| `CONFIRMED` | Included in a ledger | `successful: true`, `result_code: tx_success` / `tx_fee_bump_inner_success` |
+| `FAILED` | Rejected or expired | `su
 
 ### Transaction Status Lifecycle (#498)
 
