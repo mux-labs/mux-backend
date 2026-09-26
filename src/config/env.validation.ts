@@ -1,9 +1,6 @@
 /**
- * Environment validation for Mux Backend.
- *
- * Validates all required environment variables at startup and fails fast
- * with actionable error messages if any are missing or invalid.
- * This ensures fail-closed behavior for security-critical configuration.
+ * Validates required environment variables at startup.
+ * Fail-fast: throws if any required variable is missing or invalid.
  */
 
 import {
@@ -12,38 +9,9 @@ import {
 } from '../prisma/database-pool.config';
 
 export interface ValidatedEnv {
-  NODE_ENV: string;
   PORT: number;
   DATABASE_URL: string;
-  WALLET_ENCRYPTION_KEY: string;
-  STELLAR_HORIZON_URL: string;
-  STELLAR_NETWORK: 'TESTNET' | 'PUBLIC';
-  WEBHOOK_SIGNING_KEY: string;
-  MAINNET_PAYMENTS_ENABLED: boolean;
-  BALANCE_SYNC_INTERVAL_MS: number;
-  BALANCE_SYNC_MAX_RETRIES: number;
-  CORS_ORIGINS: string[];
-  WEBHOOK_MAX_RETRIES: number;
-  WEBHOOK_RETRY_BACKOFF_MS: number;
-  WEBHOOK_TIMEOUT_MS: number;
-  WEBHOOK_MAX_CONSECUTIVE_FAILURES: number;
-  WEBHOOK_QUEUE_INTERVAL_MS: number;
-  WEBHOOK_INBOUND_SECRET: string;
-  RECOVERY_REQUEST_TTL_MS: number;
-  FEATURE_MAINNET_PAYMENT_SUBMIT: boolean;
-  STELLAR_SPONSOR_SECRET_KEY?: string;
-  AUTH_RATE_LIMIT_MAX: number;
-  AUTH_RATE_LIMIT_WINDOW_MS: number;
-  API_KEY_DEFAULT_EXPIRY_DAYS?: number;
-  OTEL_ENABLED: boolean;
-  OTEL_EXPORTER_OTLP_ENDPOINT?: string;
-  OTEL_SERVICE_NAME: string;
-  OTEL_SERVICE_VERSION: string;
-  AUTH_IDENTITY_PROVIDER: 'CLERK' | 'BETTER_AUTH';
-  CLERK_JWT_PUBLIC_KEY?: string;
-  BETTER_AUTH_JWKS_URL?: string;
-  AUTH_SKIP_JWT_VERIFICATION: boolean;
-  OTEL_EXPORTER_OTLP_PROTOCOL: string;
+  STELLAR_NETWORK: 'mainnet' | 'testnet';
   JSON_BODY_LIMIT_BYTES: number;
   /** Optional Prisma/Postgres pool ceiling (#951). */
   DATABASE_POOL_SIZE?: number;
@@ -51,12 +19,30 @@ export interface ValidatedEnv {
   DATABASE_POOL_TIMEOUT_SECONDS?: number;
   /** Optional Prisma `connect_timeout` in seconds (#951). */
   DATABASE_CONNECT_TIMEOUT_SECONDS?: number;
+  CORS_ORIGINS: string;
+  MAINNET_PAYMENT_ENABLED: string;
+  NODE_ENV: string;
+  LOG_LEVEL: string;
 }
 
 const PLACEHOLDER_WALLET_ENCRYPTION_KEY =
   'your-secret-encryption-key-min-32-chars';
 const PLACEHOLDER_WEBHOOK_SIGNING_KEY =
   'your-secure-webhook-signing-key-min-32-chars';
+
+const REQUIRED_VARS = [
+  'DATABASE_URL',
+  'STELLAR_NETWORK',
+] as const;
+
+const DEFAULTS = {
+  PORT: 3000,
+  JSON_BODY_LIMIT_BYTES: 1024 * 1024, // 1MB
+  CORS_ORIGINS: 'http://localhost:3000',
+  MAINNET_PAYMENT_ENABLED: 'false',
+  NODE_ENV: 'development',
+  LOG_LEVEL: 'info',
+} as const;
 
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value === null || value === '') {
@@ -92,8 +78,8 @@ function parseCorsOrigins(raw: string | undefined): string[] {
 }
 
 /**
- * Validates all required environment variables.
- * Throws an Error with a descriptive message if validation fails.
+ * Validates and returns typed environment configuration.
+ * Throws on missing required variables.
  */
 export function validateEnv(
   env: NodeJS.ProcessEnv = process.env,
@@ -304,5 +290,7 @@ export function validateEnv(
     DATABASE_POOL_SIZE: poolConfig.connectionLimit,
     DATABASE_POOL_TIMEOUT_SECONDS: poolConfig.poolTimeoutSeconds,
     DATABASE_CONNECT_TIMEOUT_SECONDS: poolConfig.connectTimeoutSeconds,
+  };
+}
   };
 }

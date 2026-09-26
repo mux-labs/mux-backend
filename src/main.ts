@@ -5,7 +5,8 @@ import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 import { configureBodySizeLimit } from './common/http/body-size-limit';
 import { validateEnv } from './config/env.validation';
-import { IsoUtcTimestampInterceptor } from './common/interceptors/request-id.interceptor';
+import { IsoUtcTimestampInterceptor } from './common/interceptors';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 import { GracefulShutdownService } from './common/shutdown/graceful-shutdown.service';
 import { DrainInProgressInterceptor } from './common/shutdown/drain-in-progress.interceptor';
 
@@ -87,6 +88,9 @@ async function bootstrap() {
 
   // Normalize all Date values in HTTP responses to ISO 8601 UTC strings.
   app.useGlobalInterceptors(new IsoUtcTimestampInterceptor());
+
+  // Global exception filter for structured error responses
+  app.useGlobalFilters(new HttpExceptionFilter());
 
   // Fail-closed write gate for graceful shutdown (#950): once a SIGTERM/SIGINT
   // has been observed, mutating requests are refused with 503

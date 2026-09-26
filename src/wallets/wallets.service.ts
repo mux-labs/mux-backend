@@ -1,45 +1,54 @@
-import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 
+/**
+ * Service for managing wallets.
+ */
 @Injectable()
 export class WalletsService {
   private readonly logger = new Logger(WalletsService.name);
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(
-    userId?: string,
-    network?: WalletNetwork,
-  ): Promise<any[]> {
+  /**
+   * Returns all wallets (for testing bootstrap).
+   * In production, this would be paginated and filtered.
+   */
+  async findAll(): Promise<Array<{ id: string; address: string; status: string }>> {
     try {
-      return await this.prisma.wallet.findMany({
-        where: {
-          userId,
-          network,
+      const wallets = await this.prisma.wallet.findMany({
+        select: {
+          id: true,
+          publicKey: true,
+          status: true,
         },
-        orderBy: { createdAt: 'desc' },
+        take: 100,
       });
+      
+      return wallets.map((w) => ({
+        id: w.id,
+        address: w.publicKey,
+        status: w.status,
+      }));
     } catch (error) {
-      this.logger.error('DB lookup failed', { error: error.message });
-      throw new ServiceUnavailableException('Wallet lookup temporarily unavailable');
+      this.logger.error('Failed to fetch wallets', error);
+      throw new ServiceUnavailableException({
+        code: 'WALLETS_FETCH_FAILED',
+        message: 'Wallet service temporarily unavailable',
+      });
     }
   }
 
-  async getWalletStatus(id: string): Promise<any> {
+  /**
+   * Health check for the wallets module.
+   */
+  async healthCheck(): Promise<{ status: string }> {
     try {
-      const wallet = await this.prisma.wallet.findUnique({
-        where: { id },
-      });
-
-      if (!wallet) {
-        throw new NotFoundException(`Wallet ${id} not found`);
-      }
-
-      return wallet;
+      await this.prisma.$queryRaw`SELECT 1`;
+      return { status: 'ok' };
     } catch (error) {
-      this.logger.error('DB lookup failed', { id, error: error.message });
-      throw new ServiceUnavailableException('Wallet lookup temporarily unavailable');
+      this.logger.error('Wallet health check failed', error);
+      return { status: 'degraded' };
     }
   }
 }
