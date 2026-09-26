@@ -372,6 +372,42 @@ jobs:
         env:
           NODE_ENV: test
 
+  wallet-sponsorship-limits:
+    # #957: Fail-closed required check for wallet creation sponsorship limits.
+    # The cap invariants (defaults never widen, replay spends nothing, the
+    # kill-switch only removes) are what stop a caller from draining the
+    # sponsor account. Pure unit tests: no DB, network, or secrets.
+    name: Wallet Sponsorship Limits (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify sponsorship limits spec is present
+        # Fail closed if the spec is missing so the cap cannot be silently
+        # un-gated.
+        run: test -f src/wallets/wallet-sponsorship-limits.spec.ts
+
+      - name: Run wallet sponsorship limit tests
+        run: pnpm exec jest --runTestsByPath src/wallets/wallet-sponsorship-limits.spec.ts
+        env:
+          NODE_ENV: test
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest

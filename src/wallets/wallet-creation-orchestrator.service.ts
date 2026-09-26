@@ -1,7 +1,33 @@
-import { Injectable, Logger, ConflictException } from '@nestjs/common';
-import { WalletNetwork, WalletStatus } from './domain/wallet.model';
-import { randomUUID } from 'crypto';
+import {
+  Injectable,
+  ConflictException,
+  NotFoundException,
+  OnModuleDestroy,
+  Optional,
+  TooManyRequestsException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import { IsEnum, IsOptional, IsString, MinLength } from 'class-validator';
+import { PrismaClient } from '../generated/prisma/client';
+import {
+  WalletNetwork,
+  WalletStatus,
+  Wallet,
+  WalletStatusResponse,
+} from './domain/wallet.model';
 import { EncryptionService } from '../encryption/encryption.service';
+import { KeyManagementService } from '../key-management/key-management.service';
+import { KeyType } from '../key-management/domain/key-types';
+import { IdempotentUserService } from '../users/idempotent-user.service';
+import { SafeLogger } from '../common/safe-logger';
+import { CacheService } from '../common/cache/cache.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { requestIdAwareFetch } from '../common/http/request-id-fetch';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { WalletRetryService } from './wallet-retry.service';
+import { WalletSponsorshipLimiter } from './wallet-sponsorship-limits';
+import { WalletApiMetricsService } from './wallet-api-metrics.service';
+import { WalletOrchestratorMetricsService } from './wallet-orchestrator-metrics.service';
 
 /** Networks a wallet may be created on. */
 export const VALID_NETWORKS: ReadonlySet<string> = new Set([
@@ -113,10 +139,34 @@ export class WalletCreationOrchestrator {
   private readonly byIdempotencyKey = new Map<string, IdempotencyEntry>();
   private readonly inFlight = new Set<string>();
 
+  /**
+   * Caps how much sponsor resource wallet creation may consume (#957).
+   *
+   * Created here rather than injected so the cap is always present: an
+   * optional dependency would silently disable the control if a module wiring
+   * change ever dropped it.
+   */
+  private readonly sponsorshipLimiter = new WalletSponsorshipLimiter();
+
   private static readonly naturalKey = (
     userId: string,
     network: WalletNetwork,
   ): string => `${userId}:${network}`;
+
+  constructor(
+    private encryptionService: EncryptionService,
+    private configService: ConfigService,
+    private idempotentUserService: IdempotentUserService,
+    private keyManagementService: KeyManagementService,
+    prismaClient?: PrismaClient,
+    @Optional() private cacheService?: CacheService,
+    @Optional() private webhookEventEmitter?: WebhookEventEmitterService,
+    @Optional() private walletRetryService?: WalletRetryService,
+    @Optional() private walletApiMetrics?: WalletApiMetricsService,
+    @Optional() private orchestratorMetrics?: WalletOrchestratorMetricsService,
+  ) {
+    this.prisma = prismaClient ?? new PrismaClient({} as any);
+  }
 
   constructor(private readonly encryptionService: EncryptionService) {}
 
@@ -194,6 +244,21 @@ export class WalletCreationOrchestrator {
       }
 
       // Awaited so the in-flight reservation is held until the wallet is
+      // actually persisted.
+
+      if (existing) {
+        // Guard 3: a retry without a key, or one whose key has since expired,
+        // still cannot duplicate a wallet.
+        const result: WalletOrchestrationResult = {
+          wallet: existing,
+          isNewWallet: false,
+          idempotencyKey,
+        };
+        this.recordCompletion(idempotencyKey, userId, network, result);
+        return result;
+      }
+
+      // Awaited so the in-flight reservation is held until the wallet is
       // actually persisted. Without the await, a concurrent retry would find
       // the reservation already released and could mint a second wallet.
       const wallet = await this.mint(userId, network, idempotencyKey);
@@ -204,9 +269,73 @@ export class WalletCreationOrchestrator {
       };
       this.recordCompletion(idempotencyKey, userId, network, result);
       return result;
+    } catch (error) {
+      const failedPhase =
+        error instanceof WalletOrchestrationError ? error.phase : undefined;
+
+      this.emitMetrics({
+        userId: request.userId,
+        network: request.network,
+        outcome: 'failed',
+        durationMs: Date.now() - startTime,
+        failedPhase,
+        requestId: resolvedRequestId,
+      });
+
+      this.logger.error(
+        `Wallet creation orchestration failed for user ${request.userId} requestId=${resolvedRequestId || 'N/A'}:`,
+        error,
+      );
+
+      if (
+        error instanceof ConflictException ||
+        error instanceof NotFoundException
+      ) {
+        throw error;
+      }
+
+      // A refused sponsorship request is a policy decision with a stable code,
+      // not an orchestration fault. Surfacing it as a typed 429 lets a client
+      // back off and retry after the window rolls, instead of seeing a 500 and
+      // retrying immediately.
+      const sponsorshipCode = (error as { code?: string })?.code;
+      if (typeof sponsorshipCode === 'string' && sponsorshipCode.startsWith('WALLET_SPONSORSHIP_')) {
+        throw new TooManyRequestsException({
+          code: sponsorshipCode,
+          message: (error as Error).message,
+        });
+      }
+
+      if (error instanceof WalletOrchestrationError) {
+        throw error;
+      }
+
+      throw new WalletOrchestrationError(
+        'Wallet creation orchestration failed',
+        'wallet-persist',
+        error,
+      );
     } finally {
       if (idempotencyKey) {
         this.inFlight.delete(idempotencyKey);
+      }
+    }
+  }
+
+  private emitMetrics(metrics: OrchestratorMetrics): void {
+    const parts = [
+      `outcome=${metrics.outcome}`,
+      `userId=${metrics.userId}`,
+      `network=${metrics.network}`,
+      `durationMs=${metrics.durationMs}`,
+    ];
+    if (metrics.requestId) {
+      parts.push(`requestId=${metrics.requestId}`);
+    }
+    if (metrics.failedPhase) parts.push(`failedPhase=${metrics.failedPhase}`);
+    if (metrics.phases) {
+      for (const [phase, ms] of Object.entries(metrics.phases)) {
+        parts.push(`phase.${phase}=${ms}ms`);
       }
     }
   }

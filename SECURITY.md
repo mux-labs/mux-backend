@@ -294,6 +294,36 @@ before any database work.
 Rejections log the request id and the stable code only — never the submitted
 label, which is user-supplied and untrusted.
 
+### Wallet Creation Sponsorship Limits
+
+Wallet creation spends sponsor resources (the base-reserve XLM the sponsor fronts
+plus the transaction fee). `WalletSponsorshipLimiter`
+(`src/wallets/wallet-sponsorship-limits.ts`) bounds how much a single caller can
+consume, checked inside the orchestrator transaction immediately before the
+wallet is minted and before the testnet faucet is touched — so a refused request
+spends nothing.
+
+- **Fail-closed by default.** Sponsorship is enabled *with default caps* when
+  nothing is configured. The failure mode of a missing variable must be
+  "default caps", never "no caps".
+- **A bad value never widens the allowance.** An unparsable, zero, or negative
+  cap falls back to the default, so a typo cannot remove the control.
+- **Check and consume are one step**, so two concurrent callers cannot both
+  observe "one slot left" and both take it.
+- **Replay spends nothing.** The gate runs after the idempotency and
+  existing-wallet checks, so a retried request or a get-or-create never consumes
+  a user's allowance.
+- **The kill-switch only removes.** `WALLET_SPONSORSHIP_ENABLED=false` refuses
+  sponsored creation outright; no value of the flag lifts the caps while
+  continuing to sponsor.
+- **Stable error codes** (`WALLET_SPONSORSHIP_PER_USER_LIMIT_REACHED`,
+  `_GLOBAL_LIMIT_REACHED`, `_DISABLED`, `_DEPENDENCY_UNAVAILABLE`) surfaced as
+  `429`, not `500`: the condition is a policy decision that clears when the
+  window rolls, so a client should back off rather than treat it as a fault.
+
+Scope: the counter is in-process, so a multi-replica deployment enforces the cap
+per replica. See [docs/WALLET-API.md](docs/WALLET-API.md#wallet-creation-sponsorship-limits).
+
 ---
 
 ## Security Contacts
