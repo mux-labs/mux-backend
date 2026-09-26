@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   PayloadTooLargeException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -27,6 +28,11 @@ import type {
   InvokeRequest,
   InvokeResult,
 } from './soroban-invoke.model';
+import {
+  resolveSorobanRpcRetryPolicy,
+  withSorobanRpcRetry,
+} from './soroban-rpc-retry';
+import type { SorobanRpcRetryPolicy } from './soroban-rpc-retry';
 
 /** DI token for {@link SorobanRpcPort}. */
 export const SOROBAN_RPC = 'SOROBAN_RPC';
@@ -103,19 +109,31 @@ export interface SorobanRpcPort {
  * 7. **Deny-by-default authz and kill-switch.** `SOROBAN_INVOKE_ENABLED`
  *    defaults to off.
  * 8. **Fail-closed on RPC outage.** An unreachable RPC refuses the invoke; it
- *    never falls through to submitting an unsimulated transaction.
- * 9. **No key material in logs or responses.** Only contract names, function
- *    names, ids and correlation ids are emitted.
+ *    never falls through to submitting an unsimulated transaction. Only
+ *    *transient* failures are retried, under a bounded attempt count, a bounded
+ *    total delay, and exponential backoff with full jitter (#953).
+ * 9. **A submit is never retried by default.** A lost submit response is
+ *    ambiguous — the transaction may have landed — so a blind retry risks a
+ *    duplicate on chain. Submission retries require an explicit
+ *    `SOROBAN_RPC_RETRY_SUBMIT=true`.
+ * 10. **No key material in logs or responses.** Only contract names, function
+ *    names, ids, attempt counts, and correlation ids are emitted.
  */
 @Injectable()
 export class SorobanInvokeService {
   private readonly logger = new Logger(SorobanInvokeService.name);
 
   constructor(
+    // Optional so the module can boot without a bound custody/RPC layer. The
+    // tokens are deliberately unbound in `SorobanInvokeModule`: an invoke that
+    // actually reaches the chain must not be able to run against a stub. The
+    // guard in `invoke()` refuses when either port is missing.
+    @Optional()
     @Inject(SOROBAN_RPC)
-    private readonly rpc: SorobanRpcPort,
+    private readonly rpc: SorobanRpcPort | undefined,
+    @Optional()
     @Inject(CONTRACT_REGISTRY)
-    private readonly registry: ContractRegistryPort,
+    private readonly registry: ContractRegistryPort | undefined,
     private readonly metrics: MetricsService,
   ) {}
 
@@ -149,6 +167,20 @@ export class SorobanInvokeService {
     this.assertEnabled(correlationId);
     this.assertAuthorized(actor, correlationId);
 
+    // Fail closed when the custody/RPC layer has not bound its ports: an
+    // invoke must never "succeed" without actually reaching the chain.
+    if (!this.rpc || !this.registry) {
+      this.metrics.incrementCounter('soroban_invoke_unbound_ports');
+      this.logger.error(
+        `invoke refused: RPC/registry port unbound correlationId=${correlationId}`,
+      );
+      throw new ServiceUnavailableException({
+        code: InvokeErrorCode.RPC_UNAVAILABLE,
+        message: 'Soroban RPC is not configured; invocation refused',
+        correlationId,
+      });
+    }
+
     // Local validation runs before any network call, so a malformed request
     // cannot be used to amplify RPC load.
     const entry = this.resolveAllowedFunction(request, correlationId);
@@ -171,21 +203,40 @@ export class SorobanInvokeService {
     };
 
     // Simulate first. A predicted revert must never be submitted.
-    let simulation: SimulatedTransaction;
-    try {
-      simulation = await this.rpc.simulate({
-        contractId,
-        functionName: request.functionName,
-        args: request.args,
-        network: request.network,
-        maxFee,
-      });
-    } catch (err) {
+    //
+    // `simulate` is a pure read, so a transient RPC blip is retried under the
+    // bounded policy. Exhausting the budget is still a refusal, never a
+    // submission of an unsimulated transaction.
+    const simulationResult = await withSorobanRpcRetry(
+      () =>
+        this.rpc.simulate({
+          contractId,
+          functionName: request.functionName,
+          args: request.args,
+          network: request.network,
+          maxFee,
+        }),
+      {
+        policy: this.rpcRetryPolicy(),
+        retryable: true,
+        operation: 'simulate',
+        signal: this.rpcAbortSignal(request),
+        onRetry: (info) =>
+          this.metrics.incrementCounter(`soroban_rpc_retry_${info.operation}`),
+      },
+    );
+
+    if (simulationResult.outcome !== 'success') {
       this.metrics.incrementCounter('soroban_rpc_unavailable');
+      if (simulationResult.attempts > 1) {
+        this.metrics.incrementCounter('soroban_rpc_retry_exhausted');
+      }
       this.logger.error(
         `soroban.invoke rpc failure contract=${request.contract} ` +
           `fn=${request.functionName} correlationId=${correlationId} ` +
-          `reason=${this.errorName(err)}`,
+          `attempts=${simulationResult.attempts} ` +
+          `outcome=${simulationResult.outcome} ` +
+          `reason=${this.errorName(simulationResult.error)}`,
       );
       throw new ServiceUnavailableException({
         code: InvokeErrorCode.RPC_UNAVAILABLE,
@@ -193,6 +244,8 @@ export class SorobanInvokeService {
         correlationId,
       });
     }
+
+    const simulation = simulationResult.value as SimulatedTransaction;
 
     if (!simulation?.success) {
       this.metrics.incrementCounter('soroban_simulation_reverted');
@@ -218,14 +271,53 @@ export class SorobanInvokeService {
 
     // Submission is delegated to the custody layer, which signs with the
     // wallet key. The orchestrator never handles key material itself.
-    const { transactionHash } = await this.rpc.submit({
-      contractId,
-      functionName: request.functionName,
-      args: request.args,
-      network: request.network,
-      maxFee,
-      signedTransaction: '',
-    });
+    //
+    // A submit is NOT retried by default: a lost response is ambiguous, and a
+    // blind retry can duplicate a transaction on chain. Retrying it requires an
+    // explicit SOROBAN_RPC_RETRY_SUBMIT=true, and only then do transient
+    // failures get another attempt.
+    const submitResult = await withSorobanRpcRetry(
+      () =>
+        this.rpc.submit({
+          contractId,
+          functionName: request.functionName,
+          args: request.args,
+          network: request.network,
+          maxFee,
+          signedTransaction: '',
+        }),
+      {
+        policy: this.rpcRetryPolicy(),
+        retryable: this.rpcRetryPolicy().retrySubmit,
+        operation: 'submit',
+        signal: this.rpcAbortSignal(request),
+        onRetry: (info) =>
+          this.metrics.incrementCounter(`soroban_rpc_retry_${info.operation}`),
+      },
+    );
+
+    if (submitResult.outcome !== 'success') {
+      this.metrics.incrementCounter('soroban_rpc_submit_failed');
+      if (submitResult.attempts > 1) {
+        this.metrics.incrementCounter('soroban_rpc_retry_exhausted');
+      }
+      this.logger.error(
+        `soroban.invoke submit failure contract=${request.contract} ` +
+          `fn=${request.functionName} correlationId=${correlationId} ` +
+          `attempts=${submitResult.attempts} ` +
+          `outcome=${submitResult.outcome} ` +
+          `reason=${this.errorName(submitResult.error)}`,
+      );
+      throw new ServiceUnavailableException({
+        code: InvokeErrorCode.RPC_UNAVAILABLE,
+        message: 'Soroban RPC unavailable; transaction not confirmed',
+        correlationId,
+      });
+    }
+
+    const { transactionHash } = submitResult.value as {
+      transactionHash: string;
+    };
 
     this.metrics.incrementCounter('soroban_invoke_submitted');
     // Contract and function names only — never arguments or key material.
@@ -244,6 +336,29 @@ export class SorobanInvokeService {
   }
 
   // ── internals ────────────────────────────────────────────────────────────
+
+  /**
+   * Resolves the RPC retry policy from the environment.
+   *
+   * Read per call rather than cached in the constructor so an operator can
+   * change the policy with a redeploy without a code change, and so a test can
+   * set the environment and observe the effect immediately.
+   */
+  private rpcRetryPolicy(): SorobanRpcRetryPolicy {
+    return resolveSorobanRpcRetryPolicy(process.env);
+  }
+
+  /**
+   * The abort signal for this request, if the runtime supplied one.
+   *
+   * Resolved defensively: not every Nest adapter, and no unit test, provides
+   * one. Retrying a request whose client has disconnected is pure waste against
+   * an RPC that is already struggling.
+   */
+  private rpcAbortSignal(request: InvokeRequest): AbortSignal | undefined {
+    const signal = (request as { abortSignal?: unknown }).abortSignal;
+    return signal instanceof AbortSignal ? signal : undefined;
+  }
 
   /**
    * Deny-by-default gate. Nothing is invoked until an operator opts in.
@@ -549,6 +664,11 @@ export class SorobanInvokeService {
     correlationId: string,
   ): Promise<string> {
     try {
+      // Unbound port (see the constructor): routed through the existing
+      // catch so it is reported and refused exactly like a registry outage.
+      if (!this.registry) {
+        throw new Error('contract registry port is unbound');
+      }
       const contractId = await this.registry.resolveContractId(
         contract,
         network,
