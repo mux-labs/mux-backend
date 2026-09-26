@@ -69,6 +69,13 @@ encrypted with AES-256-GCM, and held exclusively on the server. Private key mate
 never crosses the client boundary and is never returned from any API. All signing and
 transaction relaying happen server-side.
 
+5. **Data Integrity & Confidentiality**
+   - Unencrypted sensitive data (keys, seeds, private data)
+   - Cross-tenant data exposure
+   - Audit log tampering
+   - Unauthorized access to wallet balances or transaction history
+   - SSRF via webhook endpoint registration (see Webhook SSRF Allowlist below)
+
 - Custody and **relayer** vulnerabilities are treated as high severity. Wallet
   encryption keys, signing secrets, and sponsor/relayer accounts are **private** and
   must never be committed, logged, or exposed in error responses.
@@ -185,6 +192,46 @@ good faith, you may test systems within scope, provided you:
 
 We will not pursue civil or criminal action — and will not report you to
 platforms or law enforcement — for research that complies with this policy.
+
+### Webhook SSRF Allowlist
+
+Outbound webhook delivery is an SSRF surface: an endpoint URL is attacker-supplied
+input, and the backend makes the request. Every webhook target is therefore
+validated by `WebhookUrlAllowlistService` (`src/webhooks/webhook-url-allowlist.service.ts`).
+
+- **Deny-by-default.** A URL is accepted only if its host is listed in
+  `WEBHOOK_ALLOWED_HOSTS`. An empty or unset allowlist accepts **no** URLs, so a
+  deploy that forgets to configure it cannot be used as an internal prober.
+- **https only, fixed ports.** Plaintext `http` is refused, and only ports
+  443/8443 are permitted (plus anything an operator adds to
+  `WEBHOOK_BLOCKED_PORTS`).
+- **No internal targets.** Literal IPs in loopback, RFC1918, CGNAT, link-local
+  (including the `169.254.169.254` cloud-metadata address) and IPv6
+  unique-local/mapped ranges are rejected. This also covers the
+  IPv4-mapped-IPv6 spellings that `new URL()` normalizes to hex.
+- **No credential-bearing URLs.** `https://user:pass@host` is rejected.
+- **Enforced at two layers.** Registration and update
+  (`WebhookService.createEndpoint`/`updateEndpoint`) reject the write, and
+  `WebhookDispatchService.deliverWebhook` re-checks immediately before the
+  socket opens, so endpoints persisted before this control existed are still
+  never called.
+- **Stable error codes.** `WEBHOOK_URL_INVALID`, `WEBHOOK_URL_SCHEME_NOT_ALLOWED`,
+  `WEBHOOK_URL_BLOCKED_HOST`, `WEBHOOK_URL_PORT_NOT_ALLOWED`,
+  `WEBHOOK_URL_NOT_ALLOWLISTED`.
+- **Kill-switch.** `WEBHOOK_SSRF_PROTECTION_ENABLED=false` disables all outbound
+  webhooks. There is no "allow everything" bypass — turning the protection off
+  turns webhooks off.
+- **No leakage.** Rejection logs and the dispatch counter carry only the stable
+  code and the host; webhook secrets and full URLs (which may embed a token in
+  the query string) are never logged.
+
+Operational notes: set `WEBHOOK_ALLOWED_HOSTS` to your customer domains before
+enabling webhooks — with the default empty allowlist, endpoint registration
+returns `400 WEBHOOK_URL_NOT_ALLOWLISTED` by design. See
+[docs/webhook-ssrf-allowlist.md](docs/webhook-ssrf-allowlist.md) for the full
+runbook.
+
+---
 
 ## Security Contacts
 
