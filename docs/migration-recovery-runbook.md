@@ -18,6 +18,14 @@ This runbook provides procedures for detecting, diagnosing, and recovering from 
 | Constraint violation | Backfill data → Rollback → Retry | 15-30 min |
 | Lock timeout | Kill blocking query → Retry | 5 min |
 | Key envelope migration failure | Halt writes → Verify version → Rollback → Retry | 15-30 min |
+| **Tabletop rehearsal** | **Walk [`docs/migration-recovery-tabletop.md`](./migration-recovery-tabletop.md) — quarterly, talk-through only** | **60 min** |
+
+> **Tabletop:** every scenario above should be rehearsed before you need it.
+> [`docs/migration-recovery-tabletop.md`](./migration-recovery-tabletop.md)
+> defines the injects, roles, timebox, abort conditions, and after-action
+> record. The runbook's commands are checked against `package.json` by
+> `test/migration-recovery-tabletop.e2e-spec.ts`, so a script that no longer
+> exists fails CI rather than failing an operator at 3am.
 
 ---
 
@@ -73,7 +81,7 @@ psql -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_stat_activity WHERE state = 'a
 3. **Rollback (Prisma handles this)**
    ```bash
    # Prisma automatically rolls back failed migrations
-   npm run prisma:migrate:resolve -- --rolled-back <migration-name>
+   pnpm exec prisma migrate resolve --rolled-back <migration-name>
    ```
 
 4. **Fix the migration file**
@@ -82,7 +90,7 @@ psql -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_stat_activity WHERE state = 'a
 
 5. **Retry migration**
    ```bash
-   npm run prisma:migrate:deploy
+   pnpm prisma:migrate:prod
    ```
 
 6. **Restart application**
@@ -113,12 +121,12 @@ psql -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_stat_activity WHERE state = 'a
 
 3. **Rollback migration**
    ```bash
-   npm run prisma:migrate:resolve -- --rolled-back <migration-name>
+   pnpm exec prisma migrate resolve --rolled-back <migration-name>
    ```
 
 4. **Retry after data fix**
    ```bash
-   npm run prisma:migrate:deploy
+   pnpm prisma:migrate:prod
    ```
 
 ### Scenario 3: Lock Timeout
@@ -146,7 +154,7 @@ psql -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_stat_activity WHERE state = 'a
 
 4. **Retry migration**
    ```bash
-   npm run prisma:migrate:deploy
+   pnpm prisma:migrate:prod
    ```
 
 ### Scenario 4: Hung Migration
@@ -175,7 +183,7 @@ psql -U $DB_USER -d $DB_NAME -c "SELECT * FROM pg_stat_activity WHERE state = 'a
 
 4. **Mark migration as rolled back**
    ```bash
-   npm run prisma:migrate:resolve -- --rolled-back <migration-name>
+   pnpm exec prisma migrate resolve --rolled-back <migration-name>
    ```
 
 5. **Investigate root cause** before retry
@@ -254,7 +262,7 @@ All responses include a `correlationId` for tracing; errors are actionable and n
 
 4. **Re-run the migration** behind the flag, then re-enable writes:
    ```bash
-   npm run prisma:migrate:deploy
+   pnpm prisma:migrate:prod
    kubectl set env deployment/mux-api KEY_MIGRATION_ENABLED=true
    ```
 
@@ -315,21 +323,35 @@ here.
 
 1. **Verify database consistency**
    ```bash
-   npm run prisma:generate
-   npm run prisma:migrate:status
+   pnpm prisma:generate
+   pnpm exec prisma migrate status
    ```
 
 2. **Run integrity checks**
+
+   The old `db:integrity-check` script does not exist. Use the gates that
+   actually run, and remember they are fail-closed — a non-zero exit means
+   do **not** re-enable traffic yet.
+
    ```bash
-   npm run db:integrity-check
+   pnpm prisma:check-migrations   # migration naming/lockfile invariants
+   pnpm verify:key-consolidation  # custody-key invariants, exit 1 on findings
+   pnpm test:scripts              # verifier + migration-naming unit tests
    ```
 
 3. **Test critical flows**
+
+   The old `test:integration` suites no longer exist. Exercise the real
+   e2e specs for the paths the migration touched:
+
    ```bash
-   npm run test:integration -- --suite=payments
-   npm run test:integration -- --suite=wallets
-   npm run test:integration -- --suite=recovery
+   pnpm test:e2e -- test/payments-limits.e2e-spec.ts
+   pnpm test:e2e -- test/wallets.e2e-spec.ts
+   pnpm test:e2e -- test/key-management.e2e-spec.ts
    ```
+
+   These require PostgreSQL (`DATABASE_URL`) — see the CI `e2e-tests` job for
+   the expected environment.
 
 4. **Monitor application health**
    ```bash
@@ -345,7 +367,7 @@ here.
 1. **Test migrations locally first**
    ```bash
    docker-compose up -d postgres
-   npm run prisma:migrate:dev
+   pnpm prisma:migrate
    ```
 
 2. **Write idempotent migrations**
@@ -387,7 +409,7 @@ ALTER TABLE payments ALTER COLUMN assetCode SET NOT NULL;
 | Error | Cause | Fix |
 |-------|-------|-----|
 | `relation already exists` | Migration already applied | Check `_prisma_migrations` table, mark as rolled-back |
-| `column does not exist` | Schema mismatch | Regenerate Prisma client: `npm run prisma:generate` |
+| `column does not exist` | Schema mismatch | Regenerate Prisma client: `pnpm prisma:generate` |
 | `deadlock detected` | Concurrent migrations | Ensure migrations run serially, check app replicas |
 | `statement timeout` | Large table operation | Increase timeout or break into smaller batches |
 | `disk space low` | Insufficient storage | Add disk space or clean old transaction logs |
