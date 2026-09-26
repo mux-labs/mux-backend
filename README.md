@@ -1263,6 +1263,33 @@ Testing
 
 Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
 
+### Today Usage (authoritative backend)
+
+A client that needs to know how much of its daily limit it has consumed must not
+be trusted to compute it. `UsageService.getTodayUsage(walletId)` in
+`src/transactions/transaction-usage.service.ts` is the authoritative backend for
+"used so far today":
+
+* **Server-derived, never client-supplied.** The figure is a `GROUP BY` over
+  the wallet's own transactions. There is no request field a caller can use to
+  assert a total, so usage cannot be understated to unlock a spend policy would
+  refuse.
+* **UTC calendar day.** The window is `[00:00Z, next 00:00Z)`, derived
+  server-side from an injectable clock. A client cannot widen or shift the
+  window, which is what stops "reset the counter by moving the clock".
+* **Exact decimal arithmetic.** Amounts are summed as scaled `BigInt`, never as
+  JS `Number` — the sum feeds a spending limit, so a rounding error would be a
+  limit bypass.
+* **Fail closed.** A store outage raises `USAGE_STORE_UNAVAILABLE`. The service
+  never reports `0` for a query it did not answer: a false zero reads as "full
+  allowance available", which is the dangerous direction to fail in. A
+  malformed aggregate is `USAGE_STORE_CONTRACT_VIOLATION` rather than being
+  coerced to zero.
+* `PENDING` and `CONFIRMED` count; `FAILED` does not.
+
+Stable codes: `USAGE_INVALID_WALLET_ID`, `USAGE_STORE_UNAVAILABLE`,
+`USAGE_STORE_CONTRACT_VIOLATION`. Each outcome increments a `usage_*` counter.
+
 ### Transaction Memo Validation
 
 The `memo` field is client-supplied free text that is stored, indexed, searchable
