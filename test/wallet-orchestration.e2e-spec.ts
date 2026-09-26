@@ -10,7 +10,15 @@
  * Stellar connection is required.
  */
 import { Test } from '@nestjs/testing';
-import { INestApplication, HttpStatus, ValidationPipe } from '@nestjs/common';
+import {
+  ConflictException,
+  ForbiddenException,
+  INestApplication,
+  HttpStatus,
+  NotFoundException,
+  ServiceUnavailableException,
+  ValidationPipe,
+} from '@nestjs/common';
 import request from 'supertest';
 import { WalletCreationOrchestratorModule } from '../src/wallets/wallet-creation-orchestrator.module';
 import { WalletCreationOrchestrator } from '../src/wallets/wallet-creation-orchestrator.service';
@@ -18,6 +26,7 @@ import { WalletNetwork, WalletStatus } from '../src/wallets/domain/wallet.model'
 import { ApiKeyGuard } from '../src/api-keys/api-key.guard';
 import { ApiKeyService } from '../src/api-keys/api-key.service';
 import { Reflector } from '@nestjs/core';
+import { RequestIdInterceptor } from '../src/common/interceptors/request-id.interceptor';
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -67,7 +76,16 @@ const makeApiKeyService = (): Partial<ApiKeyService> => ({
 
 async function buildApp(
   orchestratorOverrides: Partial<WalletCreationOrchestrator> = {},
+  { featureFlagEnabled = true }: { featureFlagEnabled?: boolean } = {},
 ): Promise<INestApplication> {
+  // The controller is gated by FEATURE_WALLET_ORCHESTRATOR (deny-by-default).
+  // Enable it for the happy-path cases; the disabled case opts out explicitly.
+  const previousFlag = process.env.FEATURE_WALLET_ORCHESTRATOR;
+  if (featureFlagEnabled) {
+    process.env.FEATURE_WALLET_ORCHESTRATOR = 'true';
+  } else {
+    delete process.env.FEATURE_WALLET_ORCHESTRATOR;
+  }
   const mockOrchestrator: Partial<WalletCreationOrchestrator> = {
     createWallet: jest.fn(async () => makeOrchestrationResult()),
     getWalletByUser: jest.fn(async () => makeWallet()),
@@ -87,15 +105,33 @@ async function buildApp(
     .compile();
 
   const app = moduleRef.createNestApplication();
+  const originalClose = app.close.bind(app);
+  // The app applies the version prefix globally; every route in this suite is
+  // addressed as /v1/...
+  app.setGlobalPrefix('v1');
   app.useGlobalPipes(
     new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
   );
   // Apply API key guard with a mock service that always passes
+  // Echo the correlation id back so callers can correlate retries — critical
+  // for the retry/replay path this suite covers.
+  app.useGlobalInterceptors(new RequestIdInterceptor());
   const reflector = app.get(Reflector);
   app.useGlobalGuards(
     new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector),
   );
   await app.init();
+
+  // Restore the ambient value so one case cannot leak the flag into another.
+  app.close = (async () => {
+    if (previousFlag === undefined) {
+      delete process.env.FEATURE_WALLET_ORCHESTRATOR;
+    } else {
+      process.env.FEATURE_WALLET_ORCHESTRATOR = previousFlag;
+    }
+    return originalClose();
+  }) as typeof app.close;
+
   return app;
 }
 
@@ -161,7 +197,6 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
     });
 
     it('returns 404 when user is not found', async () => {
-      const { NotFoundException } = await import('@nestjs/common');
       const localApp = await buildApp({
         createWallet: jest.fn(async () => {
           throw new NotFoundException('User not found');
@@ -178,7 +213,6 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
     });
 
     it('returns 409 on idempotency key conflict', async () => {
-      const { ConflictException } = await import('@nestjs/common');
       const localApp = await buildApp({
         createWallet: jest.fn(async () => {
           throw new ConflictException('Idempotency key conflict');
@@ -202,12 +236,13 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
     });
 
     it('returns 403 when the feature flag is disabled (fail-closed)', async () => {
-      const { ForbiddenException } = await import('@nestjs/common');
-      const localApp = await buildApp({
-        createWallet: jest.fn(async () => {
-          throw new ForbiddenException('Wallet orchestration is disabled');
-        }),
-      });
+      // Deny-by-default: with FEATURE_WALLET_ORCHESTRATOR unset the guard
+      // rejects the request before any orchestrator logic runs.
+      const createWallet = jest.fn(async () => makeOrchestrationResult());
+      const localApp = await buildApp(
+        { createWallet },
+        { featureFlagEnabled: false },
+      );
 
       await request(localApp.getHttpServer())
         .post('/v1/wallets/orchestration/create')
@@ -219,7 +254,6 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
     });
 
     it('returns 503 when a dependency (RPC/DB) is unavailable (fail-closed)', async () => {
-      const { ServiceUnavailableException } = await import('@nestjs/common');
       const localApp = await buildApp({
         createWallet: jest.fn(async () => {
           throw new ServiceUnavailableException('Wallet backend unavailable');

@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { randomBytes, randomUUID } from 'crypto';
+import { Keypair } from '@stellar/stellar-sdk';
 import { StrKeyHelper, StrKeyType } from './utils/strkey.helper';
 
 /**
@@ -18,11 +19,16 @@ export class KeyManagementService {
   constructor(private readonly strKeyHelper: StrKeyHelper) {}
 
   /**
-   * Generate a new Stellar keypair.
-   * Returns only the public key and a reference ID.
-   * The private key is returned once and must be stored
-   * securely by the caller.
+   * Generate a new Stellar Ed25519 keypair.
+   *
+   * The secret seed is drawn from a CSPRNG and the public key is derived from
+   * it. The private key is returned once and the caller is responsible for
+   * encrypting it via `EncryptionService` before persisting it — plaintext key
+   * material must never reach the database.
    */
+  // `async` keeps the public contract promise-based for the key-rotation and
+  // signing call sites, which await it inside a transaction.
+  // eslint-disable-next-line @typescript-eslint/require-await
   async generateKey(): Promise<{
     id: string;
     publicKey: string;
@@ -30,18 +36,20 @@ export class KeyManagementService {
     version: number;
   }> {
     const id = randomUUID();
-    const publicKeyBuffer = Buffer.alloc(32);
-    const privateKeyBuffer = Buffer.alloc(32);
 
-    // Use CSPRNG to fill the buffers
-    for (let i = 0; i < 32; i++) {
-      publicKeyBuffer[i] = Math.floor(Math.random() * 256);
-      privateKeyBuffer[i] = Math.floor(Math.random() * 256);
-    }
+    // `crypto.randomBytes` is a CSPRNG. `Math.random()` is NOT: it is a
+    // fast non-cryptographic PRNG whose internal state can be reconstructed
+    // from observed outputs, so a keypair derived from it is predictable.
+    // Custody keys must never come from Math.random().
+    const privateKeyBuffer = randomBytes(32);
+
+    // The Ed25519 public key is derived from the seed by the curve itself
+    // rather than drawn independently, so this is a real keypair.
+    const keypair = Keypair.fromRawEd25519Seed(privateKeyBuffer);
+    const publicKeyBuffer = Buffer.from(keypair.rawPublicKey());
 
     // Use StrKeyHelper for proper StrKey encoding
-    const publicKey =
-      this.strKeyHelper.encodeEd25519PublicKey(publicKeyBuffer);
+    const publicKey = this.strKeyHelper.encodeEd25519PublicKey(publicKeyBuffer);
     const privateKey =
       this.strKeyHelper.encodeEd25519SecretSeed(privateKeyBuffer);
     const version = 1;

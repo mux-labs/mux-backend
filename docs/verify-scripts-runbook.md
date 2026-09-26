@@ -11,6 +11,7 @@ custody, wallet-orchestration, and idempotent-user invariants in CI
 | 1 | `verify-encryption.sh` | Wallet private keys are encrypted before database storage and only decrypted inside controlled signing paths |
 | 2 | `verify-encryption.sh` | `WALLET_ENCRYPTION_KEY` is environment-driven and validated at boot (≥32 chars, placeholder rejection) |
 | 3 | `verify-encryption.sh` | Decryption failures surface stable error codes — never a plaintext fallback |
+| 3a | `verify-encryption.sh` | No plaintext key material is **returned, persisted, or logged**; wallet creation emits the AES-256-GCM envelope only |
 | 4 | `verify-orchestrator.sh` | Wallet creation is atomic, one-wallet-per-user per network, and idempotent |
 | 5 | `verify-orchestrator.sh` | Wallet creation is gated by `FEATURE_WALLET_ORCHESTRATOR` (deny-by-default) and fails closed on dependency outage |
 | 6 | `verify-idempotent-user.sh` | `findOrCreateUser` returns the existing user on replay; `authId` is unique in the schema |

@@ -44,8 +44,14 @@ const keyManagementService = app.get(KeyManagementService);
 
 // Generate a new keypair
 const keypair = await keyManagementService.generateKey();
-console.log(keypair.publicKey); // GABC...
-console.log(keypair.privateKey); // SABC...
+
+// The public key is safe to log. The secret seed is NOT: never write it to a
+// log, a response body, or the database in plaintext.
+logger.log(`generated public key ${keypair.publicKey}`); // GABC...
+
+// Encrypt the secret seed with EncryptionService before persisting it. Only
+// the envelope (ciphertext + iv + tag) may reach the database.
+const encryptedSecret = encryptionService.encryptAndSerialize(keypair.privateKey);
 
 // Validate a public key
 const isValid = keyManagementService.validatePublicKey('GABC...');
