@@ -762,6 +762,27 @@ Key authentication-related environment variables (when applicable):
 
 ---
 
+## Cron Schedules
+
+Every scheduled job in the backend — its endpoint, recommended cadence,
+idempotency guard, authentication, failure modes, and operator runbook — is
+documented in **[docs/CRON-SCHEDULES.md](docs/CRON-SCHEDULES.md)**.
+
+In short:
+
+- Internal jobs are **deny-by-default** and require the `X-Cron-Secret` header
+  matching `CRON_SECRET`. A missing/unset/mismatched secret rejects the request
+  **before any job logic runs**; there is no fallback credential.
+- Comparison is constant-time (`crypto.timingSafeEqual`) and the secret is never
+  logged or returned in an error body.
+- Every job is **replay-safe**: a duplicated or overlapping trigger must not
+  produce duplicate side effects, and every batch parameter is clamped.
+- Adding a new scheduled job requires updating the schedule table *and*
+  `test/cron-schedule-docs.e2e-spec.ts` in the same PR.
+
+The access-control and rotation policy lives in
+[SECURITY.md](SECURITY.md#internal-cron-jobs--secret-guard).
+
 ## Idempotency TTL Cleanup
 
 Every money-path write carrying an idempotency key inserts an
@@ -1035,7 +1056,13 @@ All sync and reconciliation operations create a `BalanceSyncJob` record for audi
 | `POST` | `/balances/wallet/:walletId/sync` | Manually trigger sync for a single wallet |
 | `POST` | `/balances/sync-all` | Manually trigger full sync for all active wallets (admin) |
 | `POST` | `/balances/wallet/:walletId/reconcile` | Reconcile wallet balance with on-chain state |
+| `POST` | `/balances/wallet/:walletId/sync-with-retry` | Sync one wallet, retrying transient Horizon failures |
+| `GET` | `/balances/wallet/:walletId/stale` | Report balances not refreshed within the staleness budget |
 | `POST` | `/balances/reconcile-all` | Reconcile all balances (admin) |
+| `POST` | `/balances/scheduled-sync` | Manually trigger the scheduled sweep |
+
+Balance **writes** are gated by `BALANCE_SYNC_ENABLED` (default `false`, fail-closed);
+reads are always available. See [Horizon balance reconciliation](docs/WALLET-API.md#horizon-balance-reconciliation).
 
 ### Environment Variables
 
