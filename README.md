@@ -1322,7 +1322,7 @@ Endpoint semantics, idempotency, lifecycle events, dependency retries, and
 metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 
 - `POST /wallets` - create wallet
-- `GET /wallets` - list all wallets
+- `GET /wallets` - list wallets (paginated, filterable — see below)
 - `GET /wallets/user/:userId` - list wallets by userId (#189)
 - `GET /wallets/:id` - get wallet by id
 - `GET /wallets/:id/status` - get wallet status (#185)
@@ -1330,6 +1330,50 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 - `PATCH /wallets/:id` - update wallet status
 - `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
+
+### Listing wallets
+
+`GET /wallets` returns a **paginated envelope** rather than a bare array.
+
+| Query param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `userId` | string | — | Restrict to one owner. |
+| `network` | `TESTNET` \| `MAINNET` | — | Restrict to one network. |
+| `status` | wallet status enum | — | Restrict to one lifecycle status. |
+| `includeArchived` | `true` \| `false` | `false` | Archived wallets are excluded by default. |
+| `limit` | integer `1`–`100` | `20` | Hard ceiling; `1000` is rejected with `400`. |
+| `offset` | integer `>= 0` | `0` | |
+| `loadTestMode` | `true` \| `false` | `false` | Synthetic data; `403` in production. |
+
+**Response (200 OK)**:
+```json
+{
+  "data": [ /* wallets */ ],
+  "total": 137,
+  "limit": 20,
+  "offset": 0,
+  "hasMore": true
+}
+```
+
+`total` is the number of rows matching the **filters** (ignoring pagination);
+`hasMore` tells you whether another page exists, so a client can advance without
+a probe request.
+
+**Filter values are validated, not coerced** ([#936](https://github.com/mux-labs/mux-backend/issues/936)):
+
+- `network` and `status` are checked against closed enums. `?network=testnet`
+  (lower case) or `?network=NOT_A_NETWORK` is rejected with `400` rather than
+  reaching the database — an unvalidated value would silently widen the result
+  set across **testnet and mainnet** instead of failing.
+- `limit` must be an integer in `[1, 100]` and `offset` a non-negative integer;
+  `?limit=all` and `?limit=0` are rejected with `400`.
+- Unknown query parameters are rejected (`forbidNonWhitelisted`), so a typo
+  cannot be silently ignored.
+- `includeArchived` and `loadTestMode` are enabled only by the literal string
+  `true`; `1` and `yes` do **not** enable them.
+- The service clamps `limit`/`offset` again internally, so any future
+  non-HTTP caller is bounded too.
 
 ### Wallet Nickname
 

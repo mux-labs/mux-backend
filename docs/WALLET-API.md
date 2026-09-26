@@ -116,7 +116,85 @@ for tracing. Errors use the stable codes below.
 
 ### `POST /v1/payment-wallets`
 
+## Listing wallets
+
+`GET /v1/wallets` returns a paginated envelope:
+
+```json
+{
+  "data": ["..."],
+  "total": 137,
+  "limit": 20,
+  "offset": 0,
+  "hasMore": true
+}
+```
+
+| Query param | Type | Default | Notes |
+| ----------- | ---- | ------- | ----- |
+| `userId`    | string | — | Restrict to one owner. |
+| `network`   | `TESTNET` \| `MAINNET` | — | Closed enum; see invariant 4. |
+| `status`    | wallet status enum | — | Closed enum. |
+| `includeArchived` | `true` \| `false` | `false` | Archived wallets excluded by default. |
+| `limit`     | integer `1`–`100` | `20` | Hard ceiling. |
+| `offset`    | integer `>= 0` | `0` | |
+| `loadTestMode` | `true` \| `false` | `false` | Synthetic data; `403` in production. |
+
+### Listing invariants
+
+4. **Network isolation is enforced by the filter, not by convention.** `network`
+   and `status` are validated against closed enums. An unrecognised value —
+   `?network=NOT_A_NETWORK`, or a lower-case `?network=testnet` — is rejected
+   with `400` and never reaches the database. A silently-widened filter would
+   return wallets from **both** testnet and mainnet to a caller that believes it
+   asked for one network; on a custody surface that is a correctness bug, not a
+   cosmetic one.
+5. **The page size is bounded.** `limit` must be an integer in `[1, 100]` and
+   `offset` a non-negative integer, so a single request cannot pull an unbounded
+   slice of the wallet table. The service clamps both again internally, so a
+   future non-HTTP caller is bounded too.
+6. **Deny-by-default on query shape.** Unknown query parameters are rejected
+   (`forbidNonWhitelisted`), so a typo cannot be silently ignored. Boolean
+   flags are enabled only by the literal string `true`.
+7. **Ordering is stable.** Results are ordered newest-first, so paging cannot
+   overlap or skip rows while wallets are being created concurrently.
+
+Errors use the stable codes in
+[`src/common/dto/error-envelope.dto.ts`](../src/common/dto/error-envelope.dto.ts);
+a rejected filter is a `400` and never a partial or unfiltered result set.
+
+---
+
+## Idempotency
+
 Link a payment wallet to an identity.
+
+Request:
+
+```json
+{
+  "identityId": "uuid",
+  "walletAddress": "G...",
+  "chain": "stellar"
+}
+```
+
+Behavior:
+
+- Requires `owner` role.
+- Idempotent on `(identityId, walletAddress, chain)`. A replay returns the
+  existing linkage with `200`; a new linkage returns `201`.
+- Fails closed if the database is unavailable.
+
+### `DELETE /v1/payment-wallets/:id`
+
+Unlink a payment wallet.
+
+Behavior:
+
+- Requires `owner` or `guardian` role.
+- Idempotent: unlinking an already-revoked linkage returns `200`.
+
 
 Request:
 
