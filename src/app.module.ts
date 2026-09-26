@@ -34,6 +34,7 @@ import { TracingModule } from './tracing/tracing.module';
 import { ApiChangelogModule } from './api-changelog/api-changelog.module';
 import { BackupModule } from './backup/backup.module';
 import { SloModule } from './common/slo/slo.module';
+import { CorsModule } from './common/http/cors.module';
 import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
 import { ResponseSanitizerInterceptor } from './common/interceptors/response-sanitizer.interceptor';
 
@@ -68,6 +69,8 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     ApiChangelogModule,
     BackupModule,
     SloModule,
+    // Read-only, authenticated view of the effective CORS allowlist (#934).
+    CorsModule,
   ],
   controllers: [AppController],
   providers: [

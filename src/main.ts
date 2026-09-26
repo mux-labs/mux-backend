@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 import { configureBodySizeLimit } from './common/http/body-size-limit';
+import { buildCorsOptions } from './common/http/cors';
 import { validateEnv } from './config/env.validation';
 import { IsoUtcTimestampInterceptor } from './common/interceptors';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -18,38 +19,14 @@ async function bootstrap() {
 
   configureBodySizeLimit(app, env.JSON_BODY_LIMIT_BYTES);
 
-  // Configure CORS with credentials support
-  // Only allow credentials when explicitly whitelisted origins are used.
-  // CORS_ORIGINS is validated (comma-separated list of http/https URLs) in
-  // src/config/env.validation.ts, defaulting to http://localhost:3000.
-  const corsOrigins = env.CORS_ORIGINS;
-  app.enableCors({
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
-      if (!origin || corsOrigins.includes(origin)) {
-        callback(null, true);
-      } else {
-        callback(new Error('Not allowed by CORS'), false);
-      }
-    },
-    credentials: true,
-    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-API-Key',
-      'X-Request-ID',
-      'X-Client-Version',
-    ],
-    exposedHeaders: [
-      'X-Request-ID',
-      'X-RateLimit-Remaining',
-      'X-RateLimit-Reset',
-    ],
-    maxAge: 3600,
-  });
+  // Configure CORS with credentials support.
+  //
+  // Origins are matched **exactly** against the `CORS_ORIGINS` allowlist — no
+  // suffix or wildcard matching, so `evil.com/?x=https://app.mux.finance`
+  // cannot be admitted. Wildcard entries are dropped (they are invalid
+  // alongside `credentials: true`). See src/common/http/cors.ts and the
+  // authenticated `GET /v1/internal/cors-allowlist` dashboard.
+  app.enableCors(buildCorsOptions(env.CORS_ORIGINS));
 
   // Attach request logging middleware early in the pipeline
   app.use(requestLogger as any);

@@ -444,6 +444,72 @@ A new developer API route is available: `GET /developers/:id/projects` returns t
 
 ---
 
+### Cross-origin browser access (CORS)
+
+Browser clients must be allowlisted via the `CORS_ORIGINS` environment variable
+(see [.env.example](.env.example)). The policy is defined in
+[`src/common/http/cors.ts`](src/common/http/cors.ts) and is **deny-by-default**:
+
+- **Exact match only.** An origin is admitted only on a literal, normalized
+  match against the allowlist. There is no suffix, subdomain, or wildcard
+  matching — an entry for `https://app.mux.finance` does **not** admit
+  `https://evil.app.mux.finance`, `https://app.mux.finance.evil.com`, or
+  `https://app.mux.finance@evil.com`.
+- **Wildcards are rejected, not honoured.** An entry of `*` or
+  `https://*.mux.finance` is dropped and reported. `*` is invalid alongside
+  `credentials: true` and would hand every origin access to authenticated
+  responses.
+- **Credentials stay enabled** (`credentials: true`) because the dashboard uses
+  session-bearing requests. This is only safe because
+  `Access-Control-Allow-Origin` is always a specific allowlisted origin and
+  never `*`.
+- **Non-browser callers are unaffected.** A request with no `Origin` header is
+  not a browser cross-origin request, so it is allowed. CORS is a
+  browser-enforced mechanism and must not become an auth layer for curl or
+  server-to-server clients — those are authenticated by API key/JWT as usual.
+- **Scheme and port are part of the identity.** `http://app.mux.finance` and
+  `https://app.mux.finance:8443` are different origins and are not admitted by
+  an `https://app.mux.finance` entry.
+
+#### `GET /internal/cors-allowlist`
+
+The dashboard for the allowlist. Returns the **effective** policy so an operator
+or a support engineer debugging a blocked browser request does not have to read
+env vars.
+
+**Authentication**: required (API key). It is deny-by-default — an anonymous
+caller gets `401` and cannot enumerate the allowlist.
+
+**Response (200 OK)**:
+```json
+{
+  "origins": ["https://app.mux.finance", "https://partner.example.com"],
+  "rejected": [
+    { "entry": "*", "reason": "wildcard origins are not allowed with credentials enabled" }
+  ],
+  "usingDefault": false,
+  "production": true,
+  "credentials": true,
+  "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  "allowedHeaders": ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Client-Version"],
+  "exposedHeaders": ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+  "maxAgeSeconds": 3600
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `origins` | Origins admitted by exact match. |
+| `rejected` | Configured entries that were dropped, with the reason. This is the field that answers "why is my origin blocked?". |
+| `usingDefault` | `true` when `CORS_ORIGINS` is unset and the `http://localhost:3000` default applies. A production deployment should never report `true`. |
+| `production` | Whether `NODE_ENV=production`, for display only. |
+
+This endpoint is **read-only** — there is no `POST`/`PUT`/`DELETE`. Changing the
+allowlist is a deployment concern, not an API one. The response contains only
+origin strings and header names: entries that are not valid `http(s)` origins
+are reported in `rejected` rather than echoed, so a secret mistakenly pasted
+into `CORS_ORIGINS` is never reflected back through the API.
+
 ## Security Model (MVP)
 
 * Private keys are never exposed to clients
