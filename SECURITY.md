@@ -259,6 +259,41 @@ flight — so indexer lag is treated as a first-class, alertable signal.
 
 See [docs/indexer-lag-metrics.md](docs/indexer-lag-metrics.md) for the runbook.
 
+### Wallet Nickname Store
+
+A wallet nickname is a user-supplied label rendered in dashboards, so the store
+treats it as untrusted input. `PATCH /v1/wallets/:id/nickname` is bounded and
+normalized by `resolveNicknameToStore` (`src/wallets/wallet-nickname-safety.ts`)
+before any database work.
+
+- **Bounded work, then bounded result.** The raw input is length-checked *before*
+  sanitization, so an oversized "nickname" is rejected without running the
+  sanitizer's regex chain or a database round trip over it.
+- **Length is counted in Unicode code points, not UTF-16 units.** A 100-character
+  label made of emoji is 200 UTF-16 units and is within the documented limit;
+  counting units would wrongly reject it. The limit is enforced in exactly one
+  place — the store — so the DTO and the service cannot disagree.
+- **Rejection, never silent truncation.** A label that is too long after
+  sanitization is rejected, not cut. A truncated label can collide with another
+  wallet's nickname and produce a duplicate the uniqueness check cannot explain.
+- **No coercion.** A non-string (`123`, `{}`) is rejected rather than becoming
+  `"123"` or `"[object Object]"`.
+- **NFC-normalized.** Two visually identical labels typed with different Unicode
+  normalizations collapse to the same string, so they collide in the per-owner
+  uniqueness check instead of coexisting as indistinguishable duplicates.
+- **Stored XSS defense in depth.** Tag-like sequences, `javascript:` schemes,
+  inline `on*` handlers, and control characters are stripped, and internal
+  whitespace runs left behind by a stripped tag are collapsed. The response is
+  still escaped by consumers; this is a second layer, not a replacement.
+- **Fail-closed on a store outage.** A database failure returns `503` and no
+  write is reported as successful. The raw Prisma/driver message is never
+  returned to the client — it can carry connection strings or table names.
+- **Stable error codes.** `WALLET_NICKNAME_INVALID_INPUT`,
+  `WALLET_NICKNAME_DUPLICATE`, `WALLET_NICKNAME_DEPENDENCY_UNAVAILABLE`.
+
+Rejections log the request id and the stable code only — never the submitted
+label, which is user-supplied and untrusted.
+
 ---
 
 ## Security Contacts
