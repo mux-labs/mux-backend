@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
 
 /**
  * Header used to propagate a correlation id across services and logs.
@@ -142,7 +143,9 @@ export class RequestIdInterceptor implements NestInterceptor {
       user?: unknown;
       apiKey?: unknown;
     }>();
-    const response = http.getResponse<{ setHeader?: (name: string, value: string) => void }>();
+    const response = http.getResponse<{
+      setHeader?: (name: string, value: string) => void;
+    }>();
 
     const requestId = this.resolveRequestId(request?.headers);
 
@@ -186,7 +189,9 @@ export class RequestIdInterceptor implements NestInterceptor {
     const authenticated = Boolean(request.user) || Boolean(request.apiKey);
 
     if (!authenticated) {
-      const error = new Error('Authentication required for this endpoint') as Error & {
+      const error = new Error(
+        'Authentication required for this endpoint',
+      ) as Error & {
         status?: number;
         code?: string;
         requestId?: string;
@@ -203,7 +208,9 @@ export class RequestIdInterceptor implements NestInterceptor {
    * anything else is replaced with a freshly generated UUID.
    */
   private resolveRequestId(headers?: Record<string, unknown>): string {
-    const raw = headers?.[REQUEST_ID_HEADER] ?? headers?.[REQUEST_ID_HEADER.toUpperCase()];
+    const raw =
+      headers?.[REQUEST_ID_HEADER] ??
+      headers?.[REQUEST_ID_HEADER.toUpperCase()];
     const candidate = Array.isArray(raw) ? raw[0] : raw;
 
     if (typeof candidate !== 'string') {
@@ -221,5 +228,59 @@ export class RequestIdInterceptor implements NestInterceptor {
     }
 
     return trimmed;
+  }
+}
+
+/**
+ * Normalizes every `Date` in a response payload to an ISO 8601 UTC string.
+ *
+ * Without this, `JSON.stringify` would emit JavaScript's lossy
+ * `Date.prototype.toString()` format (e.g. `Mon Sep 25 2026 ...`), which is not
+ * round-trippable and differs between runtimes. Clients, SDKs, and the
+ * transaction export job all parse these timestamps, so the wire format is part
+ * of the API contract.
+ *
+ * The interceptor walks the response body depth-first and rewrites `Date`
+ * instances in place, leaving every other value untouched. This keeps the
+ * transformation opt-out-free and consistent across all routes.
+ */
+@Injectable()
+export class IsoUtcTimestampInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    return next
+      .handle()
+      .pipe(map((value) => this.normalize(value, new WeakSet())));
+  }
+
+  /**
+   * Depth-first rewrite of `Date` instances. `seen` guards against cycles so a
+   * self-referencing payload cannot cause unbounded recursion.
+   */
+  private normalize(value: unknown, seen: WeakSet<object>): unknown {
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : value.toISOString();
+    }
+
+    if (Array.isArray(value)) {
+      if (seen.has(value)) {
+        return value;
+      }
+      seen.add(value);
+      return value.map((entry) => this.normalize(entry, seen));
+    }
+
+    if (value !== null && typeof value === 'object') {
+      if (seen.has(value)) {
+        return value;
+      }
+      seen.add(value);
+      for (const [key, entry] of Object.entries(
+        value as Record<string, unknown>,
+      )) {
+        (value as Record<string, unknown>)[key] = this.normalize(entry, seen);
+      }
+    }
+
+    return value;
   }
 }
