@@ -864,19 +864,54 @@ Full contract, metrics, scheduling, and rollback:
 
 ## Rate-Limit Record Cleanup
 
-The `RateLimitCleanupWorker` runs on a configurable interval and prunes expired
-`RateLimitRecord` rows from the database. Without this job the table grows
-unbounded as every API key × endpoint × time-window combination adds a row.
+`RateLimitCleanupWorker` (in `RateLimitModule`) runs on a configurable interval
+and prunes `RateLimitRecord` rows whose sliding window has closed. Without this
+job the table grows unbounded as every API key × endpoint × time-window
+combination adds a row.
 
-The worker is automatically registered in `RateLimitModule` — no manual
-wiring is required.
+The worker is **opt-in / deny-by-default**: it only starts when
+`RATE_LIMIT_CLEANUP_ENABLED=true`, so a deployment using an external scheduler
+can leave it off and run cleanup in exactly one place. It deletes only rows with
+`windowStart < now - windowMs` (a current-window row is still enforcing a limit),
+bounds each batch, and fails closed with
+`DEVELOPER_QUOTA_CLEANUP_DEPENDENCY_UNAVAILABLE` rather than reporting a false
+"0 deleted".
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run the cleanup job |
-| `RATE_LIMIT_CLEANUP_OLDER_THAN_MS` | `3600000` | Delete records with `windowStart` older than this age (ms) |
+| `RATE_LIMIT_CLEANUP_ENABLED` | `false` | Set to `true` to run the in-process worker |
+| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run a cleanup pass |
+| `RATE_LIMIT_CLEANUP_BATCH_SIZE` | `1000` | Rows deleted per pass (clamped to `10000`) |
+
+## Per-Developer API Quotas
+
+The per-API-key rate limit is not a tenant boundary. A developer holding many
+keys across many projects can exceed an intended aggregate limit while every
+individual key stays under its own. `DeveloperQuotaGuard` enforces the limit at
+the **developer**, summed across all of their keys and projects.
+
+Quotas are **deny-by-default**: nothing is enforced unless
+`DEVELOPER_QUOTAS_ENABLED=true`, so a deployment that has not opted in behaves
+exactly as before.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DEVELOPER_QUOTAS_ENABLED` | `false` | Master switch for per-developer quotas |
+| `DEVELOPER_QUOTA_DEFAULT_RPM` | `600` | Requests per window per developer (clamped to `1..DEVELOPER_QUOTA_MAX_RPM`) |
+| `DEVELOPER_QUOTA_WINDOW_MS` | `60000` | Sliding-window length in ms |
+| `DEVELOPER_QUOTA_MAX_RPM` | `10000` | Hard ceiling on any quota — lower it to tighten every quota at once |
+
+The developer is resolved from the **validated API key**, never from a
+client-supplied `developerId`, so a caller can neither borrow another tenant's
+quota nor escape its own. Denials return `429` with the stable code
+`DEVELOPER_QUOTA_EXCEEDED`, plus `Retry-After` and `X-RateLimit-*` headers.
+
+Full contract, metrics, the in-process-counter limitation, and rollback:
+[docs/DEVELOPER-QUOTAS.md](docs/DEVELOPER-QUOTAS.md).
 
 ---
 

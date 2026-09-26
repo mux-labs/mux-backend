@@ -282,6 +282,9 @@ jobs:
         # error-severity finding, 2/3 on verifier misuse.
         run: pnpm verify:key-consolidation
 
+  developer-quotas:
+    name: Per-Developer API Quotas (required)
+
   soroban-rpc-retry:
     name: Soroban RPC Retry Policy (required)
 
@@ -309,6 +312,16 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Verify quota spec is present
+        # #955: Fail closed if the spec goes missing so the quota invariants
+        # (server-resolved developer, deny-by-default, fail-closed) can never be
+        # silently un-gated.
+        run: test -f src/rate-limit/rate-limit.service.spec.ts
+
+      - name: Run quota unit tests
+        # Pure in-process suite: no DB, network, or secrets required.
+        run: pnpm exec jest --runTestsByPath src/rate-limit/rate-limit.service.spec.ts
 
       - name: Verify retry policy spec is present
         # #953: Fail closed if the spec goes missing so the duplicate-submission
