@@ -1,4 +1,10 @@
-import { Injectable, CanActivate, ExecutionContext, TooManyRequestsException } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 
 /**
@@ -6,6 +12,10 @@ import { Reflector } from '@nestjs/core';
  *
  * Tracks request counts per API key and rejects requests
  * that exceed the configured rate limit.
+ *
+ * Note: this is the coarse per-*key* limit. For the aggregate, tenant-level
+ * boundary, see `DeveloperQuotaGuard` in this directory — a developer holding
+ * several keys is not bounded by any single one of them.
  */
 @Injectable()
 export class RateLimitGuard implements CanActivate {
@@ -24,10 +34,16 @@ export class RateLimitGuard implements CanActivate {
     const count = this.requestCounts.get(key) ?? 0;
 
     if (count >= this.MAX_REQUESTS) {
-      throw new TooManyRequestsException({
-        errorCode: 'RATE_LIMIT_EXCEEDED',
-        message: 'Rate limit exceeded. Please try again later.',
-      });
+      // `TooManyRequestsException` is not exported by the installed @nestjs/common,
+      // so throwing it would surface as a TypeError (500) instead of a 429.
+      // HttpException with an explicit 429 is the portable form.
+      throw new HttpException(
+        {
+          errorCode: 'RATE_LIMIT_EXCEEDED',
+          message: 'Rate limit exceeded. Please try again later.',
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
     }
 
     this.requestCounts.set(key, count + 1);

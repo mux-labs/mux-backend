@@ -77,6 +77,30 @@ transaction relaying happen server-side.
 - See [docs/custody-security-model.md](docs/custody-security-model.md) for the full
   custody model (key generation, encryption envelope, rotation, fail-closed decrypt).
 
+## Per-Developer API Quotas
+
+The per-API-key rate limit is not a tenant boundary: a developer who holds many
+keys can exceed an intended aggregate limit while every individual key stays
+under its own. `DeveloperQuotaGuard` enforces the limit at the **developer**,
+summed across every key and project that developer owns, in addition to the
+per-key limit.
+
+- **Deny-by-default.** Quotas are off unless `DEVELOPER_QUOTAS_ENABLED=true`.
+- **Keyed on the server-resolved developer**, read from the validated API key
+  context. A client-supplied `developerId` in a body or query string is ignored
+  entirely, so a caller cannot borrow another tenant's quota or escape its own.
+- **Fails closed** on a request with no resolved developer: an unaccounted
+  request cannot be proven to be within anyone's quota.
+- **Bounded both ways:** the limit is clamped to a sane range and the tracked
+  developer map is capped, so a typo cannot grant an unlimited quota and a flood
+  of distinct ids cannot exhaust memory.
+- Denials return `429` with `DEVELOPER_QUOTA_EXCEEDED`, `Retry-After`, and
+  `X-RateLimit-*` headers, and never echo a key, a developer id, or a body.
+- Counters are in-process, so the effective limit is per API instance. That is a
+  sound abuse boundary, not a hard global cap; see the doc's known limitation.
+
+Configuration, metrics, and rollback: [docs/DEVELOPER-QUOTAS.md](docs/DEVELOPER-QUOTAS.md).
+
 ## Internal Cron Jobs & Secret Guard
 
 Internal, cron-triggered endpoints (cleanup workers, reconciliation jobs, and other

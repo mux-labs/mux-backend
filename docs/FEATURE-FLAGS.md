@@ -31,6 +31,7 @@ Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 | `MULTI_ASSET_PAYMENTS_ENABLED` | Credit-asset payment writes (non-native) | **disabled** (deny-by-default) |
 | `KEY_ROTATION_ENABLED`        | Wallet `keyVersion` rotation writes     | **disabled** (deny-by-default) |
 | `BALANCE_SYNC_ENABLED`        | Horizon balance sync/reconcile writes   | **disabled** (deny-by-default) |
+| `DEVELOPER_QUOTAS_ENABLED`   | Per-developer aggregate API quotas      | **disabled** (deny-by-default) |
 
 ## Production vs Development
 
