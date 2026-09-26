@@ -111,6 +111,7 @@
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1",
       "^src/(.*)$": "<rootDir>/$1",
+      "^@prisma/client$": "<rootDir>/__mocks__/generated/prisma/client.ts",
       "^.+/generated/prisma/client$": "<rootDir>/__mocks__/generated/prisma/client.ts",
       "^.+/generated/prisma$": "<rootDir>/__mocks__/generated/prisma/client.ts"
     }

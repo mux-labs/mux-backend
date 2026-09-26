@@ -28,6 +28,7 @@ Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 | `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | enabled  |
 | `FEE_SPONSORSHIP_ENABLED`     | Fee sponsorship budget writes on mainnet | **disabled** (deny-by-default) |
 | `KEY_ROTATION_ENABLED`        | Wallet `keyVersion` rotation writes     | **disabled** (deny-by-default) |
+| `BALANCE_SYNC_ENABLED`        | Horizon balance sync/reconcile writes   | **disabled** (deny-by-default) |
 
 ## Production vs Development
 
