@@ -493,4 +493,123 @@ describe('SorobanInvokeService', () => {
       );
     });
   });
+
+  // -------------------------------------------------------------------------
+  // #953 RPC retry policy, exercised through the service
+  // -------------------------------------------------------------------------
+
+  describe('RPC retry policy', () => {
+    /** An error shaped like a transient HTTP 503. */
+    const transient = (): Error =>
+      Object.assign(new Error('rpc unavailable'), { statusCode: 503 });
+
+    beforeEach(() => {
+      // Zero backoff keeps the suite fast; the policy logic itself is covered in
+      // soroban-rpc-retry.spec.ts.
+      process.env.SOROBAN_RPC_RETRY_BACKOFF_MS = '0';
+      process.env.SOROBAN_RPC_MAX_ATTEMPTS = '3';
+    });
+
+    afterEach(() => {
+      delete process.env.SOROBAN_RPC_RETRY_BACKOFF_MS;
+      delete process.env.SOROBAN_RPC_MAX_ATTEMPTS;
+      delete process.env.SOROBAN_RPC_RETRY_SUBMIT;
+    });
+
+    it('retries a transient simulate failure and then succeeds', async () => {
+      rpc.simulate
+        .mockRejectedValueOnce(transient())
+        .mockResolvedValueOnce({ success: true, estimatedCost: '5000' });
+
+      const result = await service.invoke(revokeRequest(), owner);
+
+      expect(result.status).toBe(InvokeStatus.SUBMITTED);
+      expect(rpc.simulate).toHaveBeenCalledTimes(2);
+      expect(rpc.submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('still fails closed when the retry budget is exhausted', async () => {
+      rpc.simulate.mockRejectedValue(transient());
+
+      await expect(
+        service.invoke(revokeRequest(), owner),
+      ).rejects.toMatchObject({
+        response: { code: InvokeErrorCode.RPC_UNAVAILABLE },
+      });
+
+      expect(rpc.simulate).toHaveBeenCalledTimes(3);
+      // The critical property: a failed simulation never becomes a submission.
+      expect(rpc.submit).not.toHaveBeenCalled();
+      expect(metrics.incrementCounter).toHaveBeenCalledWith(
+        'soroban_rpc_retry_exhausted',
+      );
+    });
+
+    it('does not retry a permanent simulate failure', async () => {
+      rpc.simulate.mockRejectedValue(
+        Object.assign(new Error('bad request'), { statusCode: 400 }),
+      );
+
+      await expect(
+        service.invoke(revokeRequest(), owner),
+      ).rejects.toMatchObject({
+        response: { code: InvokeErrorCode.RPC_UNAVAILABLE },
+      });
+
+      expect(rpc.simulate).toHaveBeenCalledTimes(1);
+    });
+
+    it('does NOT retry a failed submit by default (no duplicate submission)', async () => {
+      rpc.submit.mockRejectedValue(transient());
+
+      await expect(
+        service.invoke(revokeRequest(), owner),
+      ).rejects.toMatchObject({
+        response: { code: InvokeErrorCode.RPC_UNAVAILABLE },
+      });
+
+      // One attempt only. A lost submit response is ambiguous, so re-sending it
+      // could land the same transaction twice.
+      expect(rpc.submit).toHaveBeenCalledTimes(1);
+      expect(metrics.incrementCounter).toHaveBeenCalledWith(
+        'soroban_rpc_submit_failed',
+      );
+    });
+
+    it('retries a submit only when SOROBAN_RPC_RETRY_SUBMIT is set', async () => {
+      process.env.SOROBAN_RPC_RETRY_SUBMIT = 'true';
+      rpc.submit
+        .mockRejectedValueOnce(transient())
+        .mockResolvedValueOnce({ transactionHash: 'abc123' });
+
+      const result = await service.invoke(revokeRequest(), owner);
+
+      expect(result.transactionHash).toBe('abc123');
+      expect(rpc.submit).toHaveBeenCalledTimes(2);
+    });
+
+    it('makes exactly one submit attempt when retries are disabled', async () => {
+      process.env.SOROBAN_RPC_MAX_ATTEMPTS = '1';
+      rpc.submit.mockRejectedValue(transient());
+
+      await expect(
+        service.invoke(revokeRequest(), owner),
+      ).rejects.toMatchObject({
+        response: { code: InvokeErrorCode.RPC_UNAVAILABLE },
+      });
+      expect(rpc.submit).toHaveBeenCalledTimes(1);
+    });
+
+    it('counts each retry in metrics without user-derived labels', async () => {
+      rpc.simulate
+        .mockRejectedValueOnce(transient())
+        .mockResolvedValueOnce({ success: true });
+
+      await service.invoke(revokeRequest(), owner);
+
+      expect(metrics.incrementCounter).toHaveBeenCalledWith(
+        'soroban_rpc_retry_simulate',
+      );
+    });
+  });
 });
