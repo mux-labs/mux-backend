@@ -12,6 +12,7 @@ import { WebhookController } from './webhook.controller';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { MetricsLabelGuardService } from '../common/metrics/label-cardinality-guard';
 import { WebhookConfigService } from './webhook-config.service';
+import { WebhookUrlAllowlistService } from './webhook-url-allowlist.service';
 import { WebhookDlqAlertService } from './webhook-dlq-alert.service';
 import { CacheService } from '../common/cache/cache.service';
 import { TenantScopeGuard } from '../common/guards/tenant-scope.guard';
@@ -33,12 +34,13 @@ import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
     WebhookDeliveryQueueWorker,
     MetricsService,
     WebhookConfigService,
+    WebhookUrlAllowlistService,
     WebhookDlqAlertService,
     CacheService,
     TenantScopeGuard,
     FeatureFlagService,
     FeatureFlagGuard,
   ],
-  exports: [WebhookEventEmitterService, WebhookDispatcherService, WebhookDlqAlertService],
+  exports: [WebhookEventEmitterService, WebhookDispatcherService, WebhookDlqAlertService, WebhookUrlAllowlistService],
 })
 export class WebhookModule {}

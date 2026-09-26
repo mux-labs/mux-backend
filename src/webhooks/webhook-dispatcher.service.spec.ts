@@ -6,6 +6,10 @@ import { WebhookSignerService } from './webhook-signer.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ConfigService } from '@nestjs/config';
+import {
+  WebhookUrlAllowlistService,
+  WEBHOOK_ALLOWED_HOSTS_ENV,
+} from './webhook-url-allowlist.service';
 import { DeliveryStatus, EndpointStatus } from './domain/webhook-events';
 import axios from 'axios';
 
@@ -68,7 +72,9 @@ describe('WebhookDispatcherService', () => {
     };
 
     mockConfigService = {
-      get: jest.fn((key: string, defaultValue: any) => defaultValue),
+      get: jest.fn((key: string, defaultValue: any) =>
+        key === WEBHOOK_ALLOWED_HOSTS_ENV ? 'example.com' : defaultValue,
+      ),
     };
 
     const module: TestingModule = await Test.createTestingModule({
@@ -77,6 +83,7 @@ describe('WebhookDispatcherService', () => {
         WebhookDispatchService,
         WebhookRetryService,
         WebhookSignerService,
+        WebhookUrlAllowlistService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: MetricsService, useValue: mockMetrics },
         { provide: ConfigService, useValue: mockConfigService },

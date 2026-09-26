@@ -13,6 +13,10 @@ import {
 } from './domain/webhook-events';
 import { SafeLogger } from '../common/safe-logger';
 import { WebhookFilterDto } from './dto/webhook-filter.dto';
+import {
+  WebhookUrlAllowlistService,
+  type WebhookUrlErrorCode,
+} from './webhook-url-allowlist.service';
 import * as crypto from 'crypto';
 
 export const WEBHOOK_CACHE_TTL = 60_000;
@@ -64,6 +68,7 @@ export class WebhookService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly cache: CacheService,
+    private readonly urlAllowlist: WebhookUrlAllowlistService,
   ) {}
 
   async onModuleDestroy() {
@@ -72,10 +77,16 @@ export class WebhookService {
 
   /**
    * Creates a new webhook endpoint
+   *
+   * The target URL is checked against the SSRF allowlist *before* the write, so
+   * an endpoint that resolves to an internal address is never persisted and
+   * therefore never dispatched to.
    */
   async createEndpoint(
     request: CreateWebhookEndpointRequest,
   ): Promise<WebhookEndpoint> {
+    this.assertUrlAllowed(request.url);
+
     // Generate secret for signing
     const secret = this.generateSecret();
 
@@ -113,7 +124,7 @@ export class WebhookService {
     let eventFilter: string | undefined;
 
     if (typeof filterOrPage === 'object' && filterOrPage !== null) {
-      const filter = filterOrPage as WebhookFilterDto;
+      const filter = filterOrPage;
       page = filter.page ?? 1;
       take = filter.limit ?? 20;
       statusFilter = filter.status;
@@ -177,11 +188,18 @@ export class WebhookService {
 
   /**
    * Updates a webhook endpoint
+   *
+   * A new URL is re-checked against the SSRF allowlist, so an endpoint cannot be
+   * repointed at an internal address after it was registered.
    */
   async updateEndpoint(
     endpointId: string,
     updates: UpdateWebhookEndpointRequest,
   ): Promise<WebhookEndpoint> {
+    if (updates.url !== undefined) {
+      this.assertUrlAllowed(updates.url);
+    }
+
     const endpoint = await this.prisma.webhookEndpoint.update({
       where: { id: endpointId },
       data: updates,
@@ -190,6 +208,31 @@ export class WebhookService {
     this.invalidateEndpointCache(endpointId);
 
     return this.mapPrismaEndpointToDomain(endpoint);
+  }
+
+  /**
+   * Enforces the SSRF allowlist on a webhook target URL.
+   *
+   * Fail-closed: any rejection aborts the call with a 400 carrying a stable
+   * `code`, so a caller can distinguish "this URL is not permitted" from a
+   * validation quirk. Only the host/port/path decision is logged — never the
+   * full URL, which may embed a token in its query string.
+   */
+  private assertUrlAllowed(url: unknown): void {
+    try {
+      this.urlAllowlist.assertAllowed(url);
+    } catch (err) {
+      const code = (err as { code?: WebhookUrlErrorCode }).code;
+      this.logger.warn('Rejected webhook URL', {
+        code: code ?? 'WEBHOOK_URL_INVALID',
+        host: safeHost(url),
+      });
+      throw new BadRequestException({
+        code: code ?? 'WEBHOOK_URL_INVALID',
+        message:
+          (err as Error).message ?? 'url is not a permitted webhook target',
+      });
+    }
   }
 
   /**
@@ -378,5 +421,22 @@ export class WebhookService {
       createdAt: prismaEndpoint.createdAt,
       updatedAt: prismaEndpoint.updatedAt,
     };
+  }
+}
+
+/**
+ * Best-effort host extraction for rejection logs.
+ *
+ * Never throws and never returns the full URL: a webhook URL may carry a token
+ * in its query string, and rejection logs are shipped to aggregators.
+ */
+function safeHost(url: unknown): string {
+  if (typeof url !== 'string') {
+    return 'unknown';
+  }
+  try {
+    return new URL(url).hostname || 'unknown';
+  } catch {
+    return 'unparseable';
   }
 }

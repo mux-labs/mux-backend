@@ -4,6 +4,7 @@ import * as https from 'https';
 import { WebhookSignerService } from './webhook-signer.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { createRequestIdAwareAxios } from '../common/http/request-id-axios';
+import { WebhookUrlAllowlistService } from './webhook-url-allowlist.service';
 import { AxiosError } from 'axios';
 
 export interface WebhookMtlsConfig {
@@ -45,6 +46,7 @@ export class WebhookDispatchService {
     private readonly webhookSigner: WebhookSignerService,
     private readonly configService: ConfigService,
     private readonly metrics: MetricsService,
+    private readonly urlAllowlist: WebhookUrlAllowlistService,
   ) {
     this.requestTimeoutMs = this.configService.get<number>(
       'WEBHOOK_TIMEOUT_MS',
@@ -74,6 +76,27 @@ export class WebhookDispatchService {
     mtls?: WebhookMtlsConfig,
   ): Promise<WebhookDispatchResult> {
     const startTime = Date.now();
+
+    // Defense in depth: endpoints persisted before the allowlist existed (or by
+    // a direct DB write) are re-checked here, immediately before the socket is
+    // opened. A rejected URL is a terminal delivery failure — retrying it would
+    // just re-attempt the same forbidden connection.
+    try {
+      this.urlAllowlist.assertAllowed(url);
+    } catch (err) {
+      const code = (err as { code?: string }).code ?? 'WEBHOOK_URL_INVALID';
+      this.logger.warn(
+        `Blocked webhook delivery to a non-allowlisted URL (${code})`,
+      );
+      this.metrics.incrementCounter(
+        'webhook_delivery_blocked_by_ssrf_allowlist',
+      );
+      return {
+        success: false,
+        responseTime: Date.now() - startTime,
+        errorMessage: `Blocked by webhook URL allowlist: ${code}`,
+      };
+    }
 
     this.logger.log(
       `Delivering webhook to ${url} (event: ${eventType}, mtls: ${mtls ? 'enabled' : 'disabled'})`,
