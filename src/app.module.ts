@@ -9,6 +9,7 @@ import { EncryptionModule } from './encryption/encryption.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
 import { ApiKeyGuard } from './api-keys/api-key.guard';
 import { ApiKeyService } from './api-keys/api-key.service';
+import { ApiKeyAuditService } from './api-keys/api-key-audit.service';
 import { MetricsService } from './common/metrics/metrics.service';
 import { PrismaService } from './prisma/prisma.service';
 import { IsoUtcTimestampInterceptor } from './common/interceptors/request-id.interceptor';
@@ -29,6 +30,7 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
   providers: [
     ApiKeyGuard,
     ApiKeyService,
+    ApiKeyAuditService,
     MetricsService,
     PrismaService,
     IsoUtcTimestampInterceptor,

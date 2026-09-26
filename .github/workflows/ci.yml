@@ -284,6 +284,12 @@ jobs:
 
   soroban-rpc-retry:
     name: Soroban RPC Retry Policy (required)
+
+  soroban-contract-boot:
+    name: Soroban Contract ID Boot Validation (required)
+
+  api-key-audit-log:
+    name: API Key Audit Log (required)
     runs-on: ubuntu-latest
 
     steps:
@@ -313,6 +319,38 @@ jobs:
         # Covers the retry policy and the invoke service together, including
         # fail-closed exhaustion and the no-retry-submit default.
         run: pnpm exec jest src/soroban
+
+      - name: Verify boot validation specs are present
+        # #954: Fail closed if the specs go missing so the contract-id boot gate
+        # can never be silently un-gated.
+        run: |
+          test -f src/soroban/soroban-contract-boot-validator.service.spec.ts
+          test -f test/soroban-contract-boot.e2e-spec.ts
+
+      - name: Run contract id boot validation unit tests
+        # Pure in-process suite: no DB, network, or secrets required.
+        run: pnpm exec jest --runTestsByPath src/soroban/soroban-contract-boot-validator.service.spec.ts
+
+      - name: Run contract id boot validation e2e
+        # Drives the real provider through the Nest DI container, including the
+        # fail-closed boot refusal.
+        run: pnpm test:e2e -- test/soroban-contract-boot.e2e-spec.ts
+
+      - name: Verify audit specs are present
+        # #956: Fail closed if the specs go missing so the API key audit
+        # invariants (no key material, bounded fields, fail-soft sink) can
+        # never be silently un-gated.
+        run: |
+          test -f src/api-keys/api-key-audit.service.spec.ts
+          test -f test/api-key-audit-log.e2e-spec.ts
+
+      - name: Run API key audit log unit tests
+        # Pure in-process suite: no DB, network, or secrets required.
+        run: pnpm exec jest --runTestsByPath src/api-keys/api-key-audit.service.spec.ts
+
+      - name: Run API key audit log e2e
+        # Exercises the real guard + audit sink through the Nest DI container.
+        run: pnpm test:e2e -- test/api-key-audit-log.e2e-spec.ts
 
   login-smoke-e2e:
     name: Login Smoke E2E (required)
