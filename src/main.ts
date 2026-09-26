@@ -5,7 +5,8 @@ import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 import { configureBodySizeLimit } from './common/http/body-size-limit';
 import { validateEnv } from './config/env.validation';
-import { IsoUtcTimestampInterceptor } from './common/interceptors/request-id.interceptor';
+import { IsoUtcTimestampInterceptor } from './common/interceptors';
+import { HttpExceptionFilter } from './common/filters/http-exception.filter';
 
 /**
  * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.
@@ -67,6 +68,9 @@ async function bootstrap() {
 
   // Normalize all Date values in HTTP responses to ISO 8601 UTC strings.
   app.useGlobalInterceptors(new IsoUtcTimestampInterceptor());
+
+  // Global exception filter for structured error responses
+  app.useGlobalFilters(new HttpExceptionFilter());
 
   // Let Nest call onModuleDestroy/beforeApplicationShutdown on SIGTERM/SIGINT
   // so in-flight requests can finish and connections (Prisma, etc.) close cleanly.

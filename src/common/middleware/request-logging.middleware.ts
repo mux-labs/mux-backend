@@ -1,43 +1,49 @@
 import { Request, Response, NextFunction } from 'express';
+import { randomUUID } from 'crypto';
+import { REQUEST_ID_HEADER, resolveRequestId } from '../interceptors';
 
 /**
- * Request logging middleware that logs incoming requests with correlation IDs.
- *
- * This middleware logs the request method, path, and correlation ID
- * for observability. It integrates with the request-id interceptor
- * to propagate correlation IDs across services.
+ * Request logging middleware that:
+ * - Generates/propagates X-Request-ID header
+ * - Logs incoming requests with correlation IDs
+ * - Measures request duration
  */
-export function requestLogger(
-  req: Request,
-  res: Response,
-  next: NextFunction,
-): void {
-  const start = Date.now();
-  const requestId = req.headers['x-request-id'] as string | undefined;
+@Injectable()
+export class RequestLoggingMiddleware implements NestMiddleware {
+  private readonly logger = new Logger('RequestLogger');
 
-  // Log the incoming request
-  const logData = {
-    method: req.method,
-    path: req.path,
-    requestId: requestId ?? 'none',
-    userAgent: req.headers['user-agent'],
-    ip: req.ip,
-  };
+  use(req: Request, res: Response, next: NextFunction): void {
+    const startTime = Date.now();
 
-  console.log('Incoming request:', JSON.stringify(logData));
+    // Resolve or generate request ID
+    const requestId = resolveRequestId(req.headers[REQUEST_ID_HEADER]);
+    req.headers[REQUEST_ID_HEADER] = requestId;
+    (req as any).requestId = requestId;
 
-  // Log response when finished
-  res.on('finish', () => {
-    const duration = Date.now() - start;
-    const responseLog = {
-      ...logData,
-      statusCode: res.statusCode,
-      durationMs: duration,
-    };
-    console.log('Response:', JSON.stringify(responseLog));
-  });
+    // Set response header
+    res.setHeader(REQUEST_ID_HEADER, requestId);
 
-  next();
+    // Log request
+    this.logger.log(
+      `${req.method} ${req.originalUrl} - Request ID: ${requestId}`,
+    );
+
+    // Log response when finished
+    res.on('finish', () => {
+      const duration = Date.now() - startTime;
+      this.logger.log(
+        `${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms - Request ID: ${requestId}`,
+      );
+    });
+
+    next();
+  }
 }
+
+// Export a function that creates the middleware instance
+export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
+  const middleware = new RequestLoggingMiddleware();
+  middleware.use(req, res, next);
+};
 
 export default requestLogger;

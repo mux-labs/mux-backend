@@ -5,9 +5,10 @@ import {
   BadRequestException,
   ForbiddenException,
   InternalServerErrorException,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { Wallet } from '@prisma/client';
 import { Keypair } from '@stellar/stellar-sdk';
@@ -93,6 +94,21 @@ export interface RotateInput {
  * - Versioned envelopes for persisted keys
  * - Deny-by-default authorization on privileged entrypoints
  * - No secrets in logs or error messages
+ */
+@Injectable()
+export class KeyManagementService {
+  private readonly logger = new Logger(KeyManagementService.name);
+
+  constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * Generates a new Stellar Ed25519 keypair.
+   * Returns the public key (for the wallet address) and the encrypted secret.
+   */
+  async generateKey(): Promise<{ publicKey: string; encryptedSecret: string }> {
+    try {
+      // Generate a random 32-byte seed for Ed25519
+      const seed = randomB
  */
 @Injectable()
 export class KeyManagementService {
