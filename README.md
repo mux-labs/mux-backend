@@ -769,6 +769,30 @@ User authentication is orchestrated via the auth service and integrates with Web
 - Expired keys are marked with status `EXPIRED` on first validation attempt
 - Subsequent requests with expired keys fail with "API key has expired"
 
+**API Key Audit Log:**
+
+Every authentication decision — accepted, rejected, or blocked by a dependency
+outage — is recorded by `ApiKeyAuditService` with a stable action code
+(`API_KEY_VALIDATED`, `API_KEY_REJECTED`, `API_KEY_VALIDATION_UNAVAILABLE`) and,
+for rejections, a stable reason (`MISSING`, `MALFORMED`, `UNKNOWN`, `REVOKED`,
+`EXPIRED`, `SUSPENDED`).
+
+- **No key material is ever recorded.** The presented key is SHA-256 hashed and
+  only the first 12 hex characters are kept as a fingerprint.
+- Every field is length-bounded and control-character-stripped, so a hostile
+  header cannot forge a log line.
+- The audit sink is fail-soft: an audit-sink failure never changes the
+  authentication outcome, and nothing is attached to the request on any failure
+  path.
+- A key-store outage is reported as `503` and audited as
+  `API_KEY_VALIDATION_UNAVAILABLE` rather than being disguised as an invalid key;
+  an upstream `401` (expired/revoked) is preserved as a `401`.
+- The in-process buffer is bounded (500 events) so a key spray cannot exhaust
+  memory. Durable retention is the log shipper's responsibility.
+
+Full contract, metrics, and rollback:
+[docs/API-KEY-AUDIT-LOG.md](docs/API-KEY-AUDIT-LOG.md).
+
 ### Rate Limiting & Inactive User Integration
 
 - Rate limits are enforced per API key

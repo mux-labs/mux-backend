@@ -77,6 +77,29 @@ transaction relaying happen server-side.
 - See [docs/custody-security-model.md](docs/custody-security-model.md) for the full
   custody model (key generation, encryption envelope, rotation, fail-closed decrypt).
 
+## API Key Audit Log
+
+Every API key authentication decision is audited: accepted
+(`API_KEY_VALIDATED`), rejected (`API_KEY_REJECTED` with a stable reason), and
+blocked by a dependency outage (`API_KEY_VALIDATION_UNAVAILABLE`).
+
+- **Key material never enters the audit trail.** The presented key is SHA-256
+  hashed and only the first 12 hex characters are retained as a fingerprint.
+  Fingerprint comparison is constant-time.
+- Audit fields are length-bounded and stripped of control characters, so a
+  hostile header cannot forge log lines in an operator's terminal.
+- The audit sink is **fail-soft**: an audit failure never changes the
+  authentication outcome and never leaks the key into an error. A key-store
+  outage fails closed with `503` and is audited distinctly, rather than being
+  reported as an invalid key.
+- The in-process buffer is bounded so a rejected-key spray cannot exhaust memory.
+  It is a debugging aid, not a compliance store — ship stdout to durable storage.
+
+Investigating a suspected key leak or enumeration: filter on the `apikey.audit`
+action, `reason`, and `fingerprint` fields, and join on `correlationId`. Full
+contract, metrics, and rollback:
+[docs/API-KEY-AUDIT-LOG.md](docs/API-KEY-AUDIT-LOG.md).
+
 ## Internal Cron Jobs & Secret Guard
 
 Internal, cron-triggered endpoints (cleanup workers, reconciliation jobs, and other

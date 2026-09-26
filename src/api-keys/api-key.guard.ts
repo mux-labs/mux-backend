@@ -9,12 +9,32 @@ import {
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { ApiKeyService } from './api-key.service';
-import { ApiKeyErrorCode } from './domain/api-key.model';
-import { IS_PUBLIC_KEY, REQUIRE_API_KEY_KEY } from './api-key.decorator';
 import {
-  assertNetworkMatch,
-  extractRequestedNetwork,
-} from '../common/network/network-mismatch';
+  ApiKeyAuditAction,
+  ApiKeyAuditReason,
+  ApiKeyAuditService,
+} from './api-key-audit.service';
+import { resolveRequestId } from '../common/interceptors/request-id.interceptor';
+import { ApiKeyErrorCode } from './domain/api-key.model';
+import { IS_PUBLIC_KEY, REQUIRE_API_KEY_KEY } from './api
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { ApiKeyService } from './api-key.service';
+import {
+  Injectable,
+  CanActivate,
+  ExecutionContext,
+  Optional,
+  HttpException,
+  Logger,
+  ServiceUnavailableException,
+  UnauthorizedException,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import { ApiKeyService } from './api-key.service';
+
 
 export const REQUIRE_API_KEY = 'requireApiKey';
 export const IS_PUBLIC = 'isPublic';
@@ -41,6 +61,10 @@ export class ApiKeyGuard implements CanActivate {
   constructor(
     private readonly apiKeyService: ApiKeyService,
     private readonly reflector: Reflector,
+    // Optional so the guard still constructs in modules that have not wired the
+    // audit sink yet; when present, every auth decision is recorded.
+    @Optional()
+    private readonly audit?: ApiKeyAuditService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -63,6 +87,9 @@ export class ApiKeyGuard implements CanActivate {
     const request = context.switchToHttp().getRequest();
     const authorization = request.headers?.authorization;
     const apiKeyHeader = request.headers?.['x-api-key'];
+    const correlationId = resolveRequestId(
+      request.requestId ?? request.headers?.['x-request-id'],
+    );
 
     let apiKey: string | undefined;
 
@@ -73,11 +100,22 @@ export class ApiKeyGuard implements CanActivate {
     }
 
     if (!apiKey) {
+      this.auditDecision({
+        action: ApiKeyAuditAction.REJECTED,
+        reason: ApiKeyAuditReason.MISSING,
+        apiKey: undefined,
+        request,
+        correlationId,
+      });
+      throw new UnauthorizedException('API key is required');
+    }
+    }
+
+    if (!apiKey) {
       throw new UnauthorizedException({
         code: ApiKeyErrorCode.UNAUTHORIZED,
         message: 'API key is required',
       });
-    }
     }
 
     if (!apiKey) {
@@ -135,6 +173,54 @@ export class ApiKeyGuard implements CanActivate {
   }
 
   /**
+   * Records one authentication decision in the audit trail.
+   *
+   * Never throws and never re-throws: an audit-sink problem must not change the
+   * authentication outcome, and it must not leak the presented key into an
+   * error. The fingerprint is derived from the key, never the key itself.
+   */
+  private auditDecision(input: {
+    action: ApiKeyAuditAction;
+    reason?: ApiKeyAuditReason;
+    apiKey?: string;
+    request: {
+      method?: string;
+      path?: string;
+      originalUrl?: string;
+      ip?: string;
+      socket?: { remoteAddress?: string };
+    };
+    correlationId: string;
+    apiKeyId?: string;
+    developerId?: string;
+    projectId?: string;
+  }): void {
+    if (!this.audit) {
+      return;
+    }
+    try {
+      const path = (
+        input.request.path ??
+        input.request.originalUrl ??
+        ''
+      ).split('?')[0];
+      this.audit.record({
+        action: input.action,
+        reason: input.reason,
+        fingerprint: this.audit.fingerprint(input.apiKey),
+        apiKeyId: input.apiKeyId,
+        developerId: input.developerId,
+        projectId: input.projectId,
+        route: `${input.request.method ?? 'UNKNOWN'} ${path}`,
+        ip: input.request.ip ?? input.request.socket?.remoteAddress,
+        correlationId: input.correlationId,
+      });
+    } catch {
+      // Fail-soft: the request path must not depend on the audit sink.
+    }
+  }
+
+  /**
    * Attaches the authenticated identity to the request.
    *
    * `request.apiKey` is the raw validation result (used by handlers that need
@@ -180,6 +266,19 @@ export class ApiKeyGuard implements CanActivate {
           Date.now() - startedAt,
         );
       });
+    }
+  }
+
+  private extractApiKey(header: string): string | null {
+    if (header.startsWith('Bearer ')) {
+      return header.slice(7);
+    }
+    if (header.startsWith('ApiKey ')) {
+      return header.slice(7);
+    }
+    return null;
+  }
+}
     }
   }
 
