@@ -43,6 +43,16 @@ export function validateMigrationEntries(entries: MigrationEntry[]): string[] {
   const errors: string[] = [];
   const seenTimestamps = new Map<string, string>();
 
+  const hasLockFile = entries.some(
+    (entry) => !entry.isDirectory && entry.name === 'migration_lock.toml',
+  );
+  if (!hasLockFile) {
+    errors.push(
+      'prisma/migrations/migration_lock.toml is missing. Prisma requires this lock file ' +
+        'to pin the migration provider; commit it before merging.',
+    );
+  }
+
   for (const entry of entries) {
     if (!entry.isDirectory) {
       if (!ALLOWED_TOP_LEVEL_FILES.has(entry.name)) {
@@ -98,6 +108,14 @@ function readEntries(dir: string): MigrationEntry[] {
 }
 
 function main() {
+  if (!fs.existsSync(MIGRATIONS_DIR)) {
+    console.error(
+      `Prisma migration naming check failed:\n\n  - ${MIGRATIONS_DIR} does not exist. ` +
+        `Expected a prisma/migrations directory with a migration_lock.toml.`,
+    );
+    process.exit(1);
+  }
+
   const entries = readEntries(MIGRATIONS_DIR);
   const errors = validateMigrationEntries(entries);
 

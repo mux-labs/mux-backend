@@ -5,8 +5,19 @@ import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 import { configureBodySizeLimit } from './common/http/body-size-limit';
 import { validateEnv } from './config/env.validation';
-import { IsoUtcTimestampInterceptor } from './common/interceptors';
-import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { IsoUtcTimestampInterceptor } from './common/interceptors/request-id.interceptor';
+
+/**
+ * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.
+ * Falls back to localhost:3000 for local development.
+ *
+ * Format: comma-separated list, e.g.
+ *   CORS_ALLOWED_ORIGINS=https://app.mux.finance,https://partner.example.com
+ */
+function parseCorsOrigins(raw: string | undefined): string[] {
+  if (!raw) return ['http://localhost:3000'];
+  return raw.split(',').map((o) => o.trim()).filter(Boolean);
+}
 
 async function bootstrap() {
   const logger = new Logger('Bootstrap');
@@ -16,18 +27,15 @@ async function bootstrap() {
 
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
+  // Apply the configurable JSON body size limit. Oversized payloads are
+  // rejected with a stable 413 error envelope (code + correlation id).
   configureBodySizeLimit(app, env.JSON_BODY_LIMIT_BYTES);
 
   // Configure CORS with credentials support
-  // Only allow credentials when explicitly whitelisted origins are used.
-  // CORS_ORIGINS is validated (comma-separated list of http/https URLs) in
-  // src/config/env.validation.ts, defaulting to http://localhost:3000.
-  const corsOrigins = env.CORS_ORIGINS;
+  // Only allow credentials when explicitly whitelisted origins are used
+  const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000').split(',').map(o => o.trim());
   app.enableCors({
-    origin: (
-      origin: string | undefined,
-      callback: (err: Error | null, allow?: boolean) => void,
-    ) => {
+    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
       if (!origin || corsOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -36,18 +44,8 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: [
-      'Content-Type',
-      'Authorization',
-      'X-API-Key',
-      'X-Request-ID',
-      'X-Client-Version',
-    ],
-    exposedHeaders: [
-      'X-Request-ID',
-      'X-RateLimit-Remaining',
-      'X-RateLimit-Reset',
-    ],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID', 'X-Client-Version'],
+    exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
     maxAge: 3600,
   });
 
@@ -69,9 +67,6 @@ async function bootstrap() {
 
   // Normalize all Date values in HTTP responses to ISO 8601 UTC strings.
   app.useGlobalInterceptors(new IsoUtcTimestampInterceptor());
-
-  // Apply global exception filter for structured error responses
-  app.useGlobalFilters(new HttpExceptionFilter());
 
   // Let Nest call onModuleDestroy/beforeApplicationShutdown on SIGTERM/SIGINT
   // so in-flight requests can finish and connections (Prisma, etc.) close cleanly.

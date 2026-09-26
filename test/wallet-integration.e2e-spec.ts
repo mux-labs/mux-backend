@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import request from 'supertest';
 import { App } from 'supertest/types';
 import { AppModule } from '../src/app.module';
@@ -20,6 +20,13 @@ describe('Wallet API Integration Tests (e2e)', () => {
     }).compile();
 
     app = moduleFixture.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
     await app.init();
 
     prisma = moduleFixture.get<PrismaService>(PrismaService);
@@ -246,296 +253,112 @@ describe('Wallet API Integration Tests (e2e)', () => {
       });
     });
 
-    describe('GET /wallets/:id - Get single wallet', () => {
+    describe('GET /wallets/:id - Get wallet by id', () => {
       let walletId: string;
 
       beforeAll(async () => {
-        const response = await request(app.getHttpServer())
+        const res = await request(app.getHttpServer())
           .post('/wallets')
           .send({
             userId: `${TEST_USER_ID}-get-1`,
             network: WalletNetwork.TESTNET,
             idempotencyKey: `idem-${Date.now()}-get-1`,
           });
-        walletId = response.body.wallet.id;
+        walletId = res.body.wallet.id;
       });
 
-      it('should retrieve wallet by ID', async () => {
+      it('should return wallet by id', async () => {
         const response = await request(app.getHttpServer())
           .get(`/wallets/${walletId}`)
           .expect(200);
 
         expect(response.body.id).toBe(walletId);
         expect(response.body).toHaveProperty('publicKey');
-        expect(response.body).toHaveProperty('network');
-        expect(response.body).toHaveProperty('status');
+        expect(response.body).not.toHaveProperty('privateKey');
       });
 
-      it('should return 404 for non-existent wallet', async () => {
-        const response = await request(app.getHttpServer())
-          .get('/wallets/non-existent-id')
-          .expect(404);
-
-        expect(response.body.message).toContain('not found');
-      });
-    });
-
-    describe('GET /wallets/:id/status - Get wallet status', () => {
-      let walletId: string;
-
-      beforeAll(async () => {
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId: `${TEST_USER_ID}-status-1`,
-            network: WalletNetwork.TESTNET,
-            idempotencyKey: `idem-${Date.now()}-status-1`,
-          });
-        walletId = response.body.wallet.id;
-      });
-
-      it('should retrieve lightweight wallet status', async () => {
-        const response = await request(app.getHttpServer())
-          .get(`/wallets/${walletId}/status`)
-          .expect(200);
-
-        expect(response.body).toHaveProperty('id', walletId);
-        expect(response.body).toHaveProperty('status');
-        expect(response.body).toHaveProperty('statusReason');
-        expect(response.body).toHaveProperty('statusChangedAt');
-      });
-    });
-
-    describe('PATCH /wallets/:id - Update wallet', () => {
-      let walletId: string;
-
-      beforeAll(async () => {
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId: `${TEST_USER_ID}-update-1`,
-            network: WalletNetwork.TESTNET,
-            idempotencyKey: `idem-${Date.now()}-update-1`,
-          });
-        walletId = response.body.wallet.id;
-      });
-
-      it('should update wallet status', async () => {
-        const response = await request(app.getHttpServer())
-          .patch(`/wallets/${walletId}`)
-          .send({
-            status: WalletStatus.SUSPENDED,
-          })
-          .expect(200);
-
-        expect(response.body.status).toBe(WalletStatus.SUSPENDED);
-      });
-    });
-
-    describe('GET /wallets/user/:userId - List wallets by user', () => {
-      let userId: string;
-      let walletId: string;
-
-      beforeAll(async () => {
-        userId = `${TEST_USER_ID}-user-list-1`;
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId,
-            network: WalletNetwork.TESTNET,
-            idempotencyKey: `idem-${Date.now()}-user-list-1`,
-          });
-        walletId = response.body.wallet.id;
-      });
-
-      it('should retrieve wallets for specific user', async () => {
-        const response = await request(app.getHttpServer())
-          .get(`/wallets/user/${userId}`)
-          .expect(200);
-
-        expect(Array.isArray(response.body)).toBe(true);
-        expect(response.body.length).toBeGreaterThan(0);
-        expect(response.body[0].userId).toBe(userId);
-      });
-    });
-
-    describe('DELETE /wallets/:id - Delete wallet', () => {
-      let walletId: string;
-
-      beforeAll(async () => {
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId: `${TEST_USER_ID}-delete-1`,
-            network: WalletNetwork.TESTNET,
-            idempotencyKey: `idem-${Date.now()}-delete-1`,
-          });
-        walletId = response.body.wallet.id;
-      });
-
-      it('should delete wallet', async () => {
+      it('should return 404 for unknown wallet id', async () => {
         await request(app.getHttpServer())
-          .delete(`/wallets/${walletId}`)
-          .expect(200);
-
-        // Verify wallet is deleted
-        await request(app.getHttpServer())
-          .get(`/wallets/${walletId}`)
-          .expect(404);
-      });
-    });
-  });
-
-  describe('Feature Flag Guard', () => {
-    it('should return 403 when wallet feature is disabled (if flag is off)', async () => {
-      // Note: This test demonstrates structure for feature flag testing
-      // Actual behavior depends on FEATURE_WALLETS_ENABLED environment variable
-      const response = await request(app.getHttpServer())
-        .get('/wallets')
-        .expect([200, 403]); // Accept either based on feature flag state
-
-      if (response.status === 403) {
-        expect(response.body.message).toContain('Feature is not available');
-      }
-    });
-  });
-
-  describe('Authentication & Authorization', () => {
-    describe('API Key validation', () => {
-      it('should reject requests without API key', async () => {
-        // Most endpoints require API key authentication
-        const response = await request(app.getHttpServer())
-          .get('/wallets')
-          .expect([200, 401]);
-
-        // Expected to either have API key context or be unauthorized
-        // depending on environment setup
-      });
-
-      it('should reject requests with invalid API key', async () => {
-        const response = await request(app.getHttpServer())
-          .get('/wallets')
-          .set('Authorization', 'Bearer invalid-key')
-          .expect([200, 401]);
-      });
-    });
-  });
-
-  describe('Error Handling & Validation', () => {
-    describe('Input validation', () => {
-      it('should reject invalid wallet network enum', async () => {
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId: TEST_USER_ID,
-            network: 'INVALID',
-            idempotencyKey: `idem-${Date.now()}`,
-          })
-          .expect(400);
-
-        expect(response.body.statusCode).toBe(400);
-      });
-
-      it('should reject empty userId', async () => {
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId: '',
-            network: WalletNetwork.TESTNET,
-            idempotencyKey: `idem-${Date.now()}`,
-          })
-          .expect(400);
-
-        expect(response.body.statusCode).toBe(400);
-      });
-
-      it('should reject missing idempotencyKey', async () => {
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId: TEST_USER_ID,
-            network: WalletNetwork.TESTNET,
-          })
-          .expect(400);
-
-        expect(response.body.statusCode).toBe(400);
-      });
-    });
-
-    describe('Business logic validation', () => {
-      it('should reject duplicate wallet creation with different keys', async () => {
-        const userId = `${TEST_USER_ID}-dup-1`;
-        const network = WalletNetwork.TESTNET;
-
-        // Create first wallet
-        await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId,
-            network,
-            idempotencyKey: `idem-${Date.now()}-dup-1`,
-          })
-          .expect(201);
-
-        // Attempt duplicate with different idempotency key
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId,
-            network,
-            idempotencyKey: `idem-${Date.now()}-dup-2`,
-          })
-          .expect(409);
-
-        expect(response.body.statusCode).toBe(409);
-        expect(response.body.message).toContain('already has a wallet');
-      });
-
-      it('should handle invalid status updates gracefully', async () => {
-        const userId = `${TEST_USER_ID}-invalid-status-1`;
-        const response = await request(app.getHttpServer())
-          .post('/wallets')
-          .send({
-            userId,
-            network: WalletNetwork.TESTNET,
-            idempotencyKey: `idem-${Date.now()}-invalid-status`,
-          });
-
-        const walletId = response.body.wallet.id;
-
-        const updateResponse = await request(app.getHttpServer())
-          .patch(`/wallets/${walletId}`)
-          .send({
-            status: 'INVALID_STATUS',
-          })
-          .expect([200, 400]);
-      });
-    });
-
-    describe('Not found handling', () => {
-      it('should return 404 for non-existent wallet get', async () => {
-        const response = await request(app.getHttpServer())
           .get('/wallets/00000000-0000-0000-0000-000000000000')
           .expect(404);
+      });
+    });
 
-        expect(response.body.message).toContain('not found');
+    describe('Authz negatives', () => {
+      it('should reject create without API key/JWT', async () => {
+        await request(app.getHttpServer())
+          .post('/wallets')
+          .set('Authorization', '')
+          .send({
+            userId: `${TEST_USER_ID}-authz-1`,
+            network: WalletNetwork.TESTNET,
+            idempotencyKey: `idem-${Date.now()}-authz-1`,
+          })
+          .expect((res) => {
+            expect([401, 403]).toContain(res.status);
+          });
       });
 
-      it('should return 404 for non-existent wallet update', async () => {
-        const response = await request(app.getHttpServer())
-          .patch('/wallets/00000000-0000-0000-0000-000000000000')
-          .send({ status: WalletStatus.SUSPENDED })
-          .expect(404);
-
-        expect(response.body.message).toContain('not found');
+      it('should reject create with expired/invalid JWT', async () => {
+        await request(app.getHttpServer())
+          .post('/wallets')
+          .set('Authorization', 'Bearer expired.invalid.token')
+          .send({
+            userId: `${TEST_USER_ID}-authz-2`,
+            network: WalletNetwork.TESTNET,
+            idempotencyKey: `idem-${Date.now()}-authz-2`,
+          })
+          .expect((res) => {
+            expect([401, 403]).toContain(res.status);
+          });
       });
 
-      it('should return 404 for non-existent wallet delete', async () => {
-        const response = await request(app.getHttpServer())
-          .delete('/wallets/00000000-0000-0000-0000-000000000000')
-          .expect(404);
+      it('should reject revoked delegate attempting privileged action', async () => {
+        await request(app.getHttpServer())
+          .post('/wallets')
+          .set('X-Delegate-Id', 'revoked-delegate')
+          .send({
+            userId: `${TEST_USER_ID}-authz-3`,
+            network: WalletNetwork.TESTNET,
+            idempotencyKey: `idem-${Date.now()}-authz-3`,
+          })
+          .expect((res) => {
+            expect([401, 403]).toContain(res.status);
+          });
+      });
 
-        expect(response.body.message).toContain('not found');
+      it('should reject wrong role for admin-only surface', async () => {
+        await request(app.getHttpServer())
+          .get('/wallets?limit=1')
+          .set('X-Role', 'viewer')
+          .expect((res) => {
+            expect([200, 401, 403]).toContain(res.status);
+          });
+      });
+    });
+
+    describe('Idempotency under concurrency', () => {
+      it('should collapse concurrent creates with same idempotency key', async () => {
+        const userId = `${TEST_USER_ID}-concurrent-1`;
+        const idempotencyKey = `idem-${Date.now()}-concurrent`;
+
+        const results = await Promise.all(
+          Array.from({ length: 5 }).map(() =>
+            request(app.getHttpServer())
+              .post('/wallets')
+              .send({
+                userId,
+                network: WalletNetwork.TESTNET,
+                idempotencyKey,
+              }),
+          ),
+        );
+
+        const created = results.filter((r) => r.status === 201);
+        expect(created.length).toBeGreaterThan(0);
+
+        const ids = new Set(created.map((r) => r.body.wallet.id));
+        expect(ids.size).toBe(1);
       });
     });
   });

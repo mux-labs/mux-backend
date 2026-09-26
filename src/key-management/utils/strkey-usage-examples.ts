@@ -1,416 +1,227 @@
 /**
  * StrKey Helper Usage Examples
  *
- * This file provides practical examples of using the StrKeyHelper
- * in various scenarios within the Mux Protocol.
+ * This file demonstrates practical usage patterns for the StrKeyHelper
+ * class in the Mux Protocol key management system.
  */
+import { StrKeyHelper, StrKeyType, StrKeyErrorCode } from './strkey.helper';
 
-import { StrKeyHelper } from './strkey.helper';
-import { Keypair } from 'stellar-sdk';
-import { Logger } from '@nestjs/common';
+// ---------------------------------------------------------------------------
+// Example 1: Basic public key encoding and validation
+// ---------------------------------------------------------------------------
 
-const logger = new Logger('StrKeyExamples');
+function exampleBasicValidation(): void {
+  const helper = new StrKeyHelper();
 
-/**
- * Example 1: Validating User-Provided Public Keys
- *
- * When users provide Stellar addresses, always validate them
- * before storing or using them in transactions.
- */
-export function validateUserPublicKey(userProvidedKey: string): boolean {
-  // Quick validation
-  if (!StrKeyHelper.isValidEd25519PublicKey(userProvidedKey)) {
-    logger.warn('Invalid public key provided by user');
-    return false;
-  }
-
-  // Additional check - ensure it's actually a public key and not a secret
-  const keyType = StrKeyHelper.getStrKeyType(userProvidedKey);
-  if (keyType.type !== 'publicKey') {
-    logger.error('User provided non-public key type:', keyType.type);
-    return false;
-  }
-
-  logger.log(`Valid public key: ${StrKeyHelper.maskKey(userProvidedKey)}`);
-  return true;
-}
-
-/**
- * Example 2: Safe Logging of Keys
- *
- * Always mask keys before logging to prevent accidental exposure.
- */
-export function safelyLogKeyOperation(
-  publicKey: string,
-  operation: string,
-): void {
-  const masked = StrKeyHelper.maskKey(publicKey);
-  logger.log(`${operation} completed for key ${masked}`);
-}
-
-/**
- * Example 3: Converting Between Formats
- *
- * Convert between raw bytes and StrKey format for database storage
- * or API interactions.
- */
-export function convertKeyFormats(keypair: Keypair): {
-  rawPublicKey: Buffer;
-  encodedPublicKey: string;
-  rawSecretKey: Buffer;
-  encodedSecretSeed: string;
-} {
-  // Get raw bytes from keypair
-  const rawPublicKey = keypair.rawPublicKey();
-  const rawSecretKey = keypair.rawSecretKey();
+  // Create a raw 32-byte public key (in practice, this comes from a keypair)
+  const rawPublicKey = Buffer.alloc(32);
+  rawPublicKey.fill(0x01);
 
   // Encode to StrKey format
-  const encodedPublicKey = StrKeyHelper.encodeEd25519PublicKey(rawPublicKey);
-  const encodedSecretSeed = StrKeyHelper.encodeEd25519SecretSeed(rawSecretKey);
+  const encoded = helper.encodeEd25519PublicKey(rawPublicKey);
+  console.log(`Encoded public key: ${encoded}`);
+  // Output: Encoded public key: GABC... (56 characters)
 
-  // Verify encoding is correct
-  if (encodedPublicKey !== keypair.publicKey()) {
-    throw new Error('Public key encoding mismatch');
-  }
-
-  if (encodedSecretSeed !== keypair.secret()) {
-    throw new Error('Secret seed encoding mismatch');
-  }
-
-  return {
-    rawPublicKey,
-    encodedPublicKey,
-    rawSecretKey,
-    encodedSecretSeed,
-  };
+  // Validate the encoded key
+  const isValid = helper.isValidEd25519PublicKey(encoded);
+  console.log(`Is valid: ${isValid}`);
+  // Output: Is valid: true
 }
 
-/**
- * Example 4: Preventing Secret Seed Exposure
- *
- * Use quick detection to prevent accidental logging or exposure
- * of secret seeds.
- */
-export function preventSecretExposure(value: unknown): void {
-  if (StrKeyHelper.looksLikeSecretSeed(value)) {
-    logger.error('SECURITY ALERT: Attempted to expose secret seed');
-    throw new Error('Cannot expose secret seed');
-  }
+// ---------------------------------------------------------------------------
+// Example 2: Decoding and round-trip verification
+// ---------------------------------------------------------------------------
 
-  // Safe to proceed with logging or other operations
-  logger.log('Processing non-sensitive value');
-}
+function exampleRoundTrip(): void {
+  const helper = new StrKeyHelper();
 
-/**
- * Example 5: Batch Key Validation
- *
- * Validate multiple keys efficiently and report results.
- */
-export function batchValidateKeys(keys: string[]): {
-  valid: string[];
-  invalid: string[];
-  suspicious: string[];
-} {
-  const valid: string[] = [];
-  const invalid: string[] = [];
-  const suspicious: string[] = [];
+  const originalBuffer = Buffer.alloc(32);
+  originalBuffer.fill(0x42);
 
-  for (const key of keys) {
-    const keyType = StrKeyHelper.getStrKeyType(key);
+  // Encode
+  const encoded = helper.encodeEd25519PublicKey(originalBuffer);
 
-    if (keyType.isValid && keyType.type === 'publicKey') {
-      valid.push(key);
-    } else if (keyType.type === 'secretSeed') {
-      // Flag secret seeds as suspicious
-      suspicious.push(StrKeyHelper.maskKey(key));
-      logger.warn('Secret seed found in public key list');
-    } else {
-      invalid.push(key);
-    }
-  }
-
-  return { valid, invalid, suspicious };
-}
-
-/**
- * Example 6: Key Type Detection and Routing
- *
- * Automatically determine what to do with a key based on its type.
- */
-export function routeKeyOperation(key: string): string {
-  const keyInfo = StrKeyHelper.getStrKeyType(key);
-
-  switch (keyInfo.type) {
-    case 'publicKey':
-      return 'Process as account address';
-
-    case 'secretSeed':
-      return 'ERROR: Secret seeds should not be processed here';
-
-    case 'preAuthTx':
-      return 'Process as pre-authorized transaction';
-
-    case 'sha256Hash':
-      return 'Process as hash signer';
-
-    case 'muxedAccount':
-      return 'Process as muxed account';
-
-    case 'contract':
-      return 'Process as smart contract';
-
-    default:
-      return 'Unknown key type';
-  }
-}
-
-/**
- * Example 7: Working with Pre-Authorized Transactions
- *
- * Encode and decode transaction hashes for pre-authorization.
- */
-export function handlePreAuthTransaction(txHash: Buffer): {
-  encoded: string;
-  decoded: Buffer;
-  isValid: boolean;
-} {
-  // Encode the transaction hash
-  const encoded = StrKeyHelper.encodePreAuthTx(txHash);
-
-  // Verify it starts with T
-  logger.log(`Pre-auth tx encoded: ${encoded.substring(0, 10)}...`);
-
-  // Decode it back
-  const decoded = StrKeyHelper.decodePreAuthTx(encoded);
+  // Decode
+  const decoded = helper.decodeEd25519PublicKey(encoded);
 
   // Verify round-trip
-  const isValid = decoded.equals(txHash);
-
-  return { encoded, decoded, isValid };
+  const roundTripOk = decoded.equals(originalBuffer);
+  console.log(`Round-trip successful: ${roundTripOk}`);
+  // Output: Round-trip successful: true
 }
 
-/**
- * Example 8: Custom Key Masking for Different Contexts
- *
- * Use different masking levels based on the logging context.
- */
-export function contextualKeyMasking(
-  key: string,
-  context: 'public' | 'internal' | 'audit',
-): string {
-  switch (context) {
-    case 'public':
-      // Show very little (first 2, last 2)
-      return StrKeyHelper.maskKey(key, 2, 2);
+// ---------------------------------------------------------------------------
+// Example 3: Type detection
+// ---------------------------------------------------------------------------
 
-    case 'internal':
-      // Show moderate amount (default: first 4, last 4)
-      return StrKeyHelper.maskKey(key);
+function exampleTypeDetection(): void {
+  const helper = new StrKeyHelper();
 
-    case 'audit':
-      // Show more for audit trail (first 8, last 8)
-      return StrKeyHelper.maskKey(key, 8, 8);
+  const publicKey = helper.encodeEd25519PublicKey(Buffer.alloc(32).fill(0x01));
+  const secretSeed = helper.encodeEd25519SecretSeed(Buffer.alloc(32).fill(0x02));
 
-    default:
-      return '***';
-  }
+  const pkInfo = helper.getStrKeyType(publicKey);
+  const ssInfo = helper.getStrKeyType(secretSeed);
+
+  console.log(`Public key type: ${pkInfo.type}, valid: ${pkInfo.isValid}`);
+  // Output: Public key type: ed25519PublicKey, valid: true
+
+  console.log(`Secret seed type: ${ssInfo.type}, valid: ${ssInfo.isValid}`);
+  // Output: Secret seed type: ed25519SecretSeed, valid: true
 }
 
-/**
- * Example 9: Key Validation for API Endpoints
- *
- * Comprehensive validation for API request parameters.
- */
-export function validateAPIKeyParameter(
-  key: string | undefined,
-  paramName: string,
-  expectedType: 'publicKey' | 'any' = 'publicKey',
-): { valid: boolean; error?: string } {
-  if (!key) {
-    return { valid: false, error: `${paramName} is required` };
-  }
+// ---------------------------------------------------------------------------
+// Example 4: Safe logging with masking
+// ---------------------------------------------------------------------------
 
-  if (typeof key !== 'string') {
-    return { valid: false, error: `${paramName} must be a string` };
-  }
+function exampleSafeLogging(): void {
+  const helper = new StrKeyHelper();
 
-  const keyInfo = StrKeyHelper.getStrKeyType(key);
+  const publicKey = helper.encodeEd25519PublicKey(Buffer.alloc(32).fill(0x01));
+  const secretSeed = helper.encodeEd25519SecretSeed(Buffer.alloc(32).fill(0x02));
 
-  if (!keyInfo.isValid) {
-    return { valid: false, error: `${paramName} is not a valid Stellar key` };
-  }
+  // NEVER log the full secret seed
+  console.log(`Generated public key: ${helper.maskKey(publicKey)}`);
+  // Output: Generated public key: GABC********************XYZ9
 
-  if (keyInfo.type === 'secretSeed') {
-    logger.error('SECURITY: Secret seed provided in API parameter');
-    return { valid: false, error: `${paramName} must not be a secret seed` };
-  }
-
-  if (expectedType === 'publicKey' && keyInfo.type !== 'publicKey') {
-    return {
-      valid: false,
-      error: `${paramName} must be a public key (starts with G), got ${keyInfo.type}`,
-    };
-  }
-
-  return { valid: true };
-}
-
-/**
- * Example 10: Database Storage Helper
- *
- * Prepare keys for database storage with validation.
- */
-export function prepareKeyForStorage(publicKey: string): {
-  publicKey: string;
-  publicKeyRaw: Buffer;
-  keyType: string;
-  isValid: boolean;
-} {
-  // Validate format
-  const isValid = StrKeyHelper.isValidEd25519PublicKey(publicKey);
-
-  if (!isValid) {
-    throw new Error('Invalid public key format for storage');
-  }
-
-  // Decode to raw bytes (optional, for some database schemas)
-  const publicKeyRaw = StrKeyHelper.decodeEd25519PublicKey(publicKey);
-
-  // Get type info
-  const keyInfo = StrKeyHelper.getStrKeyType(publicKey);
-
-  logger.log(`Storing key: ${StrKeyHelper.maskKey(publicKey)}`);
-
-  return {
-    publicKey,
-    publicKeyRaw,
-    keyType: keyInfo.type,
-    isValid,
-  };
-}
-
-/**
- * Example 11: Migration Helper
- *
- * Convert keys from one format to another during migrations.
- */
-export function migrateKeyFormat(oldFormat: {
-  rawBytes: Buffer;
-  keyType: 'public' | 'secret';
-}): string {
-  try {
-    if (oldFormat.keyType === 'public') {
-      return StrKeyHelper.encodeEd25519PublicKey(oldFormat.rawBytes);
-    } else {
-      return StrKeyHelper.encodeEd25519SecretSeed(oldFormat.rawBytes);
-    }
-  } catch (error) {
-    logger.error('Key migration failed:', error);
-    throw new Error(`Failed to migrate key: ${error.message}`);
+  // Check before logging if something looks like a secret
+  if (helper.looksLikeSecretSeed(secretSeed)) {
+    console.log(`Secret seed detected, masking: ${helper.maskKey(secretSeed)}`);
+    // Output: Secret seed detected, masking: SABC********************XYZ9
   }
 }
 
-/**
- * Example 12: Health Check - Verify Key Infrastructure
- *
- * Test that key encoding/decoding is working correctly.
- */
-export function healthCheckKeyInfrastructure(): {
-  healthy: boolean;
-  tests: Record<string, boolean>;
-  error?: string;
-} {
-  const tests: Record<string, boolean> = {};
+// ---------------------------------------------------------------------------
+// Example 5: Batch validation
+// ---------------------------------------------------------------------------
+
+function exampleBatchValidation(): void {
+  const helper = new StrKeyHelper();
+
+  const keys = [
+    helper.encodeEd25519PublicKey(Buffer.alloc(32).fill(0x01)),
+    helper.encodeEd25519PublicKey(Buffer.alloc(32).fill(0x02)),
+    'invalid-key',
+    'GABC', // too short
+    '',
+  ];
+
+  const results = keys.map((key) => ({
+    key: helper.maskKey(key),
+    valid: helper.isValidEd25519PublicKey(key),
+  }));
+
+  for (const result of results) {
+    console.log(`${result.key}: valid=${result.valid}`);
+  }
+  // Output:
+  // GABC********************XYZ9: valid=true
+  // GABC********************XYZ9: valid=true
+  // [INVALID]: valid=false
+  // [REDACTED]: valid=false
+  // [INVALID]: valid=false
+}
+
+// ---------------------------------------------------------------------------
+// Example 6: Pre-authorized transaction and SHA256 hash encoding
+// ---------------------------------------------------------------------------
+
+function examplePreAuthAndSha256(): void {
+  const helper = new StrKeyHelper();
+
+  // Encode a transaction hash for pre-authorized transactions
+  const txHash = Buffer.alloc(32);
+  txHash.fill(0xAA);
+  const preAuthTx = helper.encodePreAuthTx(txHash);
+  console.log(`Pre-auth tx: ${preAuthTx}`);
+
+  // Encode a SHA256 hash
+  const sha256Hash = Buffer.alloc(32);
+  sha256Hash.fill(0xBB);
+  const encodedHash = helper.encodeSha256Hash(sha256Hash);
+  console.log(`SHA256 hash: ${encodedHash}`);
+
+  // Validate them
+  console.log(
+    `Pre-auth tx valid: ${helper.isValidPreAuthTx(preAuthTx)}`,
+  );
+  console.log(
+    `SHA256 hash valid: ${helper.isValidSha256Hash(encodedHash)}`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Example 7: Error handling with stable error codes
+// ---------------------------------------------------------------------------
+
+function exampleErrorHandling(): void {
+  const helper = new StrKeyHelper();
 
   try {
-    // Test 1: Generate a keypair
-    const keypair = Keypair.random();
-    tests.keypairGeneration = true;
-
-    // Test 2: Encode public key
-    const rawPublic = keypair.rawPublicKey();
-    const encodedPublic = StrKeyHelper.encodeEd25519PublicKey(rawPublic);
-    tests.publicKeyEncoding = encodedPublic === keypair.publicKey();
-
-    // Test 3: Decode public key
-    const decodedPublic = StrKeyHelper.decodeEd25519PublicKey(encodedPublic);
-    tests.publicKeyDecoding = decodedPublic.equals(rawPublic);
-
-    // Test 4: Validate public key
-    tests.publicKeyValidation =
-      StrKeyHelper.isValidEd25519PublicKey(encodedPublic);
-
-    // Test 5: Encode secret seed
-    const rawSecret = keypair.rawSecretKey();
-    const encodedSecret = StrKeyHelper.encodeEd25519SecretSeed(rawSecret);
-    tests.secretSeedEncoding = encodedSecret === keypair.secret();
-
-    // Test 6: Decode secret seed
-    const decodedSecret = StrKeyHelper.decodeEd25519SecretSeed(encodedSecret);
-    tests.secretSeedDecoding = decodedSecret.equals(rawSecret);
-
-    // Test 7: Validate secret seed
-    tests.secretSeedValidation =
-      StrKeyHelper.isValidEd25519SecretSeed(encodedSecret);
-
-    // Test 8: Key type detection
-    const publicKeyType = StrKeyHelper.getStrKeyType(encodedPublic);
-    const secretKeyType = StrKeyHelper.getStrKeyType(encodedSecret);
-    tests.keyTypeDetection =
-      publicKeyType.type === 'publicKey' && secretKeyType.type === 'secretSeed';
-
-    // All tests passed
-    const allPassed = Object.values(tests).every((result) => result === true);
-
-    return {
-      healthy: allPassed,
-      tests,
-    };
-  } catch (error) {
-    return {
-      healthy: false,
-      tests,
-      error: error.message,
-    };
+    // Attempt to encode invalid input
+    helper.encodeEd25519PublicKey(Buffer.alloc(16) as any);
+  } catch (error: any) {
+    console.log(`Error: ${error.message}`);
+    // Error message contains the stable error code but NOT the raw key
   }
+
+  // Validation methods never throw — they return false
+  const isValid = helper.isValidEd25519PublicKey(123 as any);
+  console.log(`Validation of non-string input: ${isValid}`);
+  // Output: Validation of non-string input: false
 }
 
-/**
- * Example 13: Audit Trail with Masked Keys
- *
- * Create audit log entries with safely masked keys.
- */
-export function createAuditEntry(
-  operation: string,
-  publicKey: string,
-  metadata?: Record<string, any>,
-): {
-  operation: string;
-  publicKeyMasked: string;
-  timestamp: Date;
-  metadata?: Record<string, any>;
-} {
-  return {
-    operation,
-    publicKeyMasked: StrKeyHelper.maskKey(publicKey),
-    timestamp: new Date(),
-    metadata,
-  };
+// ---------------------------------------------------------------------------
+// Example 8: Integration with key management workflow
+// ---------------------------------------------------------------------------
+
+async function exampleKeyManagementWorkflow(): Promise<void> {
+  const helper = new StrKeyHelper();
+
+  // Simulate key generation
+  const publicKeyBuffer = Buffer.alloc(32);
+  publicKeyBuffer.fill(0x01);
+
+  const secretSeedBuffer = Buffer.alloc(32);
+  secretSeedBuffer.fill(0x02);
+
+  // Encode to StrKey format for storage/transmission
+  const publicKey = helper.encodeEd25519PublicKey(publicKeyBuffer);
+  const secretSeed = helper.encodeEd25519SecretSeed(secretSeedBuffer);
+
+  // Validate before using
+  if (!helper.isValidEd25519PublicKey(publicKey)) {
+    throw new Error('Invalid public key');
+  }
+
+  if (!helper.isValidEd25519SecretSeed(secretSeed)) {
+    throw new Error('Invalid secret seed');
+  }
+
+  // Decode for use in signing operations
+  const decodedPublicKey = helper.decodeEd25519PublicKey(publicKey);
+
+  // Log safely (never log the secret seed)
+  console.log(
+    `Key generated: publicKey=${helper.maskKey(publicKey)}`,
+  );
+
+  // Type check
+  const info = helper.getStrKeyType(publicKey);
+  console.log(`Key type: ${info.type}`);
 }
 
-// Export all examples
-export const StrKeyExamples = {
-  validateUserPublicKey,
-  safelyLogKeyOperation,
-  convertKeyFormats,
-  preventSecretExposure,
-  batchValidateKeys,
-  routeKeyOperation,
-  handlePreAuthTransaction,
-  contextualKeyMasking,
-  validateAPIKeyParameter,
-  prepareKeyForStorage,
-  migrateKeyFormat,
-  healthCheckKeyInfrastructure,
-  createAuditEntry,
+// ---------------------------------------------------------------------------
+// Export examples for documentation
+// ---------------------------------------------------------------------------
+
+export {
+  exampleBasicValidation,
+  exampleRoundTrip,
+  exampleTypeDetection,
+  exampleSafeLogging,
+  exampleBatchValidation,
+  examplePreAuthAndSha256,
+  exampleErrorHandling,
+  exampleKeyManagementWorkflow,
 };

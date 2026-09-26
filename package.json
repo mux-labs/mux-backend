@@ -23,10 +23,13 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:e2e:login-smoke": "jest --config ./test/jest-e2e.json --runTestsByPath test/login-smoke.e2e-spec.ts --passWithNoTests=false",
     "preinstall": "npx only-allow pnpm",
     "openapi:generate": "ts-node -r tsconfig-paths/register scripts/generate-openapi.ts",
     "openapi:lint": "npx @redocly/cli@latest lint openapi.json --config redocly.yaml",
+    "openapi:check-drift": "ts-node -r tsconfig-paths/register scripts/check-openapi-drift.ts",
     "prisma:check-migrations": "ts-node -r tsconfig-paths/register scripts/check-migration-naming.ts",
+    "verify:key-consolidation": "ts-node -r tsconfig-paths/register scripts/verify-key-management-consolidation.ts",
     "test:scripts": "jest --config scripts/jest.config.js"
   },
   "dependencies": {
@@ -107,7 +110,10 @@
     "testEnvironment": "node",
     "moduleNameMapper": {
       "^(\\.{1,2}/.*)\\.js$": "$1",
-      "^.+/generated/prisma/client$": "<rootDir>/__mocks__/generated/prisma/client.ts"
+      "^src/(.*)$": "<rootDir>/$1",
+      "^@prisma/client$": "<rootDir>/__mocks__/generated/prisma/client.ts",
+      "^.+/generated/prisma/client$": "<rootDir>/__mocks__/generated/prisma/client.ts",
+      "^.+/generated/prisma$": "<rootDir>/__mocks__/generated/prisma/client.ts"
     }
   }
 }
