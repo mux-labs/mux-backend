@@ -1095,6 +1095,51 @@ Webhooks allow your application to receive real-time notifications when events o
 
 All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
 
+#### Verifying an inbound signature (`WebhookSignatureService`)
+
+`src/webhooks/webhook-signature.service.ts` is the single, shared verifier for
+`X-Webhook-Signature`. Anything that accepts a Mux-signed payload (an inbound
+receiver, a partner relay, a test harness) should call it rather than
+hand-rolling a comparison, so the rules cannot drift between call sites.
+
+```ts
+verifier.verify({
+  header: req.header['x-webhook-signature'],
+  payload: rawBody, // exact bytes that were signed
+  secret, // endpoint secret; absent/blank => rejected
+});
+```
+
+Invariants, each covered by `src/webhooks/webhook-signature.service.spec.ts`:
+
+* **Constant-time.** The digest is compared with `crypto.timingSafeEqual` over
+  equal-length buffers. A length mismatch is a mismatch — it is never padded or
+  short-circuited, so a `===` on a digest can never leak a correct prefix.
+* **Fail closed on a missing secret.** No secret means every signature is
+  rejected (`WEBHOOK_SIGNATURE_SECRET_UNAVAILABLE`). There is no "skip
+  verification" path.
+* **Bounded replay window.** The signed timestamp must be within
+  `DEFAULT_SIGNATURE_TOLERANCE_SECONDS` (300s) of now, in *either* direction: a
+  stale capture and a forged future timestamp are both rejected.
+* **Bounded input.** A header larger than `MAX_SIGNATURE_HEADER_BYTES` (256) is
+  rejected before it is parsed.
+* **No leakage.** Failures throw `WebhookVerificationError` with a stable code
+  and a fixed message. The secret, the presented digest, and the payload never
+  reach a log line, a metric label, or an error body.
+
+Stable codes (`src/webhooks/webhook-signature.model.ts`):
+`WEBHOOK_SIGNATURE_MISSING`, `WEBHOOK_SIGNATURE_MALFORMED`,
+`WEBHOOK_SIGNATURE_HEADER_TOO_LARGE`, `WEBHOOK_SIGNATURE_SECRET_UNAVAILABLE`,
+`WEBHOOK_SIGNATURE_TIMESTAMP_OUT_OF_TOLERANCE`, `WEBHOOK_SIGNATURE_MISMATCH`,
+`WEBHOOK_VERIFY_INVALID_ARGUMENT`. Each rejection also increments a
+`webhook_signature_*` counter so a mismatch spike is visible without reading
+payloads. See [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md)
+for rotation and incident response.
+
+### Signing Secret Storage & Rotation
+
+* **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
+* **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-s
 ### Signing Secret Storage & Rotation
 
 * **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
@@ -1246,6 +1291,68 @@ shapes both the CSV/JSON payload and the job record, so the two cannot disagree.
 Stable codes: `EXPORT_UNSUPPORTED_FORMAT`, `EXPORT_ROW_MISSING_REQUIRED_FIELD`,
 `EXPORT_ROW_INVALID_FIELD`, `EXPORT_TOO_LARGE` — the last two align with the
 existing `ErrorCode.EXPORT_*` envelope in `src/common/dto/error-envelope.dto.ts`.
+
+### Today Usage (authoritative backend)
+
+A client that needs to know how much of its daily limit it has consumed must not
+be trusted to compute it. `UsageService.getTodayUsage(walletId)` in
+`src/transactions/transaction-usage.service.ts` is the authoritative backend for
+"used so far today":
+
+* **Server-derived, never client-supplied.** The figure is a `GROUP BY` over
+  the wallet's own transactions. There is no request field a caller can use to
+  assert a total, so usage cannot be understated to unlock a spend policy would
+  refuse.
+* **UTC calendar day.** The window is `[00:00Z, next 00:00Z)`, derived
+  server-side from an injectable clock. A client cannot widen or shift the
+  window, which is what stops "reset the counter by moving the clock".
+* **Exact decimal arithmetic.** Amounts are summed as scaled `BigInt`, never as
+  JS `Number` — the sum feeds a spending limit, so a rounding error would be a
+  limit bypass.
+* **Fail closed.** A store outage raises `USAGE_STORE_UNAVAILABLE`. The service
+  never reports `0` for a query it did not answer: a false zero reads as "full
+  allowance available", which is the dangerous direction to fail in. A
+  malformed aggregate is `USAGE_STORE_CONTRACT_VIOLATION` rather than being
+  coerced to zero.
+* `PENDING` and `CONFIRMED` count; `FAILED` does not.
+
+Stable codes: `USAGE_INVALID_WALLET_ID`, `USAGE_STORE_UNAVAILABLE`,
+`USAGE_STORE_CONTRACT_VIOLATION`. Each outcome increments a `usage_*` counter.
+
+### Transaction Memo Validation
+
+The `memo` field is client-supplied free text that is stored, indexed, searchable
+(`?memo=`), and ultimately becomes a Stellar `MemoText` on-chain. Stellar caps
+`MemoText` at **28 bytes**, so a memo that looks fine in JavaScript can still be
+un-submittable. `src/transactions/transaction-memo.ts` is the single place that
+decides admissibility, and `TransactionsService.createTransaction()` calls
+`normalizeMemo()` **before** the insert.
+
+* **Length is measured in UTF-8 bytes, not characters.** A 14-character emoji
+  memo is 28 bytes and is refused; 28 ASCII characters are accepted. Checking
+  `.length` would let an un-submittable memo through.
+* **No truncation.** An over-long memo is an error, never silently shortened to
+  something the client did not ask for.
+* **Whitespace-only is an error** (`MEMO_EMPTY`), not a stored blank, so a
+  caller cannot believe a memo was recorded when it was not.
+* **Control characters and unpaired surrogates are refused.** They cannot
+  survive XDR encoding and are a log-injection vector once stored.
+* **`undefined`/`null` mean "no memo"** and are never an error.
+
+Stable codes (`src/transactions/transaction-memo.ts`): `MEMO_TYPE_INVALID`,
+`MEMO_TOO_LONG`, `MEMO_CHARSET_INVALID`, `MEMO_EMPTY`. Error messages never
+echo the memo itself.
+
+### Transaction Status Lifecycle (#498)
+
+Internal transaction statuses and their Horizon result mappings:
+
+| Status | Description | Horizon mapping |
+|--------|-------------|-----------------|
+| `PENDING` | Created, not yet submitted | — |
+| `SUBMITTED` | Submitted to Stellar, awaiting ledger inclusion | HTTP 202, `result_code: tx_queued` |
+| `CONFIRMED` | Included in a ledger | `successful: true`, `result_code: tx_success` / `tx_fee_bump_inner_success` |
+| `FAILED` | Rejected or expired | `su
 
 ### Transaction Status Lifecycle (#498)
 
