@@ -18,7 +18,12 @@ endpoints.
    rotation time, and is never retrievable again.
 2. **Constant-time verification.** Incoming webhook signatures are verified with a
    constant-time comparison (`crypto.timingSafeEqual` or equivalent). Never use
-   `==`, `===`, or `String.prototype.includes` on secret material.
+   `==`, `===`, or `String.prototype.includes` on secret material. The
+   repository implements exactly one verifier,
+   `src/webhooks/webhook-signature.service.ts` (`WebhookSignatureService`); new
+   receivers and relays must call it instead of hand-rolling a comparison. It
+   also bounds the replay window and rejects an unset secret, so the
+   constant-time property cannot be lost along with the rest of the check.
 3. **No secret leakage.** Raw secrets, hashes, salts, and derived key material
    must never appear in logs, metrics, traces, error responses, or crash dumps.
    Log only opaque identifiers (see §5).

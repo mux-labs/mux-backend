@@ -7,6 +7,7 @@ import { KeyManagementModule } from './key-management/key-management.module';
 import { SorobanInvokeModule } from './soroban/soroban-invoke.module';
 import { EncryptionModule } from './encryption/encryption.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { WebhooksModule } from './webhooks/webhooks.module';
 import { ApiKeyGuard } from './api-keys/api-key.guard';
 import { ApiKeyService } from './api-keys/api-key.service';
 import { MetricsService } from './common/metrics/metrics.service';
@@ -25,6 +26,7 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     EncryptionModule,
     IdempotencyModule,
     BalanceIndexerModule,
+    WebhooksModule,
   ],
   providers: [
     ApiKeyGuard,
@@ -44,6 +46,7 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     EncryptionModule,
     IdempotencyModule,
     BalanceIndexerModule,
+    WebhooksModule,
   ],
 })
 export class AppModule {}
