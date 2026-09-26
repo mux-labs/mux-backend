@@ -7,6 +7,8 @@ import { KeyManagementModule } from './key-management/key-management.module';
 import { SorobanInvokeModule } from './soroban/soroban-invoke.module';
 import { EncryptionModule } from './encryption/encryption.module';
 import { IdempotencyModule } from './idempotency/idempotency.module';
+import { ErrorCodeCatalogModule } from './common/error-code-catalog/error-code-catalog.module';
+import { GracefulShutdownModule } from './common/shutdown/graceful-shutdown.module';
 import { ApiKeyGuard } from './api-keys/api-key.guard';
 import { ApiKeyService } from './api-keys/api-key.service';
 import { MetricsService } from './common/metrics/metrics.service';
@@ -25,6 +27,8 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     EncryptionModule,
     IdempotencyModule,
     BalanceIndexerModule,
+    ErrorCodeCatalogModule,
+    GracefulShutdownModule,
   ],
   providers: [
     ApiKeyGuard,
@@ -44,6 +48,8 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     EncryptionModule,
     IdempotencyModule,
     BalanceIndexerModule,
+    ErrorCodeCatalogModule,
+    GracefulShutdownModule,
   ],
 })
 export class AppModule {}

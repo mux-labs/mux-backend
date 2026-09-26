@@ -64,6 +64,9 @@ export const PUBLIC_ENDPOINT_ALLOWLIST: readonly string[] = [
   '/health',
   '/health/*',
   '/metrics',
+  // Frontend error-code catalog (#949): read-only, static, secret-free.
+  '/error-codes',
+  '/v1/error-codes',
   '/auth/challenge',
   '/auth/verify',
   '/auth/refresh',

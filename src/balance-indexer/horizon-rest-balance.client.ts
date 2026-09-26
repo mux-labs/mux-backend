@@ -1,5 +1,7 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, Optional } from '@nestjs/common';
 import axios from 'axios';
+import { MetricsService } from '../common/metrics/metrics.service';
+import { runWithHorizonRetry } from './horizon-retry.policy';
 import type {
   HorizonAccountBalances,
   HorizonBalanceClient,
@@ -13,6 +15,18 @@ import type { BalanceAssetType } from './balance-indexer.model';
  * reconciliation service depends on that contract — if this method ever
  * resolved with an empty list on failure, a Horizon outage would be persisted
  * as "the account holds nothing" and would silently zero real balances.
+ *
+ * ## Retry policy (#952)
+ *
+ * Transient Horizon failures (408/429/5xx, connection reset/timeout/DNS) are
+ * retried in-process with bounded exponential backoff + jitter before the
+ * caller ever sees an error. The retry wraps a **read only** (a single GET),
+ * so it can never double-apply a balance write, and it still fails closed: if
+ * every attempt fails, `fetchAccountBalances` rejects with a typed
+ * `HorizonRetryExhaustedError` instead of resolving with an empty snapshot.
+ * Budget is tuned with `STELLAR_HORIZON_MAX_RETRIES`,
+ * `STELLAR_HORIZON_RETRY_BACKOFF_MS`, `STELLAR_HORIZON_RETRY_JITTER_MS` and
+ * `STELLAR_HORIZON_RETRY_BUDGET_MS`. See docs/HORIZON-RETRY.md.
  */
 @Injectable()
 export class HorizonRestBalanceClient implements HorizonBalanceClient {
@@ -20,14 +34,45 @@ export class HorizonRestBalanceClient implements HorizonBalanceClient {
 
   /**
    * Bounds how long a single Horizon read may take. Without this a hung
-   * connection would pin a request open until the client gave up.
+   * connection would pin a request open until the client gave up. Applied to
+   * *each* attempt, so the retry budget bounds the total.
    */
   private static readonly TIMEOUT_MS = 10_000;
+
+  constructor(@Optional() private readonly metrics?: MetricsService) {}
 
   async fetchAccountBalances(
     accountId: string,
   ): Promise<HorizonAccountBalances> {
     const baseUrl = this.resolveBaseUrl();
+
+    return runWithHorizonRetry(() => this.requestAccount(baseUrl, accountId), {
+      observer: {
+        onRetry: ({ attempt, delayMs, reason }) => {
+          // Never log the account id, URL query, or response body.
+          this.metrics?.incrementCounter('balance_horizon_retry');
+          this.logger.warn(
+            `horizon.read retry attempt=${attempt} delayMs=${delayMs} reason=${reason}`,
+          );
+        },
+        onExhausted: ({ attempts, reason }) => {
+          this.metrics?.incrementCounter('balance_horizon_retry_exhausted');
+          this.logger.error(
+            `horizon.read exhausted attempts=${attempts} reason=${reason}`,
+          );
+        },
+      },
+    });
+  }
+
+  /**
+   * One Horizon GET attempt. Kept separate from the retry wrapper so the
+   * retried unit is unambiguously a single idempotent read.
+   */
+  private async requestAccount(
+    baseUrl: string,
+    accountId: string,
+  ): Promise<HorizonAccountBalances> {
     const response = await axios.get(
       `${baseUrl}/accounts/${encodeURIComponent(accountId)}`,
       {
@@ -39,6 +84,8 @@ export class HorizonRestBalanceClient implements HorizonBalanceClient {
 
     const payload = response?.data as HorizonAccountPayload | undefined;
     if (!payload || !Array.isArray(payload.balances)) {
+      // A malformed 200 is treated as permanent: retrying an unexpected shape
+      // would amplify load against a Horizon that is already misbehaving.
       throw new Error('horizon account payload is missing balances');
     }
 
