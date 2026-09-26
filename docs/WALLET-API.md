@@ -220,6 +220,32 @@ key material.
 
 - Link and unlink are idempotent on the natural key. Concurrent duplicates are
   resolved by the unique constraint; the loser returns the winner's state.
+- **Wallet creation is retry-safe.** `POST /v1/wallets/orchestration/create`
+  never mints a second custody key for the same user, because two keys means
+  funds stranded on an orphaned address. Three independent guards enforce this:
+  1. **Key replay** — a completed `idempotencyKey` returns the *original*
+     result verbatim (same wallet id, same `isNewWallet`, same `createdAt`),
+     so a retry after a dropped response is a no-op. Reusing a key for a
+     different `userId`/`network` is a `409`
+     (`WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT`) rather than a cross-tenant
+     leak.
+  2. **In-flight reservation** — a key currently being processed is rejected
+     with `WALLET_ORCHESTRATION_IDEMPOTENCY_IN_PROGRESS` (also `409`) so two
+     concurrent retries cannot both mint. The reservation is released in a
+     `finally`, so one transient failure never poisons a key.
+  3. **Natural-key guard** — one wallet per `(userId, network)`. Even with no
+     idempotency key, a repeat call returns the existing wallet with
+     `isNewWallet: false` instead of creating a duplicate.
+- The orchestration surface is **deny-by-default**: it requires an API key
+  (`ApiKeyGuard`) and is gated behind `FEATURE_WALLET_ORCHESTRATOR`
+  (`FeatureFlagGuard`). Only the exact string `true` enables it.
+- A dependency outage returns `503` unchanged rather than being masked as a
+  `500`, so the calling orchestrator can retry a request that would succeed.
+- Private key material never crosses the service boundary: the orchestration
+  result carries no `privateKey` field.
+- Invariants are gated in CI by `verify-orchestrator-retries.sh` and covered by
+  `src/wallets/wallet-creation-orchestrator.service.spec.ts` and
+  `test/wallet-orchestration.e2e-spec.ts`.
 - Payment creation is idempotent on the client `Idempotency-Key`; the stored
   response includes the resolved `assetCode`.
 - Clients SHOULD send an `Idempotency-Key` header on writes. The server stores
@@ -337,8 +363,121 @@ Set `MULTI_ASSET_PAYMENTS_ENABLED=false` and redeploy. Native XLM payments
 continue to work; credit-asset writes are refused. The `assetCode` column is
 additive and requires no data migration.
 
-## Contributor checklist (Stellar Wave)
+## Horizon balance reconciliation
 
+`BalanceIndexerService` keeps the `WalletBalance` index in sync with Horizon and
+flags any disagreement between the indexed value and the on-chain value.
+
+### Invariants
+
+1. **Horizon is the source of truth for on-chain balances.** The index is a
+   cache. Reconciliation *records* a discrepancy (`syncStatus = MISMATCH`,
+   `onChainBalance`); it never overwrites the indexed balance. An operator
+   decides which side is correct.
+2. **Fail-closed on dependency outage.** If Horizon or the balance 
+
+`BalanceIndexerService` keeps the `WalletBalance` index in sync with Horizon and
+flags any disagreement between the indexed value and the on-chain value.
+
+### Invariants
+
+1. **Horizon is the source of truth for on-chain balances.** The index is a
+   cache. Reconciliation *records* a discrepancy (`syncStatus = MISMATCH`,
+   `onChainBalance`); it never overwrites the indexed balance. An operator
+   decides which side is correct.
+2. **Fail-closed on dependency outage.** If Horizon or the balance store is
+   unreachable the call fails with `503 BALANCE_DEPENDENCY_UNAVAILABLE` and
+   applies **no** write. A partial or malformed Horizon payload is rejected
+   rather than persisted — otherwise an outage would be recorded as "this
+   account holds nothing" and would silently zero real balances.
+3. **Writes are feature-flagged.** `BALANCE_SYNC_ENABLED` defaults to **OFF**.
+   Reads work unflagged; every mutation returns
+   `503 BALANCE_FEATURE_FLAG_DISABLED` until an operator opts in.
+4. **Amounts are strings.** Balances are compared and stored as decimal strings
+   in the asset's smallest unit and never pass through a JS `number`, so
+   precision is preserved. Comparison normalizes trailing zeros, so `100`,
+   `100.0` and `100.0000000` are the same amount and are not reported as a
+   mismatch.
+5. **Idempotent.** A replayed sync converges on the same state, and a
+   reconciliation over unchanged data produces the same result. A balance
+   already synced inside the staleness budget skips the Horizon round trip
+   unless `forceRefresh` is set.
+6. **Bounded sweeps.** `sync-all` / `reconcile-all` refuse to run over more than
+   `MAX_SWEEP_WALLETS` (500) wallets, returning
+   `413 BALANCE_BATCH_TOO_LARGE` rather than silently truncating.
+7. **Server-side wallet resolution.** Callers supply a wallet *id*; the on-chain
+   account is always read from the stored `publicKey`, so a caller cannot point
+   the indexer at an account of their choosing.
+
+### Endpoints
+
+All routes require an API key (`ApiKeyGuard`, deny-by-default). Mutating routes
+additionally require `BALANCE_SYNC_ENABLED=true`.
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET`  | `/v1/balances/wallet/:walletId` | Cached balances. Scope with `?assetType=NATIVE&assetCode=…&assetIssuer=…`. |
+| `GET`  | `/v1/balances/wallet/:walletId/stale` | Balances not refreshed within the staleness budget. |
+| `POST` | `/v1/balances/wallet/:walletId/sync` | Refresh one wallet. Body: `{ forceRefresh?: boolean }`. |
+| `POST` | `/v1/balances/wallet/:walletId/sync-with-retry` | As `sync`, with bounded backoff on transient failures. Body: `{ forceRefresh?, maxAttempts? }` (max 5). |
+| `POST` | `/v1/balances/wallet/:walletId/reconcile` | Reconcile one asset. Body: `{ assetType, assetCode?, assetIssuer? }`. |
+| `POST` | `/v1/balances/sync-all` | Refresh every active wallet. |
+| `POST` | `/v1/balances/reconcile-all` | Reconcile every active wallet. |
+| `POST` | `/v1/balances/scheduled-sync` | Manually trigger the scheduled sweep. |
+
+### Error codes
+
+| Code | Status | Meaning |
+|------|--------|---------|
+| `BALANCE_INVALID_INPUT` | 400 | `walletId` failed validation (length/character set). |
+| `BALANCE_WALLET_NOT_FOUND` | 404 | No wallet with that id. |
+| `BALANCE_DEPENDENCY_UNAVAILABLE` | 503 | Horizon or the balance store is unavailable; **no write applied**. |
+| `BALANCE_FEATURE_FLAG_DISABLED` | 503 | `BALANCE_SYNC_ENABLED` is not `true`. |
+| `BALANCE_BATCH_TOO_LARGE` | 413 | Sweep exceeds `MAX_SWEEP_WALLETS`. |
+
+### Configuration
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `BALANCE_SYNC_ENABLED` | `false` | Kill-switch for all balance writes. Only `true`/`1` enables. |
+| `BALANCE_STALE_THRESHOLD_MS` | `300000` | How long a balance may go unrefreshed before it is reported stale. |
+| `STELLAR_HORIZON_TESTNET_URL` | Horizon testnet | Base URL for testnet reads. |
+| `STELLAR_HORIZON_MAINNET_URL` | — | Required when `STELLAR_NETWORK=mainnet`; the client throws rather than falling back. |
+
+An unknown `STELLAR_NETWORK` makes the Horizon client throw, so a misconfigured
+deploy cannot reconcile against the wrong chain.
+
+### Observability
+
+Metrics (label values are sanitized; no secrets or key material):
+`balance_sync_completed`, `balance_sync_skipped_fresh`, `balance_sync_retry`,
+`balance_sync_retry_skipped`, `balance_reconcile_match`,
+`balance_reconcile_mismatch`, `balance_reconcile_all_completed`,
+`balance_stale_scan`, `balance_scheduled_sync_completed`,
+`balance_scheduled_sync_failed`, `balance_horizon_error`, `balance_store_error`,
+`balance_write_blocked_by_flag`, `balance_sweep_too_large`,
+`balance_wallet_not_found`.
+
+Log lines carry the wallet id, asset type and code only. Stellar account ids are
+redacted to a 4-character prefix plus length, so a log line can be correlated
+with a Horizon lookup without disclosing a usable account identifier.
+
+### Rollback
+
+Turning `BALANCE_SYNC_ENABLED` off immediately returns the service to read-only.
+No schema change is involved — `WalletBalance` and its
+`(walletId, assetType, assetCode, assetIssuer)` unique key already exist — so
+rollback requires no data migration.
+
+### Testing notes
+
+`BalanceIndexerService` depends on two ports, `BALANCE_STORE` and
+`HORIZON_BALANCE_CLIENT`, so unit tests substitute in-memory fakes. Simulate a
+Horizon outage by rejecting `fetchAccountBalances`, and a store outage by
+rejecting a `BalanceStore` method; both must surface
+`BALANCE_DEPENDENCY_UNAVAILABLE` with no write applied.
+
+## Contributor checklist (Stellar Wave)
 - [ ] Read this document and the custody security model before changing
       linkage or asset code code.
 - [ ] Add unit tests for invariants and auth negatives, including asset code

@@ -59,18 +59,8 @@ export enum ErrorCode {
   VALIDATION_FAILED = 'VALIDATION_FAILED',
   /** Caller is not authenticated (missing/invalid/expired credentials). */
   UNAUTHENTICATED = 'UNAUTHENTICATED',
-  /** Caller is authenticated but not permitted for this resource/action. */
-  FORBIDDEN = 'FORBIDDEN',
-  /** Requested resource does not exist (or is not visible to the caller). */
-  NOT_FOUND = 'NOT_FOUND',
-  /** Conflicting state, e.g. replayed request with a different payload. */
-  CONFLICT = 'CONFLICT',
   /** Rate limit exceeded for the caller/route. */
   RATE_LIMITED = 'RATE_LIMITED',
-  /** A required upstream dependency (RPC/DB/Horizon) is unavailable. */
-  DEPENDENCY_UNAVAILABLE = 'DEPENDENCY_UNAVAILABLE',
-  /** Unexpected server-side failure. */
-  INTERNAL_ERROR = 'INTERNAL_ERROR',
 }
 
 /**
@@ -104,11 +94,12 @@ export class ErrorEnvelopeDto {
 
   @ApiPropertyOptional({
     description:
-      'Optional structured details (e.g. field-level validation errors).',
-    type: 'object',
-    additionalProperties: true,
+      'Optional structured details (e.g. field-level validation errors). Every ' +
+      'message is redacted before it is returned to the client.',
+    type: 'array',
+    items: { type: 'object', additionalProperties: true },
   })
-  details?: Record<string, unknown>;
+  details?: ErrorDetail[];
 
   @ApiPropertyOptional({
     description: 'HTTP status code mirrored for convenience.',
@@ -122,6 +113,19 @@ export class ErrorEnvelopeDto {
     additionalProperties: true,
   })
   debug?: Record<string, unknown>;
+}
+
+/**
+ * A single structured validation/detail entry attached to an error envelope.
+ * `message` is redacted before it ever reaches a client.
+ */
+export interface ErrorDetail {
+  /** Dotted path of the offending field, e.g. `body.amount`. */
+  field?: string;
+  /** Client-safe explanation of the specific problem. */
+  message: string;
+  /** Any additional non-sensitive context. */
+  [key: string]: unknown;
 }
 
 /**
@@ -171,6 +175,8 @@ const DEFAULT_STATUS_BY_CODE: Record<ErrorCode, number> = {
   [ErrorCode.RESTORE_IN_PROGRESS]: 409,
   [ErrorCode.RESTORE_POINT_INVALID]: 422,
   [ErrorCode.VALIDATION_FAILED]: 422,
+  [ErrorCode.UNAUTHENTICATED]: 401,
+  [ErrorCode.RATE_LIMITED]: 429,
 };
 
 const GENERIC_MESSAGE_BY_CODE: Record<ErrorCode, string> = {
@@ -188,25 +194,33 @@ const GENERIC_MESSAGE_BY_CODE: Record<ErrorCode, string> = {
   [ErrorCode.DELEGATE_REVOKED]: 'Delegate authorization has been revoked.',
   [ErrorCode.INSUFFICIENT_ROLE]: 'Insufficient role for this action.',
   [ErrorCode.IDEMPOTENCY_KEY_REQUIRED]: 'An idempotency key is required.',
-  [ErrorCode.IDEMPOTENCY_CONFLICT]: 'Idempotency key reused with a different payload.',
+  [ErrorCode.IDEMPOTENCY_CONFLICT]:
+    'Idempotency key reused with a different payload.',
   [ErrorCode.DEPENDENCY_UNAVAILABLE]: 'A required dependency is unavailable.',
   [ErrorCode.WRITE_REJECTED]: 'Write rejected to protect data integrity.',
-  [ErrorCode.KEY_DECRYPT_FAILED]: 'Key material could not be decrypted; operation refused.',
-  [ErrorCode.KEY_VERSION_UNSUPPORTED]: 'Key version is not supported; operation refused.',
+  [ErrorCode.KEY_DECRYPT_FAILED]:
+    'Key material could not be decrypted; operation refused.',
+  [ErrorCode.KEY_VERSION_UNSUPPORTED]:
+    'Key version is not supported; operation refused.',
   [ErrorCode.EXPORT_JOB_NOT_FOUND]: 'Transaction export job not found.',
   [ErrorCode.EXPORT_NOT_READY]: 'Transaction export is not ready for download.',
-  [ErrorCode.EXPORT_DOWNLOAD_FORBIDDEN]: 'You are not allowed to download this export.',
+  [ErrorCode.EXPORT_DOWNLOAD_FORBIDDEN]:
+    'You are not allowed to download this export.',
   [ErrorCode.EXPORT_DOWNLOAD_EXPIRED]: 'This export download link has expired.',
-  [ErrorCode.EXPORT_TOO_LARGE]: 'Requested export exceeds the maximum allowed size.',
+  [ErrorCode.EXPORT_TOO_LARGE]:
+    'Requested export exceeds the maximum allowed size.',
   [ErrorCode.BACKUP_NOT_FOUND]: 'Backup not found.',
   [ErrorCode.BACKUP_NOT_READY]: 'Backup is not ready.',
   [ErrorCode.BACKUP_IN_PROGRESS]: 'A backup is already in progress.',
   [ErrorCode.BACKUP_INTEGRITY_FAILED]: 'Backup integrity verification failed.',
-  [ErrorCode.RESTORE_FORBIDDEN]: 'You are not allowed to restore from this backup.',
+  [ErrorCode.RESTORE_FORBIDDEN]:
+    'You are not allowed to restore from this backup.',
   [ErrorCode.RESTORE_CONFLICT]: 'Restore conflicts with current state.',
   [ErrorCode.RESTORE_IN_PROGRESS]: 'A restore is already in progress.',
   [ErrorCode.RESTORE_POINT_INVALID]: 'The requested restore point is invalid.',
   [ErrorCode.VALIDATION_FAILED]: 'Validation failed.',
+  [ErrorCode.UNAUTHENTICATED]: 'Authentication required.',
+  [ErrorCode.RATE_LIMITED]: 'Too many requests.',
 };
 
 /**
@@ -256,8 +270,10 @@ export function buildErrorEnvelope(
   const envelope: ErrorEnvelopeDto = {
     code,
     message: isProduction
-      ? GENERIC_MESSAGE_BY_CODE[code] ?? 'Request failed.'
-      : redactSensitive(input.message ?? GENERIC_MESSAGE_BY_CODE[code] ?? 'Request failed.'),
+      ? (GENERIC_MESSAGE_BY_CODE[code] ?? 'Request failed.')
+      : redactSensitive(
+          input.message ?? GENERIC_MESSAGE_BY_CODE[code] ?? 'Request failed.',
+        ),
     correlationId: requestId,
     statusCode,
   };
@@ -274,5 +290,4 @@ export function buildErrorEnvelope(
   }
 
   return envelope;
-}
 }
