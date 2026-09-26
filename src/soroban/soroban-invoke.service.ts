@@ -5,6 +5,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
   PayloadTooLargeException,
   ServiceUnavailableException,
 } from '@nestjs/common';
@@ -112,10 +113,16 @@ export class SorobanInvokeService {
   private readonly logger = new Logger(SorobanInvokeService.name);
 
   constructor(
+    // Optional so the module can boot without a bound custody/RPC layer. The
+    // tokens are deliberately unbound in `SorobanInvokeModule`: an invoke that
+    // actually reaches the chain must not be able to run against a stub. The
+    // guard in `invoke()` refuses when either port is missing.
+    @Optional()
     @Inject(SOROBAN_RPC)
-    private readonly rpc: SorobanRpcPort,
+    private readonly rpc: SorobanRpcPort | undefined,
+    @Optional()
     @Inject(CONTRACT_REGISTRY)
-    private readonly registry: ContractRegistryPort,
+    private readonly registry: ContractRegistryPort | undefined,
     private readonly metrics: MetricsService,
   ) {}
 
@@ -148,6 +155,20 @@ export class SorobanInvokeService {
     const correlationId = actor.correlationId;
     this.assertEnabled(correlationId);
     this.assertAuthorized(actor, correlationId);
+
+    // Fail closed when the custody/RPC layer has not bound its ports: an
+    // invoke must never "succeed" without actually reaching the chain.
+    if (!this.rpc || !this.registry) {
+      this.metrics.incrementCounter('soroban_invoke_unbound_ports');
+      this.logger.error(
+        `invoke refused: RPC/registry port unbound correlationId=${correlationId}`,
+      );
+      throw new ServiceUnavailableException({
+        code: InvokeErrorCode.RPC_UNAVAILABLE,
+        message: 'Soroban RPC is not configured; invocation refused',
+        correlationId,
+      });
+    }
 
     // Local validation runs before any network call, so a malformed request
     // cannot be used to amplify RPC load.
@@ -549,6 +570,11 @@ export class SorobanInvokeService {
     correlationId: string,
   ): Promise<string> {
     try {
+      // Unbound port (see the constructor): routed through the existing
+      // catch so it is reported and refused exactly like a registry outage.
+      if (!this.registry) {
+        throw new Error('contract registry port is unbound');
+      }
       const contractId = await this.registry.resolveContractId(
         contract,
         network,

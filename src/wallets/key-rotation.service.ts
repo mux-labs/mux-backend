@@ -7,6 +7,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { MetricsService } from '../common/metrics/metrics.service';
@@ -35,9 +36,11 @@ export const WALLET_KEY_STORE = 'WALLET_KEY_STORE';
  * implement re-encryption itself: a rotation path able to construct key
  * material in the request path would be a custody regression, not a feature.
  *
- * Until a deployment binds the token, `KeyRotationService` fails to construct
- * and the surface is unreachable — fail-closed by absence, rather than
- * fail-open with a stub that silently "succeeds" and loses a wallet's key.
+ * Until a deployment binds the token, `KeyRotationService` still constructs
+ * (so reads and the feature-flag gate keep working) but every rotation is
+ * refused with `KEY_ROTATION_DEPENDENCY_UNAVAILABLE` — fail-closed by absence,
+ * rather than fail-open with a stub that silently "succeeds" and loses a
+ * wallet's key.
  */
 export const KEY_ENVELOPE_PROVIDER = 'KEY_ENVELOPE_PROVIDER';
 
@@ -142,8 +145,19 @@ export class KeyRotationService {
   constructor(
     @Inject(WALLET_KEY_STORE)
     private readonly store: WalletKeyStore,
+    /**
+     * Optional by design: the envelope provider belongs to the custody/HSM
+     * layer and may be unbound. Making it optional lets the module *boot* (so
+     * reads and the kill-switch gate work) while the rotate path still refuses
+     * to run without it — see the guard in `rotate`.
+     *
+     * Declared as `| undefined` (rather than `?`) purely so a required
+     * parameter can follow it; `@Optional()` is what makes DI treat it as
+     * optional at runtime.
+     */
+    @Optional()
     @Inject(KEY_ENVELOPE_PROVIDER)
-    private readonly envelopes: KeyEnvelopeProvider,
+    private readonly envelopes: KeyEnvelopeProvider | undefined,
     private readonly metrics: MetricsService,
   ) {}
 
@@ -245,6 +259,22 @@ export class KeyRotationService {
     if (replay) {
       this.metrics.incrementCounter('key_rotation_replayed');
       return { ...replay, applied: false };
+    }
+
+    // Fail closed when the custody layer has not bound the envelope provider:
+    // re-encryption without it is impossible, and silently skipping it would
+    // leave the wallet on the old scheme while reporting success.
+    if (!this.envelopes) {
+      this.metrics.incrementCounter('key_rotation_envelope_provider_unbound');
+      this.logger.error(
+        `key.rotate refused wallet=${walletId}: envelope provider unbound ` +
+          `correlationId=${actor.correlationId}`,
+      );
+      throw new ServiceUnavailableException({
+        code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Key envelope provider is not configured; rotation refused',
+        correlationId: actor.correlationId,
+      });
     }
 
     let reEncrypted: { encryptedSecret: string; encryptionVersion: number };

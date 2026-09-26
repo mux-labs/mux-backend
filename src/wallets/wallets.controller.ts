@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Body,
+  Headers,
   HttpCode,
   HttpStatus,
   UseGuards,
@@ -25,18 +26,22 @@ export class WalletsController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(ApiKeyGuard)
   async createWallet(
-    @Body() body: {
+    @Body()
+    body: {
       userId: string;
       network: WalletNetwork;
       idempotencyKey?: string;
     },
+    @Headers('x-request-id') requestId?: string,
   ) {
-    const result = await this.orchestrator.createWallet(
-      body.userId,
-      body.network,
-      body.idempotencyKey ?? '',
-    );
-    return result;
+    // The orchestrator takes a single request object so the idempotency key and
+    // correlation id travel together with the routing fields (#963/#941).
+    return this.orchestrator.createWallet({
+      userId: body.userId,
+      network: body.network,
+      idempotencyKey: body.idempotencyKey,
+      correlationId: requestId,
+    });
   }
 
   @Get()

@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 
@@ -8,10 +13,7 @@ export class WalletsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async findAll(
-    userId?: string,
-    network?: WalletNetwork,
-  ): Promise<any[]> {
+  async findAll(userId?: string, network?: WalletNetwork): Promise<any[]> {
     try {
       return await this.prisma.wallet.findMany({
         where: {
@@ -22,7 +24,9 @@ export class WalletsService {
       });
     } catch (error) {
       this.logger.error('DB lookup failed', { error: error.message });
-      throw new ServiceUnavailableException('Wallet lookup temporarily unavailable');
+      throw new ServiceUnavailableException(
+        'Wallet lookup temporarily unavailable',
+      );
     }
   }
 
@@ -39,7 +43,9 @@ export class WalletsService {
       return wallet;
     } catch (error) {
       this.logger.error('DB lookup failed', { id, error: error.message });
-      throw new ServiceUnavailableException('Wallet lookup temporarily unavailable');
+      throw new ServiceUnavailableException(
+        'Wallet lookup temporarily unavailable',
+      );
     }
   }
 }

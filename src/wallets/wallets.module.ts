@@ -7,22 +7,24 @@ import { PrismaService } from '../prisma/prisma.service';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { KeyRotationService, WALLET_KEY_STORE } from './key-rotation.service';
 import { KeyRotationController } from './key-rotation.controller';
-import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { ApiKeyService } from '../api-keys/api-key.service';
+import { ApiKeyModule } from '../api-keys/api-key.module';
 
 @Module({
+  // ApiKeyModule owns ApiKeyService/ApiKeyGuard so revocation (#942) and
+  // network scoping (#943) are enforced identically on every wallet route.
+  // WalletCreationOrchestratorModule is imported (not listed as a provider —
+  // a module is not a provider) because WalletsController injects
+  // WalletCreationOrchestrator from it.
+  imports: [ApiKeyModule, WalletCreationOrchestratorModule],
   controllers: [WalletsController, KeyRotationController],
   providers: [
     WalletsService,
     WalletService,
-    WalletCreationOrchestratorModule,
     PrismaService,
     MetricsService,
     KeyRotationService,
     // PrismaService satisfies WalletKeyStore structurally.
     { provide: WALLET_KEY_STORE, useExisting: PrismaService },
-    ApiKeyGuard,
-    ApiKeyService,
   ],
   exports: [WalletsService, WalletService, KeyRotationService],
 })
