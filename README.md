@@ -444,6 +444,52 @@ A new developer API route is available: `GET /developers/:id/projects` returns t
 
 ---
 
+## Security headers
+
+Every HTTP response carries a baseline set of security headers, applied in
+[`src/common/http/security-headers.ts`](src/common/http/security-headers.ts)
+and installed in `main.ts` **before** any route — so error responses and 404s
+carry them too.
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | Stops a browser second-guessing `Content-Type`, the precondition for content-type confusion. |
+| `X-Frame-Options` | `DENY` | This is a JSON API, never something to interact with inside a frame. Clickjacking a wallet-approval dialog is a real threat. |
+| `Referrer-Policy` | `no-referrer` | Request URLs carry `userId` and wallet ids in the query string; a full referrer would hand those to third parties. |
+| `Cross-Origin-Resource-Policy` | `same-site` | A wallet API's responses must not be readable cross-site. |
+| `X-DNS-Prefetch-Control` | `off` | No speculative DNS for a JSON API. |
+| `Permissions-Policy` | deny-all allowlist | `camera=()`, `geolocation=()`, `payment=()`, `microphone=()`, `usb=()` and more are all denied. Adding a browser capability later is a deliberate act. |
+| `X-Powered-By` | *(removed)* | No reason to advertise the framework. Removed outright, not blanked. |
+
+### HSTS is opt-in
+
+`Strict-Transport-Security` is **not** emitted by default. It is only honoured
+over HTTPS, and this backend frequently terminates TLS at a proxy or runs on
+plain HTTP in local and test environments — emitting it unconditionally would
+pin a developer's browser to HTTPS for `localhost` and break local work.
+
+Deployments that terminate TLS should set:
+
+```bash
+SECURITY_HEADERS_HSTS=true
+```
+
+which emits `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
+See [.env.example](.env.example).
+
+### No Content-Security-Policy
+
+CSP governs **documents**, and this service returns JSON only. A CSP here would
+be a no-op that implies protection that does not exist. Any HTML surface (the
+dashboard) is a separate app and must set its own CSP.
+
+### Cross-origin browser access
+
+Browser clients must be allowlisted via `CORS_ORIGINS` (see
+[.env.example](.env.example) and `src/config/env.validation.ts`). Unlisted
+origins receive no `Access-Control-Allow-Origin` header and the browser blocks
+the response. Security headers do not grant cross-origin access.
+
 ## Security Model (MVP)
 
 * Private keys are never exposed to clients

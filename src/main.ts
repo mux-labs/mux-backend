@@ -4,6 +4,7 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module';
 import requestLogger from './common/middleware/request-logging.middleware';
 import { configureBodySizeLimit } from './common/http/body-size-limit';
+import { securityHeaders } from './common/http/security-headers';
 import { validateEnv } from './config/env.validation';
 import { IsoUtcTimestampInterceptor } from './common/interceptors';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
@@ -17,6 +18,11 @@ async function bootstrap() {
   const app = await NestFactory.create(AppModule, { bodyParser: false });
 
   configureBodySizeLimit(app, env.JSON_BODY_LIMIT_BYTES);
+
+  // Baseline security response headers (nosniff, frame denial, referrer
+  // policy, ...). Installed before any route so error and 404 responses carry
+  // them too. See src/common/http/security-headers.ts.
+  app.use(securityHeaders());
 
   // Configure CORS with credentials support
   // Only allow credentials when explicitly whitelisted origins are used.
