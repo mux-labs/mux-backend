@@ -7,6 +7,8 @@ import { configureBodySizeLimit } from './common/http/body-size-limit';
 import { validateEnv } from './config/env.validation';
 import { IsoUtcTimestampInterceptor } from './common/interceptors';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { GracefulShutdownService } from './common/shutdown/graceful-shutdown.service';
+import { DrainInProgressInterceptor } from './common/shutdown/drain-in-progress.interceptor';
 
 /**
  * Parses the CORS_ALLOWED_ORIGINS env var into an array of allowed origins.
@@ -17,7 +19,10 @@ import { HttpExceptionFilter } from './common/filters/http-exception.filter';
  */
 function parseCorsOrigins(raw: string | undefined): string[] {
   if (!raw) return ['http://localhost:3000'];
-  return raw.split(',').map((o) => o.trim()).filter(Boolean);
+  return raw
+    .split(',')
+    .map((o) => o.trim())
+    .filter(Boolean);
 }
 
 async function bootstrap() {
@@ -34,9 +39,14 @@ async function bootstrap() {
 
   // Configure CORS with credentials support
   // Only allow credentials when explicitly whitelisted origins are used
-  const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000').split(',').map(o => o.trim());
+  const corsOrigins = (process.env.CORS_ORIGINS || 'http://localhost:3000')
+    .split(',')
+    .map((o) => o.trim());
   app.enableCors({
-    origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
+    origin: (
+      origin: string | undefined,
+      callback: (err: Error | null, allow?: boolean) => void,
+    ) => {
       if (!origin || corsOrigins.includes(origin)) {
         callback(null, true);
       } else {
@@ -45,8 +55,18 @@ async function bootstrap() {
     },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key', 'X-Request-ID', 'X-Client-Version'],
-    exposedHeaders: ['X-Request-ID', 'X-RateLimit-Remaining', 'X-RateLimit-Reset'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'X-API-Key',
+      'X-Request-ID',
+      'X-Client-Version',
+    ],
+    exposedHeaders: [
+      'X-Request-ID',
+      'X-RateLimit-Remaining',
+      'X-RateLimit-Reset',
+    ],
     maxAge: 3600,
   });
 
@@ -72,12 +92,20 @@ async function bootstrap() {
   // Global exception filter for structured error responses
   app.useGlobalFilters(new HttpExceptionFilter());
 
-  // Let Nest call onModuleDestroy/beforeApplicationShutdown on SIGTERM/SIGINT
-  // so in-flight requests can finish and connections (Prisma, etc.) close cleanly.
+  // Fail-closed write gate for graceful shutdown (#950): once a SIGTERM/SIGINT
+  // has been observed, mutating requests are refused with 503
+  // SHUTDOWN_IN_PROGRESS while reads/health keep working for the load balancer.
+  app.useGlobalInterceptors(app.get(DrainInProgressInterceptor));
+
+  // Let Nest call beforeApplicationShutdown/onApplicationShutdown on
+  // SIGTERM/SIGINT so in-flight payments drain (bounded by
+  // GRACEFUL_SHUTDOWN_TIMEOUT_MS) and connections (Prisma, etc.) close cleanly.
   app.enableShutdownHooks();
 
   await app.listen(env.PORT);
-  logger.log(`Application listening on port ${env.PORT}`);
+  logger.log(
+    `Application listening on port ${env.PORT} (graceful drain budget ${app.get(GracefulShutdownService).drainTimeoutMs()}ms)`,
+  );
 }
 
 bootstrap();

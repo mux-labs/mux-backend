@@ -66,6 +66,12 @@ exception provides them. `requestId` is echoed back from the `X-Request-ID`
 request header when present. In production, `message` on unhandled 500 errors
 is sanitized to strip connection strings, file paths, and secrets.
 
+Frontends should branch on `errorCode`. The full catalog — HTTP status,
+category, retryability and recommended client action for every code — is
+documented in [docs/ERROR-CODES.md](docs/ERROR-CODES.md) and served in
+machine-readable form from the public, cacheable
+`GET /v1/error-codes` endpoint.
+
 ### Request body size
 
 JSON and URL-encoded request bodies are limited to 100 KiB by default. Set
@@ -587,6 +593,23 @@ A new developer API route is available: `GET /developers/:id/projects` returns t
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
 
+### Connection Pool Sizing
+
+Prisma derives its pool ceiling from the **host's** CPU count unless you pin it,
+which is usually wrong in containers and across multiple replicas. Three optional
+variables size the pool explicitly and are appended to `DATABASE_URL` at startup:
+
+| Variable | Maps to | Suggested start |
+|----------|---------|-----------------|
+| `DATABASE_POOL_SIZE` | `connection_limit` | `min(20, max_connections / replicas)` |
+| `DATABASE_POOL_TIMEOUT_SECONDS` | `pool_timeout` | `10` |
+| `DATABASE_CONNECT_TIMEOUT_SECONDS` | `connect_timeout` | `5` |
+
+With none of them set the URL is untouched and the engine default applies. A
+malformed or out-of-range value fails startup (fail-closed) instead of silently
+reverting to an unbounded pool. Full guidance, budgets, verification queries and
+rollback: [docs/DB-POOL-SIZING.md](docs/DB-POOL-SIZING.md).
+
 ---
 
 ## Security Model (MVP)
@@ -932,7 +955,25 @@ initiative for production-grade deployments.
 | No new privileges | `security_opt: no-new-privileges:true` in `docker-compose.yml` prevents the container from gaining additional capabilities at runtime. |
 | Minimal runtime image | The production image uses `node:22-alpine` with only production dependencies, built artifacts, and Prisma migrations. Build tools and source code are not present. |
 | Fail-closed migrations | `docker-entrypoint.sh` runs `prisma migrate deploy` before starting the app. If migrations fail, the container exits non-zero so orchestrators (Kubernetes, ECS) detect the failure immediately. |
+| Graceful shutdown | The image declares `STOPSIGNAL SIGTERM`. On `SIGTERM`/`SIGINT` the app stops accepting new writes, drains in-flight work for up to `GRACEFUL_SHUTDOWN_TIMEOUT_MS` (default 25 s), then closes Prisma cleanly. See [docs/GRACEFUL-SHUTDOWN.md](docs/GRACEFUL-SHUTDOWN.md). |
 | No secrets in image | Secrets are injected at runtime via environment variables or a secret manager — they are never baked into the image. |
+
+### Graceful shutdown / payment drain
+
+Mutating requests received while the process is draining are refused with
+`503 SHUTDOWN_IN_PROGRESS` (retryable) instead of being accepted and then
+abandoned, while reads and health/readiness keep responding so the load balancer
+can observe the drain. In-flight operations registered via
+`GracefulShutdownService.trackOperation()` are awaited before exit.
+
+```bash
+# docker-compose.yml (api service)
+stop_grace_period: 30s   # must exceed GRACEFUL_SHUTDOWN_TIMEOUT_MS
+```
+
+For Kubernetes set `terminationGracePeriodSeconds` above
+`GRACEFUL_SHUTDOWN_TIMEOUT_MS` (e.g. `40` for the `25` default). Full sequence,
+configuration and rollback: [docs/GRACEFUL-SHUTDOWN.md](docs/GRACEFUL-SHUTDOWN.md).
 
 ### Running locally
 
@@ -1065,12 +1106,29 @@ All sync and reconciliation operations create a `BalanceSyncJob` record for audi
 Balance **writes** are gated by `BALANCE_SYNC_ENABLED` (default `false`, fail-closed);
 reads are always available. See [Horizon balance reconciliation](docs/WALLET-API.md#horizon-balance-reconciliation).
 
+#### Horizon retry (fail-closed)
+
+`HorizonRestBalanceClient` retries **transient** Horizon failures (`408`, `429`,
+`5xx`, connection reset/timeout/DNS) in-process with bounded exponential backoff
+and jitter, honouring `Retry-After`. Permanent `4xx` responses and malformed
+payloads are not retried. When the retry budget is exhausted the read fails with
+`503 BALANCE_DEPENDENCY_UNAVAILABLE` and **no write is applied** — an outage
+degrades freshness, it never zeroes a real balance. Full design, invariants and
+the ops runbook: [docs/HORIZON-RETRY.md](docs/HORIZON-RETRY.md).
+
+Run `POST /balances/wallet/:walletId/sync-with-retry` to apply the service-level
+retry in addition to the client-level one.
+
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BALANCE_STALE_THRESHOLD_MS` | `300000` | Age (ms) after which a balance is considered stale |
 | `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon API URL |
+| `STELLAR_HORIZON_MAX_RETRIES` | `3` | Retries after the first attempt (clamped to 10) |
+| `STELLAR_HORIZON_RETRY_BACKOFF_MS` | `500` | Base exponential-backoff delay (ms) |
+| `STELLAR_HORIZON_RETRY_JITTER_MS` | `250` | Maximum jitter added per retry (ms) |
+| `STELLAR_HORIZON_RETRY_BUDGET_MS` | `15000` | Upper bound on total retry time per read (ms) |
 
 ---
 

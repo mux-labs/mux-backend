@@ -42,6 +42,12 @@ ENV GIT_SHA=$GIT_SHA
 
 EXPOSE 3000
 
+# Graceful shutdown (#950): send SIGTERM (the Docker/Nest default is SIGTERM,
+# but stating it explicitly makes the contract obvious) so Nest runs
+# `beforeApplicationShutdown` and waits up to GRACEFUL_SHUTDOWN_TIMEOUT_MS for
+# in-flight payments to drain before the process exits.
+STOPSIGNAL SIGTERM
+
 # Copy entrypoint script that runs `prisma migrate deploy` before the app
 # starts. If migrations fail the container exits non-zero so orchestrators
 # (Kubernetes, ECS) can detect the failure immediately.
