@@ -346,4 +346,30 @@ ensure you are running a supported version before reporting issues.
 
 We appreciate the efforts of security researchers and contributors who help
 keep Mux Protocol and its users safe. With your permission, we will acknowledge
+
+## Enforced Access-Control Invariants (issues #941–#944)
+
+Fail-closed controls that gate the money path. Each has a stable error code, a
+unit spec, and an e2e suite; all are deny-by-default.
+
+| Invariant | Stable code(s) | Tests | Docs |
+|---|---|---|---|
+| A **revoked API key** stops working on the very next request — there is no cache in front of the status read, `REVOKED` is terminal, and revocation is idempotent. | `API_KEY_REVOKED`, `API_KEY_EXPIRED`, `API_KEY_SUSPENDED` | `test/api-key-expiry.e2e-spec.ts`, `test/api-key-revoke-immediate.e2e-spec.ts`, `src/api-keys/api-key.guard.spec.ts` | `CHANGELOG-KEY-MANAGEMENT.md` |
+| A **suspended or disabled account** cannot create a wallet or move value. The status is read server-side; an unrecognised status is refused too. | `USER_SUSPENDED`, `USER_DISABLED`, `USER_STATUS_UNKNOWN`, `USER_STATUS_UNAVAILABLE` | `src/users/user-status.policy.spec.ts`, `test/suspended-user-blocked.e2e-spec.ts` | `prisma/migrations/20260831000001_add_user_status_enum/` |
+| An **API key scoped to one network** can never act on the other; the refusal happens in the guard, before any handler. | `NETWORK_MISMATCH`, `INVALID_NETWORK` | `src/common/network/network-mismatch.spec.ts`, `test/network-mismatch.e2e-spec.ts` | [`docs/NETWORK-SCOPING.md`](docs/NETWORK-SCOPING.md) |
+| The **wallet orchestrator** is off unless explicitly enabled, identically in production and development, and the global kill-switch overrides every flag. | `FEATURE_FLAG_DISABLED`, `FEATURE_FLAG_KILL_SWITCH_ENGAGED` | `src/common/feature-flags/feature-flag.guard.spec.ts`, `test/wallet-orchestrator-feature-flag.e2e-spec.ts` | [`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md) |
+
+Notes for reviewers and integrators:
+
+- **No secrets in logs.** Denials log a correlation id, a static subject label
+  (`api-key`, `wallet`), and an enum string. API keys, key hashes, JWTs,
+  webhook secrets, and seeds are never logged or returned (except the plaintext
+  key, exactly once, at creation).
+- **Dependency outage fails closed.** An unreachable key store or status store
+  returns `503` with `API_KEY_STORE_UNAVAILABLE` / `USER_STATUS_UNAVAILABLE`
+  rather than allowing the write. The offline verifier that lets the test suites
+  run without a database is compiled out of `production` and `staging`.
+- **Rate-limit and authorize every external entrypoint**; the API-key guard is
+  deny-by-default, and only routes marked `@Public()` skip it.
+
 your contribution in our security acknowledgements.

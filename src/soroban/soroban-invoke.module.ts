@@ -2,8 +2,7 @@ import { Module } from '@nestjs/common';
 import { SorobanInvokeService } from './soroban-invoke.service';
 import { SorobanInvokeController } from './soroban-invoke.controller';
 import { MetricsService } from '../common/metrics/metrics.service';
-import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { ApiKeyService } from '../api-keys/api-key.service';
+import { ApiKeyModule } from '../api-keys/api-key.module';
 
 /**
  * Soroban invoke orchestration.
@@ -14,10 +13,14 @@ import { ApiKeyService } from '../api-keys/api-key.service';
  * fails to construct and the surface is unreachable — fail-closed by absence,
  * rather than fail-open with a stub that would "succeed" without ever reaching
  * the chain. Do not add default implementations here.
+ *
+ * API-key auth is provided by `ApiKeyModule` (one instance platform-wide, so
+ * revocation is immediate — #942).
  */
 @Module({
+  imports: [ApiKeyModule],
   controllers: [SorobanInvokeController],
-  providers: [SorobanInvokeService, MetricsService, ApiKeyGuard, ApiKeyService],
+  providers: [SorobanInvokeService, MetricsService],
   exports: [SorobanInvokeService],
 })
 export class SorobanInvokeModule {}
