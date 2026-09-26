@@ -4,6 +4,30 @@
 
 ### Added
 
+#### Key consolidation verify script (#918)
+- **Production-grade verification gate** — replaced the ad-hoc grep script
+  (`scripts/verify-key-management-consolidation.sh` is now a thin, fail-closed
+  wrapper) with a typed, unit-tested verifier
+  `scripts/verify-key-management-consolidation.ts` covering the custody-key
+  invariants documented in `docs/key-management-consolidation.md`,
+  `docs/custody-security-model.md`, and `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`:
+  no direct key generation in money-path services, no committed key material,
+  envelope-at-rest schema fields, deny-by-default authz, correlation ids,
+  stable error codes, fail-closed dependency handling, response redaction, and
+  mainnet pay-path kill-switch defaults. Uses stable check ids (`KMV-001` …),
+  a `--json` machine-readable report, and exit codes `0`/`1`/`2`/`3` (pass /
+  findings / verifier failure / misuse). Findings report `file:line` without raw
+  key material.
+- **WSecured the gate itself** — the verifier is offline (no DB/RPC), pure and
+  deterministic (idempotent across replayed/concurrent runs), and refuses to run
+  when a bypass override environment variable is set (deny-by-default).
+- **Unit coverage** — `scripts/verify-key-management-consolidation.spec.ts`
+  covers every check's pass/fail/warn path, auth negatives, secret-redaction of
+  output, exit-code mapping, and deterministic ordering; runs via `pnpm test:scripts`.
+- **CI gate** — new required `key-consolidation-verify` GitHub Actions job
+  (`pnpm verify:key-consolidation`) plus `README.md`, `SECURITY.md`, and
+  `docs/KEY-MANAGEMENT-SUMMARY.md` cross-links.
+
 #### Master-key rotation & response hardening (#693, #694, #695, #696)
 - **`WALLET_ENCRYPTION_KEY` rotation job** — `WalletKeyReEncryptionService` +
   internal endpoint `POST /v1/internal/key-management/re-encrypt-wallet-keys`

@@ -6,6 +6,9 @@
 # orchestrators (Kubernetes, ECS, etc.) can detect the failure and restart
 # rather than running against a stale schema.
 #
+# This script runs as the non-root `mux` user (UID 1001) in production.
+# It must not require root privileges.
+#
 # Usage in Dockerfile:
 #   ENTRYPOINT ["/app/docker-entrypoint.sh"]
 #   CMD ["node", "dist/main"]

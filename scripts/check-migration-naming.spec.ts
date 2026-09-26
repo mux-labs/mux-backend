@@ -75,4 +75,24 @@ describe('validateMigrationEntries', () => {
     ]);
     expect(errors).toEqual([]);
   });
+
+  it('fails when the migration_lock.toml file is missing', () => {
+    const errors = validateMigrationEntries([
+      dir('20260601000000_add_thing'),
+      dir('20260602000000_add_other_thing'),
+    ]);
+    expect(errors).toEqual([
+      expect.stringContaining('migration_lock.toml'),
+    ]);
+  });
+
+  it('fails on a non-snake_case migration name', () => {
+    const errors = validateMigrationEntries([
+      file('migration_lock.toml'),
+      dir('20260601000000_AddThing'),
+    ]);
+    expect(errors).toEqual([
+      expect.stringContaining('does not match the required'),
+    ]);
+  });
 });
