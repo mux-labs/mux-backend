@@ -3,70 +3,65 @@ import {
   NestInterceptor,
   ExecutionContext,
   CallHandler,
-  Logger,
 } from '@nestjs/common';
-import { Observable, map } from 'rxjs';
+import { Observable } from 'rxjs';
+import { map } from 'rxjs/operators';
 
-const SENSITIVE_FIELDS = new Set([
+/**
+ * Fields that must never be returned in API responses.
+ * Applied globally so no controller can accidentally leak secrets.
+ */
+const SENSITIVE_KEYS = new Set([
   'privateKey',
-  'private_key',
   'encryptedSecret',
   'encrypted_secret',
+  'webhookSecret',
+  'whsec',
+  'apiKey',
+  'secret',
+  'token',
+  'password',
 ]);
 
 /**
- * Recursively redacts sensitive fields from a response object so that
- * private key material and other secrets never reach the HTTP response body.
- *
- * Applied at the controller level (or globally) as an interceptor.
- */
-function sanitizeResponseBody(value: unknown, depth = 0): unknown {
-  if (value === null || value === undefined || depth > 10) return value;
-
-  if (Array.isArray(value)) {
-    return value.map((item) => sanitizeResponseBody(item, depth + 1));
-  }
-
-  if (typeof value === 'object') {
-    const out: Record<string, unknown> = {};
-    for (const [key, val] of Object.entries(
-      value as Record<string, unknown>,
-    )) {
-      if (SENSITIVE_FIELDS.has(key)) {
-        // Redact the field – replace string values with '[REDACTED]'
-        out[key] = '[REDACTED]';
-      } else {
-        out[key] = sanitizeResponseBody(val, depth + 1);
-      }
-    }
-    return out;
-  }
-
-  return value;
-}
-
-/**
- * Interceptor that strips sensitive fields (privateKey, encryptedSecret, etc.)
- * from all HTTP responses.
- *
- * Usage (controller-scoped):
- *   @UseInterceptors(ResponseSanitizerInterceptor)
- *
- * Or register globally in AppModule:
- *   providers: [{ provide: APP_INTERCEPTOR, useClass: ResponseSanitizerInterceptor }]
+ * Global interceptor that strips sensitive fields from all
+ * API responses. This is a defense-in-depth measure: even if
+ * a controller accidentally returns a secret, the interceptor
+ * redacts it before it reaches the client.
  */
 @Injectable()
 export class ResponseSanitizerInterceptor implements NestInterceptor {
-  private readonly logger = new Logger(ResponseSanitizerInterceptor.name);
-
   intercept(context: ExecutionContext, next: CallHandler): Observable<any> {
     return next.handle().pipe(
-      map((responseBody) => {
-        if (responseBody === null || responseBody === undefined) {
-          return responseBody;
-        }
-        return sanitizeResponseBody(responseBody);
-      }),
+      map((data) => this.sanitize(data)),
     );
+  }
+
+  private sanitize(value: unknown): unknown {
+    if (value === null || value === undefined) {
+      return value;
+    }
+
+    if (typeof value === 'string') {
+      return value;
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.sanitize(item));
+    }
+
+    if (typeof value === 'object') {
+      const sanitized: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value as Record<string, unknown>)) {
+        if (SENSITIVE_KEYS.has(key)) {
+          sanitized[key] = '[REDACTED]';
+        } else {
+          sanitized[key] = this.sanitize(val);
+        }
+      }
+      return sanitized;
+    }
+
+    return value;
   }
 }

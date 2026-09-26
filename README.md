@@ -29,7 +29,7 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Invisible wallet creation and management
 * Secure custody and encryption of Stellar keypairs
 * Transaction relaying and fee sponsorship
-* Soroban smart contract invocation
+* Soroban smart contract invocation (`POST /v1/soroban/invoke`, allowlisted contracts only, gated by `SOROBAN_INVOKE_ENABLED`)
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
@@ -329,6 +329,105 @@ requires `X-Recovery-Admin-Secret` and `X-Admin-ID`; production requires
 
 Mux Backend supports Stellar fee-bump transactions, allowing a platform sponsor account to pay transaction fees on behalf of users. The `FeeBumpService` wraps signed inner transactions in a fee-bump envelope before submission to Horizon.
 
+#### Fee Sponsorship Budgets
+
+Mux Backend provides fee sponsorship budgets, allowing a sponsor to set a spending limit on how much they are willing to pay in transaction fees on behalf of a sponsored wallet. This is a core primitive for account abstraction on Stellar/Soroban.
+
+##### Endpoints
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `POST` | `/v1/fee-sponsorship` | Create a new fee sponsorship budget |
+| `GET` | `/v1/fee-sponsorship/:id` | Get a budget by ID |
+| `GET` | `/v1/fee-sponsorship` | List budgets for a wallet |
+| `PATCH` | `/v1/fee-sponsorship/:id` | Update a budget (limit, remaining, status, note) |
+| `POST` | `/v1/fee-sponsorship/:id/close` | Close (deactivate) a budget |
+
+##### Create Budget (`POST /v1/fee-sponsorship`)
+
+**Request Body**:
+```json
+{
+  "walletId": "uuid-wallet-id",
+  "sponsorId": "sponsor-address-or-id",
+  "limitAmount": "1000000",
+  "assetCode": "XLM",
+  "assetIssuer": null,
+  "network": "TESTNET",
+  "note": "Monthly sponsorship allowance",
+  "idempotencyKey": "unique-key-for-replay-protection"
+}
+```
+
+**Response** (201 Created):
+```json
+{
+  "id": "uuid-budget-id",
+  "walletId": "uuid-wallet-id",
+  "sponsorId": "sponsor-address-or-id",
+  "limitAmount": "1000000",
+  "remainingAmount": "1000000",
+  "assetCode": null,
+  "assetIssuer": null,
+  "network": "TESTNET",
+  "status": "ACTIVE",
+  "note": "Monthly sponsorship allowance",
+  "createdAt": "2026-07-30T12:00:00.000Z",
+  "updatedAt": "2026-07-30T12:00:00.000Z"
+}
+```
+
+##### Update Budget (`PATCH /v1/fee-sponsorship/:id`)
+
+**Request Body** (all fields optional):
+```json
+{
+  "limitAmount": "2000000",
+  "remainingAmount": "1500000",
+  "status": "PAUSED",
+  "note": "Paused for review",
+  "idempotencyKey": "unique-key-for-replay-protection"
+}
+```
+
+##### Close Budget (`POST /v1/fee-sponsorship/:id/close`)
+
+Idempotent: closing an already-closed budget returns the existing budget with no error.
+
+##### Error Codes
+
+| Code | HTTP Status | Description |
+|------|-------------|-------------|
+| `FEE_SPONSORSHIP_INVALID_INPUT` | 400 | Missing or invalid field |
+| `FEE_SPONSORSHIP_NOT_AUTHORIZED` | 403 | Caller is not authorized |
+| `FEE_SPONSORSHIP_BUDGET_NOT_FOUND` | 404 | Budget does not exist |
+| `FEE_SPONSORSHIP_BUDGET_ALREADY_EXISTS` | 409 | Active budget already exists for wallet+network |
+| `FEE_SPONSORSHIP_BUDGET_CLOSED` | 409 | Budget is closed and cannot be updated |
+| `FEE_SPONSORSHIP_BUDGET_EXCEEDED` | 400 | Remaining amount exceeds limit |
+| `FEE_SPONSORSHIP_FEATURE_FLAG_DISABLED` | 403 | Mainnet fee sponsorship is disabled |
+| `FEE_SPONSORSHIP_DEPENDENCY_UNAVAILABLE` | 503 | Database or upstream dependency unavailable |
+
+##### Feature Flag
+
+Fee sponsorship writes to mainnet are gated by the `FEE_SPONSORSHIP_ENABLED` environment variable. Default OFF (fail-closed): mainnet fee sponsorship is denied unless explicitly enabled.
+
+| Value | Behavior |
+|-------|----------|
+| `true` | Mainnet fee sponsorship proceeds |
+| `false` / unset (default) | Mainnet fee sponsorship is rejected with `403 Forbidden` |
+
+TESTNET fee sponsorship is unaffected — the flag is only consulted when `network === "MAINNET"`.
+
+##### Invariants
+
+- A wallet may have at most one active budget per network.
+- Budgets are deny-by-default: only the wallet owner or an authorized delegate/guardian may manage budgets.
+- All monetary amounts are stored as strings (smallest unit, e.g., stroops) to preserve precision.
+- The server is the source of truth for spend tracking.
+- Fail-closed: dependency outages return 503, never silently succeed.
+- Idempotent: concurrent/replayed requests with the same idempotency key return the same result.
+- No secrets in logs or responses.
+
 ### Mainnet Payment Submit Kill-Switch
 
 The `FEATURE_MAINNET_PAYMENT_SUBMIT` environment variable gates mainnet fee-bump
@@ -343,6 +442,25 @@ TESTNET submissions are unaffected — the flag is only consulted when `network 
 The check runs inside `FeeBumpService.submitFeeBump` before any wallet key material is
 decrypted or any call to Horizon is made. See [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md)
 for operational guidance.
+
+### Transaction Environment Validator (fail-closed boot gate)
+
+`TransactionEnvValidatorService` validates the transaction money-path
+configuration at startup and **fails closed**:
+
+- In `NODE_ENV=production`, enabling `FEATURE_MAINNET_PAYMENTS` or
+  `FEATURE_MAINNET_PAYMENT_SUBMIT` without
+  `STELLAR_HORIZON_MAINNET_URL` **prevents the application from booting** with
+  a stable, typed error code
+  (`TRANSACTION_ENV_VALIDATOR_MAINNET_HORIZON_MISCONFIGURED`).
+- Unset or unrecognized flag values are treated as disabled (deny-by-default);
+  testnet and non-production environments are never blocked.
+- Startup snapshots log only booleans and stable codes — never secrets, keys,
+  JWTs, or webhook secrets.
+
+Covered end-to-end in `test/transaction-env-validator.e2e-spec.ts` and
+unit-tested in `src/transactions/transaction-env-validator.service.spec.ts`.
+Runbook: [docs/MAINNET-PAYMENT-FEATURE-FLAG.md](docs/MAINNET-PAYMENT-FEATURE-FLAG.md).
 
 ### Webhook-Delivered Payment Events
 
@@ -384,6 +502,27 @@ payment operations are not blocked by downstream webhook failures.
 
 This project uses **PostgreSQL** via **Prisma ORM**. You must set the `DATABASE_URL` environment variable before running migrations or starting the server.
 
+### Quick Start with Docker Compose (Recommended for Local Development)
+
+For the fastest local setup with zero host dependencies (Node.js, pnpm, PostgreSQL), use Docker Compose:
+
+```bash
+# 1. Copy and configure environment variables
+cp .env.example .env
+# Edit .env with your values (see docs/DOCKER-COMPOSE-LOCAL.md for required variables)
+
+# 2. Start the stack (API + PostgreSQL)
+docker compose up --build
+
+# 3. Run database migrations (in a separate terminal)
+docker compose exec api npx prisma migrate deploy
+
+# 4. Verify the API is healthy
+curl http://localhost:3000/v1/health
+```
+
+See [docs/DOCKER-COMPOSE-LOCAL.md](docs/DOCKER-COMPOSE-LOCAL.md) for complete documentation including useful commands, port configuration, troubleshooting, and connecting external clients.
+
 ### Environment Variables
 
 Copy `.env.example` to `.env` (or create `.env`) and set:
@@ -392,6 +531,7 @@ Copy `.env.example` to `.env` (or create `.env`) and set:
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DATABASE?schema=public"
 WALLET_ENCRYPTION_KEY="your-secure-encryption-key-min-32-chars-long"
 EXPORT_SIGNING_SECRET="your-secure-export-signing-secret-min-32-chars-long"
+WEBHOOK_SIGNING_KEY="your-secure-webhook-signing-key-min-32-chars-long"
 ```
 
 #### Boot-Time Configuration Validation
@@ -411,6 +551,11 @@ To guarantee security, the application validates critical environment variables 
   - **Required in production**: Must be defined and not empty.
   - **Length**: Must be at least **32 characters** long.
   - **Security**: No hardcoded fallback secret is allowed; startup fails closed when it is missing.
+* **`WEBHOOK_SIGNING_KEY`**: Master key used to derive outbound webhook signing secrets (only SHA-256 hashes are stored at rest).
+  - **Required in production**: Must be defined and not empty.
+  - **Length**: Must be at least **32 characters** long.
+  - **Security**: No hardcoded fallback or placeholder is allowed; startup fails closed when it is missing. Never log this value.
+* **`WEBHOOK_SECRET_GRACE_SECONDS`**: Grace window for `rotate-secret` (default `3600`). During this window deliveries keep being signed with the previous secret so consumers are not cut off.
 
 **Examples:**
 
@@ -473,7 +618,47 @@ Mux Backend uses a consolidated `KeyManagementService` for all cryptographic key
 - [Key Management Consolidation Guide](docs/key-management-consolidation.md)
 - [Migration Guide](docs/MIGRATION-KEY-MANAGEMENT.md)
 
+**Verification (CI):**
+- `pnpm verify:key-consolidation` runs the typed static gate in
+  `scripts/verify-key-management-consolidation.ts` (workflow already covers
+  `docs/key-management-consolidation.md`, `docs/custody-security-model.md`, and
+  `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`). It check that custody-key invariants hold:
+  no direct key generation in money-path services, no committed key material,
+  envelope-at-rest schema fields, deny-by-default authz, correlation ids, stable
+  error codes, fail-closed dependency handling, response redaction, the mainnet
+  money-path kill-switch default, and required runbooks.
+- Fail-closed: exit code `0` = pass, `1` = at least one error finding,
+  `2`/`3` = verifier failure or misuse. Add `--json` for the machine-readable
+  report. This gate runs as a **required** GitHub Actions check and cannot be
+  disabled with an environment variable (deny-by-default).
+
 > ⚠️ This MVP uses a custodial model. Progressive decentralization is planned.
+
+### Verification Scripts (CI Gates)
+
+Five fail-closed verification scripts assert the documented security invariants
+against the source tree and Prisma schema. They run in CI (the `verify-scripts`
+job) and exit **non-zero when any invariant is violated**, so a regression is
+surfaced as a failed PR rather than a silent drift. Run them locally from the
+repo root with `bash <script>.sh` — they are plain bash + static analysis, need
+no database/RPC/Horizon connection, and never print raw key material.
+
+| Script | Invariants verified | References |
+|--------|--------------------|------------|
+| `verify-encryption.sh` | Keys encrypted before storage; env-based key; controlled decryption; safe failure handling; no plaintext persistence; strong cipher; boot validation | [`docs/custody-security-model.md`](docs/custody-security-model.md), README § Security |
+| `verify-orchestrator.sh` | Orchestrator presence; atomic creation; one-wallet-per-user; idempotency; fail-closed outages; authz; feature-flag gate | [`docs/WALLET-API.md`](docs/WALLET-API.md), [`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md), [`test/wallet-orchestration.e2e-spec.ts`](test/wallet-orchestration.e2e-spec.ts) |
+| `verify-orchestrator-retries.sh` | Retry contract: key replay, in-flight reservation, awaited mint, one-wallet-per-user, authz, stable codes, no key material, validated DTO | [`docs/WALLET-API.md`](docs/WALLET-API.md), [`test/wallet-orchestration.e2e-spec.ts`](test/wallet-orchestration.e2e-spec.ts) |
+| `verify-idempotent-user.sh` | `findOrCreateUser`; `authId` uniqueness; existing-user return; authz; schema invariants; fail-closed outages | [`test/users-find-or-create.e2e-spec.ts`](test/users-find-or-create.e2e-spec.ts), [`prisma/schema.prisma`](prisma/schema.prisma) |
+| `verify-idempotency-ttl.sh` | Cleanup deletes only strictly-expired rows; batch-bounded; fail-closed on DB outage; deny-by-default worker; no key material logged | [`docs/IDEMPOTENCY-TTL.md`](docs/IDEMPOTENCY-TTL.md), [`src/idempotency/idempotency.service.ts`](src/idempotency/idempotency.service.ts) |
+| `scripts/verify-key-management-consolidation.sh` | Key-management consolidation invariants | [`docs/key-management-consolidation.md`](docs/key-management-consolidation.md), [`docs/MIGRATION-KEY-MANAGEMENT.md`](docs/MIGRATION-KEY-MANAGEMENT.md) |
+
+Treat a failing verification script as a failed PR — do not bypass it with
+`continue-on-error`. If a check is outdated because a documented invariant
+changed, update **both** the script and its cited reference document in the same
+PR.
+
+See the [Verification Scripts Runbook](docs/verify-scripts-runbook.md) for the
+full invariant list, failure interpretation, and rollback strategy.
 
 ---
 
@@ -573,9 +758,143 @@ User authentication is orchestrated via the auth service and integrates with Web
 Key authentication-related environment variables (when applicable):
 
 - `AUTH_PROVIDER` — Identity provider (e.g., CLERK, BETTER_AUTH)
-- `JWT_SECRET` — (Future) JWT signing secret
-- `API_KEY_EXPIRY_DAYS` — (Future) Default API key expiry duration in days
+- `API_KEY_DEFAULT_EXPIRY_DAYS` — Optional. When set, newly created API keys expire after this many days. Omit (or set to `0`) for non-expiring keys. See [API Key Expiry](#api-key-expiry) below.
 - `RATE_LIMIT_RPM` — Requests per minute limit (per API key)
+
+---
+
+## Cron Schedules
+
+Every scheduled job in the backend — its endpoint, recommended cadence,
+idempotency guard, authentication, failure modes, and operator runbook — is
+documented in **[docs/CRON-SCHEDULES.md](docs/CRON-SCHEDULES.md)**.
+
+In short:
+
+- Internal jobs are **deny-by-default** and require the `X-Cron-Secret` header
+  matching `CRON_SECRET`. A missing/unset/mismatched secret rejects the request
+  **before any job logic runs**; there is no fallback credential.
+- Comparison is constant-time (`crypto.timingSafeEqual`) and the secret is never
+  logged or returned in an error body.
+- Every job is **replay-safe**: a duplicated or overlapping trigger must not
+  produce duplicate side effects, and every batch parameter is clamped.
+- Adding a new scheduled job requires updating the schedule table *and*
+  `test/cron-schedule-docs.e2e-spec.ts` in the same PR.
+
+The access-control and rotation policy lives in
+[SECURITY.md](SECURITY.md#internal-cron-jobs--secret-guard).
+
+## Idempotency TTL Cleanup
+
+Every money-path write carrying an idempotency key inserts an
+`IdempotencyRecord` row so a replayed request returns the original result. That
+table has a TTL (`expiresAt`, indexed) but **nothing pruned expired rows**, so it
+grew without bound — degrading the index that replay protection depends on.
+
+`IdempotencyCleanupWorker` (in `IdempotencyModule`) deletes expired rows on a
+configurable interval. Invariants: only rows with `expiresAt < now` are ever
+deleted (a live record is never touched, so cleanup can never cause a duplicate
+payment), each pass is batch-bounded, a database outage **fails closed** with
+`IDEMPOTENCY_CLEANUP_DEPENDENCY_UNAVAILABLE` rather than reporting a false
+"0 deleted", and logs carry counts and cutoffs only — never keys or payloads.
+
+The worker is **opt-in / deny-by-default**: it only starts when
+`IDEMPOTENCY_CLEANUP_ENABLED=true`, so a deployment using an external scheduler
+can leave it off and run cleanup in exactly one place.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `IDEMPOTENCY_CLEANUP_ENABLED` | `false` | Set to `true` to run the in-process worker |
+| `IDEMPOTENCY_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run a cleanup pass |
+| `IDEMPOTENCY_CLEANUP_BATCH_SIZE` | `1000` | Rows deleted per pass (clamped to `10000`) |
+
+Full contract, metrics, scheduling, and rollback:
+[docs/IDEMPOTENCY-TTL.md](docs/IDEMPOTENCY-TTL.md).
+
+---
+
+## Rate-Limit Record Cleanup
+
+The `RateLimitCleanupWorker` runs on a configurable interval and prunes expired
+`RateLimitRecord` rows from the database. Without this job the table grows
+unbounded as every API key × endpoint × time-window combination adds a row.
+
+The worker is automatically registered in `RateLimitModule` — no manual
+wiring is required.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run the cleanup job |
+| `RATE_LIMIT_CLEANUP_OLDER_THAN_MS` | `3600000` | Delete records with `windowStart` older than this age (ms) |
+
+---
+
+## Testnet Faucet
+
+The `TestnetFaucetService` proxies Stellar Friendbot funding requests for TESTNET wallets only.
+
+### Mainnet gate (fail-closed)
+
+When `STELLAR_NETWORK` is set to `MAINNET` or `PUBLIC` the service **refuses all funding requests** with `501 Not Implemented`, regardless of `NODE_ENV`. This is an unconditional safety gate — there is no override and no silent fallback.
+
+Set `STELLAR_NETWORK=TESTNET` (the default) to enable faucet funding.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `STELLAR_NETWORK` | `TESTNET` | Target network. Set to `MAINNET`/`PUBLIC` to block faucet calls |
+| `TESTNET_FAUCET_URL` | `https://friendbot.stellar.org` | Faucet endpoint URL |
+| `TESTNET_FAUCET_MAX_REQUESTS` | `5` | Max faucet requests per wallet per window |
+| `TESTNET_FAUCET_WINDOW_MS` | `3600000` | Throttle window length (ms) |
+
+---
+
+## Webhook DLQ Ops Notifications
+
+`WebhookDlqAlertService` monitors the webhook dead-letter queue and can POST a
+structured JSON alert to an ops endpoint (Slack, PagerDuty, or any HTTP sink)
+whenever a threshold is breached.
+
+Notification failures are **non-fatal**: a Slack outage cannot disrupt the DLQ
+check loop or normal webhook delivery.
+
+### Payload shape
+
+```json
+{
+  "service": "mux-backend",
+  "event": "dlq.threshold_breached",
+  "text": "[mux-backend] DLQ threshold breached: ...",
+  "dlqDepth": 55,
+  "totalDeliveries": 500,
+  "dlqPercentage": 11.0,
+  "oldestDlqItemAgeMs": 7200000,
+  "alerts": [
+    { "type": "ABSOLUTE_THRESHOLD", "message": "...", "value": 55, "threshold": 50 }
+  ],
+  "checkedAt": "2026-08-31T23:00:00.000Z"
+}
+```
+
+The `text` field is Slack-compatible. For PagerDuty, wrap the payload in a
+[PagerDuty Events v2](https://developer.pagerduty.com/api-reference/YXBpOjI3NDgyNjU-pager-duty-v2-events-api)
+adapter or use a custom HTTP sink.
+
+### Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `DLQ_OPS_WEBHOOK_URL` | _(unset)_ | HTTP(S) URL to POST alerts to. Leave unset for metrics-only mode |
+| `DLQ_OPS_WEBHOOK_TIMEOUT_MS` | `5000` | Timeout (ms) for outbound notification calls |
+| `DLQ_CHECK_INTERVAL_MS` | `60000` | How often (ms) to poll DLQ depth |
+| `DLQ_ABSOLUTE_THRESHOLD` | `50` | Alert when DLQ depth ≥ this value |
+| `DLQ_PERCENTAGE_THRESHOLD` | `10` | Alert when DLQ% of total deliveries ≥ this value |
+| `DLQ_AGE_THRESHOLD_MS` | `3600000` | Alert when oldest DLQ item is older than this (ms) |
 
 ---
 
@@ -599,6 +918,45 @@ Key authentication-related environment variables (when applicable):
 
 ---
 
+## Container Hardening
+
+The production `Dockerfile` runs the API as a non-root user (`mux`, UID 1001)
+with defense-in-depth controls. This is part of the container hardening
+initiative for production-grade deployments.
+
+### What the Dockerfile does
+
+| Control | Detail |
+|---------|--------|
+| Non-root user | A dedicated `mux` user (UID 1001) owns all application files and runs the process. The container never runs as root. |
+| No new privileges | `security_opt: no-new-privileges:true` in `docker-compose.yml` prevents the container from gaining additional capabilities at runtime. |
+| Minimal runtime image | The production image uses `node:22-alpine` with only production dependencies, built artifacts, and Prisma migrations. Build tools and source code are not present. |
+| Fail-closed migrations | `docker-entrypoint.sh` runs `prisma migrate deploy` before starting the app. If migrations fail, the container exits non-zero so orchestrators (Kubernetes, ECS) detect the failure immediately. |
+| No secrets in image | Secrets are injected at runtime via environment variables or a secret manager — they are never baked into the image. |
+
+### Running locally
+
+```bash
+docker compose up --build
+```
+
+The `api` service runs as user `mux` (UID 1001). To debug as root:
+
+```bash
+docker compose exec --user root api sh
+```
+
+See [docs/DOCKER-COMPOSE-LOCAL.md](docs/DOCKER-COMPOSE-LOCAL.md) for the full local setup guide.
+
+### Production notes
+
+For Kubernetes or ECS deployments, apply the same `USER` and `securityOpt`
+settings from `docker-compose.yml`, and consider adding a
+`readOnlyRootFilesystem` root-level mount with `tmpfs` for `/tmp` and Prisma
+cache writes.
+
+---
+
 ## License
 
 MIT
@@ -611,12 +969,44 @@ Contributions are welcome. Please open an issue before submitting large changes.
 
 ---
 
+## Wallet Cache Invalidation (#785)
+
+`WalletCacheService` provides an in-process TTL cache for wallet lookups. To prevent stale status or stale public-key data from being served after mutation:
+
+- **Key rotation** (`rotateWalletKey`): both the predecessor and successor cache entries (by ID and by user+network) are evicted immediately after the rotation completes.
+- **Status change** (`updateWalletStatus`): both the ID-keyed and user+network-keyed entries are evicted after any status transition (ACTIVE → SUSPENDED, ACTIVE → ARCHIVED, etc.).
+- **Activation** (`activateWallet`): the PROVISIONING entry is evicted so the next read fetches the freshly-ACTIVE record from the database.
+
+Cache entries are stored in `CacheService` (in-process `Map`) with a 5-minute TTL. Invalidation is additive (fail-safe via `@Optional()`): if `WalletCacheService` is not injected the operations proceed normally without cache calls.
+
+---
+
+## OpenAPI Drift Check (#786)
+
+The committed `openapi.json` is the source of truth for the published API spec. To prevent controllers from drifting silently from the spec:
+
+```bash
+# Regenerate the spec from live NestJS routes
+pnpm run openapi:generate
+
+# Check whether the live routes match the committed spec (fails on drift)
+pnpm run openapi:check-drift
+
+# Lint the committed spec
+pnpm run openapi:lint
+```
+
+`openapi:check-drift` is run automatically in CI after `openapi:lint`. If it fails, run `pnpm run openapi:generate` locally, review the diff, and commit the updated `openapi.json`.
+
+---
+
 Request Logging Middleware
 
 A lightweight request logging middleware has been added to the application to record incoming HTTP requests and response durations. It:
 
 - Sets an `x-request-id` header (honors incoming `x-request-id` if present).
 - Logs method, URL, client IP and request id when requests start and when they finish.
+- **Redacts all sensitive headers** (`Authorization`, `X-API-Key`, `X-Internal-Api-Key`, `X-Maintenance-Secret`, `X-Recovery-Admin-Secret`, `cookie`, `set-cookie`, `proxy-authorization`) — raw header values are never written to any log line. (#787)
 - Is robust to stale/invalid request objects and will not crash the application.
 
 The middleware is registered in `src/main.ts` and runs for all incoming requests.
@@ -667,7 +1057,13 @@ All sync and reconciliation operations create a `BalanceSyncJob` record for audi
 | `POST` | `/balances/wallet/:walletId/sync` | Manually trigger sync for a single wallet |
 | `POST` | `/balances/sync-all` | Manually trigger full sync for all active wallets (admin) |
 | `POST` | `/balances/wallet/:walletId/reconcile` | Reconcile wallet balance with on-chain state |
+| `POST` | `/balances/wallet/:walletId/sync-with-retry` | Sync one wallet, retrying transient Horizon failures |
+| `GET` | `/balances/wallet/:walletId/stale` | Report balances not refreshed within the staleness budget |
 | `POST` | `/balances/reconcile-all` | Reconcile all balances (admin) |
+| `POST` | `/balances/scheduled-sync` | Manually trigger the scheduled sweep |
+
+Balance **writes** are gated by `BALANCE_SYNC_ENABLED` (default `false`, fail-closed);
+reads are always available. See [Horizon balance reconciliation](docs/WALLET-API.md#horizon-balance-reconciliation).
 
 ### Environment Variables
 
@@ -699,6 +1095,13 @@ Webhooks allow your application to receive real-time notifications when events o
 
 All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
 
+### Signing Secret Storage & Rotation
+
+* **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
+* **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-secret` (rotation). Store it immediately; it is never returned again.
+* **Downtime-free rotation**: `rotate-secret` stages a new secret version. Outbound deliveries keep being signed with the previous (established) secret until the grace window (`WEBHOOK_SECRET_GRACE_SECONDS`, default `3600`s) elapses, then the new secret is promoted automatically on the next dispatch. Consumers still verifying with the old secret are never cut off.
+* **Fails closed**: In production the server refuses to boot without `WEBHOOK_SIGNING_KEY`; there is no silent default or mock.
+
 ### Supported Events
 
 `wallet.created`, `wallet.activated`, `wallet.suspended`, `wallet.rotated`, `transaction.created`, `transaction.pending`, `transaction.confirmed`, `transaction.failed`, `balance.updated`, `balance.low`, `user.created`, `user.updated`
@@ -725,6 +1128,9 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 Wallets can carry a short, optional human-readable label.
 
 - `PATCH /wallets/:id/nickname` - set or clear the wallet nickname
+- `GET /wallets/key/versions` - key versions this build can read/write (#922)
+- `GET /wallets/:id/key` - key metadata (versions only, no key material) (#922)
+- `POST /wallets/:id/key/rotate` - rotate `keyVersion` (owner/guardian, gated by `KEY_ROTATION_ENABLED`) (#922)
 
 **Request body**:
 ```json

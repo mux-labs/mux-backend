@@ -1,280 +1,176 @@
-# Key Management Utilities
+# StrKey Helper
 
-## StrKey Helper
+A comprehensive utility for encoding, decoding, and validating Stellar StrKey formatted keys (SEP-23) in the Mux Protocol key management system.
 
-The `StrKeyHelper` provides utility functions for encoding and decoding Stellar keys using the StrKey format (base32 with checksums).
+## Overview
 
-### Overview
+The StrKey Helper provides production-grade utilities for working with Stellar's StrKey address format. It supports Ed25519 public keys, secret seeds, pre-authorized transactions, and SHA256 hashes.
 
-Stellar uses a specific key encoding format called StrKey, which is a base32 encoding with version bytes and checksums. This ensures keys are:
-- Human-readable
-- Type-safe (different prefixes for different key types)
-- Error-resistant (checksums catch typos)
+## Installation
 
-### Key Formats
+The StrKeyHelper is part of the `key-management` module and is automatically available when the module is imported.
 
-| Type | Prefix | Description | Example |
-|------|--------|-------------|---------|
-| Public Key | `G` | Ed25519 public key | `GAXYZ...` |
-| Secret Seed | `S` | Ed25519 private key | `SAXYZ...` |
-| Pre-Auth Tx | `T` | Pre-authorized transaction hash | `TAXYZ...` |
-| SHA256 Hash | `X` | SHA256 hash for signing | `XAXYZ...` |
-| Muxed Account | `M` | Multiplexed account | `MAXYZ...` |
-| Contract | `C` | Smart contract address | `CAXYZ...` |
-
-All encoded strings are 56 characters long (except for muxed accounts which can be longer).
-
-### Usage
-
-#### Import
+## Quick Start
 
 ```typescript
 import { StrKeyHelper } from './key-management/utils/strkey.helper';
+
+const helper = new StrKeyHelper();
+
+// Encode a raw 32-byte public key
+const publicKey = helper.encodeEd25519PublicKey(rawBuffer);
+
+// Validate a StrKey-formatted public key
+const isValid = helper.isValidEd25519PublicKey(publicKey);
+
+// Decode a StrKey-formatted public key to raw bytes
+const decoded = helper.decodeEd25519PublicKey(publicKey);
+
+// Mask a key for safe logging
+const masked = helper.maskKey(publicKey);
 ```
 
-#### Encode a Public Key
+## API Reference
 
-```typescript
-// From raw 32-byte buffer
-const rawPublicKey: Buffer = keypair.rawPublicKey();
-const encoded = StrKeyHelper.encodeEd25519PublicKey(rawPublicKey);
-// Result: "GAXYZ..." (56 characters)
-```
+### Encoding Methods
 
-#### Encode a Secret Seed
+| Method | Input | Output | Description |
+|--------|-------|--------|-------------|
+| `encodeEd25519PublicKey` | `Buffer (32 bytes)` | `string` | Encode raw public key to G... format |
+| `encodeEd25519SecretSeed` | `Buffer (32 bytes)` | `string` | Encode raw secret seed to S... format |
+| `encodePreAuthTx` | `Buffer (32 bytes)` | `string` | Encode transaction hash to T... format |
+| `encodeSha256Hash` | `Buffer (32 bytes)` | `string` | Encode SHA256 hash to X... format |
 
-```typescript
-// From raw 32-byte buffer
-const rawSecretKey: Buffer = keypair.rawSecretKey();
-const encoded = StrKeyHelper.encodeEd25519SecretSeed(rawSecretKey);
-// Result: "SAXYZ..." (56 characters)
-```
+### Decoding Methods
 
-#### Decode Keys
+| Method | Input | Output | Description |
+|--------|-------|--------|-------------|
+| `decodeEd25519PublicKey` | `string` | `Buffer (32 bytes)` | Decode G... format to raw bytes |
+| `decodeEd25519SecretSeed` | `string` | `Buffer (32 bytes)` | Decode S... format to raw bytes |
+| `decodePreAuthTx` | `string` | `Buffer (32 bytes)` | Decode T... format to raw bytes |
+| `decodeSha256Hash` | `string` | `Buffer (32 bytes)` | Decode X... format to raw bytes |
 
-```typescript
-// Decode public key to raw bytes
-const rawPublicKey = StrKeyHelper.decodeEd25519PublicKey('GAXYZ...');
-// Result: Buffer (32 bytes)
+### Validation Methods
 
-// Decode secret seed to raw bytes
-const rawSecretKey = StrKeyHelper.decodeEd25519SecretSeed('SAXYZ...');
-// Result: Buffer (32 bytes)
-```
+| Method | Input | Output | Description |
+|--------|-------|--------|-------------|
+| `isValidEd25519PublicKey` | `unknown` | `boolean` | Validate public key format |
+| `isValidEd25519SecretSeed` | `unknown` | `boolean` | Validate secret seed format |
+| `isValidPreAuthTx` | `unknown` | `boolean` | Validate pre-auth tx format |
+| `isValidSha256Hash` | `unknown` | `boolean` | Validate SHA256 hash format |
 
-#### Validate Keys
+### Type Detection
 
-```typescript
-// Validate public key format
-const isValid = StrKeyHelper.isValidEd25519PublicKey('GAXYZ...');
-// Result: true or false
+| Method | Input | Output | Description |
+|--------|-------|--------|-------------|
+| `getStrKeyType` | `unknown` | `StrKeyTypeInfo` | Identify key type and validity |
 
-// Validate secret seed format
-const isValid = StrKeyHelper.isValidEd25519SecretSeed('SAXYZ...');
-// Result: true or false
-```
+### Security Utilities
 
-#### Detect Key Type
+| Method | Input | Output | Description |
+|--------|-------|--------|-------------|
+| `looksLikeSecretSeed` | `unknown` | `boolean` | Quick detection of secret seed patterns |
+| `maskKey` | `unknown, number?, number?` | `string` | Mask keys for safe logging |
 
-```typescript
-const keyInfo = StrKeyHelper.getStrKeyType('GAXYZ...');
-// Result: { isValid: true, type: 'publicKey' }
+## Error Handling
 
-const seedInfo = StrKeyHelper.getStrKeyType('SAXYZ...');
-// Result: { isValid: true, type: 'secretSeed' }
+All methods include comprehensive error handling with stable error codes:
 
-const unknownInfo = StrKeyHelper.getStrKeyType('INVALID');
-// Result: { isValid: false, type: 'unknown' }
-```
+- `STRKEY_INVALID_INPUT_TYPE` — Input is not the expected type
+- `STRKEY_INVALID_LENGTH` — Input buffer is not 32 bytes (for encoding) or string is not 56 characters (for decoding)
+- `STRKEY_INVALID_PREFIX` — String has an unexpected StrKey prefix
+- `STRKEY_INVALID_CHECKSUM` — StrKey checksum verification failed
+- `STRKEY_INVALID_KEY_TYPE` — Key type does not match the expected type
+- `STRKEY_ENCODING_FAILED` — Encoding operation failed
+- `STRKEY_DECODING_FAILED` — Decoding operation failed
 
-#### Safe Logging - Mask Keys
+## Security Features
 
-```typescript
-// Mask key for logging (shows only prefix and suffix)
-const masked = StrKeyHelper.maskKey('GAXYZ123456789...');
-// Result: "GAXY********************XYZ9"
+1. **Secret Protection**
+   - Never logs full secret seeds
+   - Provides masking utility for safe logging
+   - Quick detection to prevent accidental exposure
 
-// Custom masking
-const masked = StrKeyHelper.maskKey(secretKey, 6, 6);
-// Result: "SAXYZU********************VWXYZ9"
-```
+2. **Input Validation**
+   - All inputs type-checked
+   - Buffer lengths verified
+   - Key prefixes validated
+   - Checksums verified
 
-#### Security Check - Detect Secret Seeds
+3. **Graceful Error Handling**
+   - Validation methods return `false` (never throw) for invalid inputs
+   - Encoding/decoding methods throw typed errors with stable error codes
+   - Error messages never contain raw key material
 
-```typescript
-// Quick check without full validation
-const looksLikeSecret = StrKeyHelper.looksLikeSecretSeed(value);
-// Result: true if starts with 'S' and is 56 chars
+## Testing
 
-// Use for preventing accidental logging:
-if (StrKeyHelper.looksLikeSecretSeed(value)) {
-  logger.warn('Attempted to log secret seed');
-  return;
-}
-```
-
-### Advanced Usage
-
-#### Pre-Authorized Transaction Hash
-
-```typescript
-// Encode a transaction hash
-const txHash: Buffer = Buffer.alloc(32).fill(0x42);
-const encoded = StrKeyHelper.encodePreAuthTx(txHash);
-// Result: "TAXYZ..." (56 characters)
-
-// Decode back
-const decoded = StrKeyHelper.decodePreAuthTx(encoded);
-// Result: Buffer (32 bytes)
-```
-
-#### SHA256 Hash Encoding
-
-```typescript
-// Encode a SHA256 hash
-const hash: Buffer = Buffer.alloc(32).fill(0xAB);
-const encoded = StrKeyHelper.encodeSha256Hash(hash);
-// Result: "XAXYZ..." (56 characters)
-
-// Decode back
-const decoded = StrKeyHelper.decodeSha256Hash(encoded);
-// Result: Buffer (32 bytes)
-```
-
-### Integration with Key Management Service
-
-The StrKey helper integrates seamlessly with the Key Management Service:
-
-```typescript
-// Generate key through service
-const keyMaterial = await keyManagementService.generateKey({
-  keyType: KeyType.STELLAR_ED25519,
-});
-
-// Validate the generated public key
-const isValid = StrKeyHelper.isValidEd25519PublicKey(keyMaterial.publicKey);
-// Result: true
-
-// Get key type info
-const keyInfo = StrKeyHelper.getStrKeyType(keyMaterial.publicKey);
-// Result: { isValid: true, type: 'publicKey' }
-
-// Mask for logging
-const masked = StrKeyHelper.maskKey(keyMaterial.publicKey);
-logger.info(`Generated key: ${masked}`);
-// Logs: "Generated key: GABC********************XYZ9"
-```
-
-### Error Handling
-
-All methods include comprehensive error handling:
-
-```typescript
-try {
-  const decoded = StrKeyHelper.decodeEd25519PublicKey('INVALID_KEY');
-} catch (error) {
-  // Error: "Failed to decode Ed25519 public key: ..."
-}
-
-try {
-  const encoded = StrKeyHelper.encodeEd25519PublicKey(Buffer.alloc(16));
-} catch (error) {
-  // Error: "Invalid public key length: expected 32 bytes, got 16"
-}
-```
-
-### Security Best Practices
-
-#### ✅ DO
-
-- Use `maskKey()` when logging keys for debugging
-- Use `isValidEd25519PublicKey()` to validate user input
-- Use `looksLikeSecretSeed()` to detect accidental secret exposure
-- Use `getStrKeyType()` to identify unknown key formats
-- Validate keys before storing or transmitting them
-
-#### ❌ DON'T
-
-- Never log full secret seeds in production
-- Never transmit secret seeds unencrypted
-- Never store decoded (raw buffer) secret keys in databases
-- Never skip validation on user-provided keys
-- Never expose secret seeds in API responses
-
-### Testing
-
-The helper includes comprehensive test coverage:
+### Running Tests
 
 ```bash
-# Run unit tests
-npm test -- strkey.helper.spec.ts
+# Run all StrKey tests
+npm test -- strkey
 
-# Run integration tests
+# Run specific test files
+npm test -- strkey.helper.spec.ts
 npm test -- strkey-integration.spec.ts
+npm test -- strkey.contract.spec.ts
+
+# Run with coverage
+npm test -- --coverage strkey
 ```
 
-### API Reference
+### Test Coverage
 
-#### Encoding Methods
+- **Unit Tests** (`strkey.helper.spec.ts`) — 100+ test cases covering encoding, decoding, validation, type detection, masking, and edge cases
+- **Integration Tests** (`strkey-integration.spec.ts`) — Real-world workflows including key generation, audit logging, batch validation, and concurrent operations
+- **Contract Tests** (`strkey.contract.spec.ts`) — SEP-23 protocol compliance, checksum validation, cross-verification, and performance benchmarks
 
-| Method | Input | Output | Description |
-|--------|-------|--------|-------------|
-| `encodeEd25519PublicKey` | `Buffer (32 bytes)` | `string` | Encodes public key to G... format |
-| `encodeEd25519SecretSeed` | `Buffer (32 bytes)` | `string` | Encodes secret seed to S... format |
-| `encodePreAuthTx` | `Buffer (32 bytes)` | `string` | Encodes tx hash to T... format |
-| `encodeSha256Hash` | `Buffer (32 bytes)` | `string` | Encodes hash to X... format |
+## Performance
 
-#### Decoding Methods
-
-| Method | Input | Output | Description |
-|--------|-------|--------|-------------|
-| `decodeEd25519PublicKey` | `string` | `Buffer (32 bytes)` | Decodes G... format to raw bytes |
-| `decodeEd25519SecretSeed` | `string` | `Buffer (32 bytes)` | Decodes S... format to raw bytes |
-| `decodePreAuthTx` | `string` | `Buffer (32 bytes)` | Decodes T... format to raw bytes |
-| `decodeSha256Hash` | `string` | `Buffer (32 bytes)` | Decodes X... format to raw bytes |
-
-#### Validation Methods
-
-| Method | Input | Output | Description |
-|--------|-------|--------|-------------|
-| `isValidEd25519PublicKey` | `string` | `boolean` | Validates G... format |
-| `isValidEd25519SecretSeed` | `string` | `boolean` | Validates S... format |
-| `getStrKeyType` | `string` | `object` | Identifies key type |
-| `looksLikeSecretSeed` | `unknown` | `boolean` | Quick secret seed detection |
-
-#### Utility Methods
-
-| Method | Input | Output | Description |
-|--------|-------|--------|-------------|
-| `maskKey` | `string, number?, number?` | `string` | Masks key for safe logging |
-
-### Performance
-
+Benchmarks from contract tests:
 - Encoding: ~0.1ms per operation
 - Decoding: ~0.1ms per operation
 - Validation: ~0.05ms per operation
-- Negligible memory overhead
+- 10,000 encodings: < 5 seconds
+- 10,000 validations: < 2 seconds
 
-### Compatibility
+## Compatibility
 
-- Fully compatible with `stellar-sdk` v10.2.0+
-- Works with all Stellar network types (public, testnet, standalone)
-- Supports all StrKey format versions
+- ✅ Fully compatible with Stellar StrKey format (SEP-23)
+- ✅ All encoding matches the Stellar SDK output format
+- ✅ All decoding produces correct 32-byte buffers
+- ✅ All validation results are consistent with Stellar protocol
 
-### References
+## Security Considerations
 
-- [Stellar StrKey Specification](https://github.com/stellar/stellar-protocol/blob/master/ecosystem/sep-0023.md)
-- [Stellar SDK Documentation](https://stellar.github.io/js-stellar-sdk/)
-- [Base32 Encoding RFC](https://tools.ietf.org/html/rfc4648)
+### ✅ Implemented Safeguards
 
-### Support
+1. **No Secret Exposure**
+   - Keys masked in logs by default
+   - Quick detection prevents accidental logging
+   - Error messages don't expose sensitive data
 
-For issues or questions:
-1. Check the [Key Management README](../README.md)
-2. Review the test files for usage examples
-3. Consult Stellar SDK documentation
+2. **Input Validation**
+   - All inputs validated before processing
+   - Type checking prevents type confusion
+   - Length validation ensures correct data
 
----
+3. **Graceful Error Handling**
+   - Invalid states handled without exposing internals
+   - Clear error messages for debugging
+   - Stable error codes for client branching
 
-**Version**: 1.0.0  
-**Last Updated**: 2026-06-02
+4. **Audit Trail**
+   - All operations can be logged safely with masking
+   - Key type detection helps audit analysis
+   - Integration with existing audit system
+
+## Integration Points
+
+The StrKeyHelper integrates with:
+
+1. **Key Management Service** — Validates generated keys
+2. **Stellar Key Provider** — Uses helper for validation
+3. **Encryption Service** — Works with encrypted material
+4. **Audit System** — Provides masked keys for logs
+5. **API Endpoints** — Can validate request parameters
