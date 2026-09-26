@@ -28,6 +28,24 @@ Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 | `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | enabled  |
 | `FEE_SPONSORSHIP_ENABLED`     | Fee sponsorship budget writes on mainnet | **disabled** (deny-by-default) |
 | `SOROBAN_INVOKE_ENABLED`      | Soroban contract invocation            | **disabled** (deny-by-default) |
+
+## Soroban RPC Retry Policy
+
+When the invoke surface is active, transient Soroban RPC failures are retried
+under a bounded policy. Permanent failures are returned immediately.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SOROBAN_RPC_MAX_ATTEMPTS` | `3` | Total attempts including the first (clamped to 1–10) |
+| `SOROBAN_RPC_RETRY_BACKOFF_MS` | `200` | Base backoff, exponential with full jitter (capped at 10000) |
+| `SOROBAN_RPC_DEADLINE_MS` | `5000` | Total wall-clock budget for attempts and waits |
+| `SOROBAN_RPC_RETRY_SUBMIT` | `false` | Opt in to retrying a mutating `submit` |
+
+A **failed simulation is never submitted**, and a **failed `submit` is not
+retried** unless `SOROBAN_RPC_RETRY_SUBMIT=true` — a lost submit response is
+ambiguous, so a blind retry risks a duplicate on chain. Setting
+`SOROBAN_RPC_MAX_ATTEMPTS=1` disables retries with no code change. Full contract:
+[docs/SOROBAN-RPC-RETRY.md](docs/SOROBAN-RPC-RETRY.md).
 | `MULTI_ASSET_PAYMENTS_ENABLED` | Credit-asset payment writes (non-native) | **disabled** (deny-by-default) |
 | `KEY_ROTATION_ENABLED`        | Wallet `keyVersion` rotation writes     | **disabled** (deny-by-default) |
 | `BALANCE_SYNC_ENABLED`        | Horizon balance sync/reconcile writes   | **disabled** (deny-by-default) |

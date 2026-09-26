@@ -77,6 +77,32 @@ transaction relaying happen server-side.
 - See [docs/custody-security-model.md](docs/custody-security-model.md) for the full
   custody model (key generation, encryption envelope, rotation, fail-closed decrypt).
 
+## Soroban RPC Retry Policy
+
+Soroban RPC calls are retried only for **transient** failures (HTTP
+`408`/`425`/`429`/`5xx`, and transport errors such as `ECONNRESET`). Every other
+`4xx` — and any error the policy does not recognise — is treated as permanent and
+returned immediately. Classification fails closed on purpose: blindly retrying an
+unknown failure is how a retry storm starts.
+
+- **Bounded attempts and a bounded total delay**, capped independently
+  (`SOROBAN_RPC_MAX_ATTEMPTS`, `SOROBAN_RPC_DEADLINE_MS`), so no configuration
+  can turn one request into unbounded RPC load.
+- **Exponential backoff with full jitter**, so a fleet recovering from a single
+  RPC blip does not resynchronize into a thundering herd.
+- **A failed simulation is never submitted**, retried or not. Simulate-before-
+  submit is unchanged by this policy.
+- **A failed `submit` is not retried by default** (`SOROBAN_RPC_RETRY_SUBMIT=false`).
+  A lost submit response is ambiguous — the transaction may have landed — so a
+  blind retry risks a duplicate on chain. Enabling it requires the RPC layer to
+  guarantee idempotent submission.
+- Aborts are honoured, so a disconnected client stops the work instead of
+  continuing to load an RPC that is already struggling.
+
+Configuration, metrics, and rollback:
+[docs/SOROBAN-RPC-RETRY.md](docs/SOROBAN-RPC-RETRY.md). Setting
+`SOROBAN_RPC_MAX_ATTEMPTS=1` disables retries with no code change.
+
 ## Internal Cron Jobs & Secret Guard
 
 Internal, cron-triggered endpoints (cleanup workers, reconciliation jobs, and other
