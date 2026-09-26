@@ -159,6 +159,24 @@ Before deploying to production:
 
 ---
 
+## Cross-Origin Access Control (CORS)
+
+Browser access to this API is governed by the `CORS_ORIGINS` allowlist, matched
+**exactly** — no suffix, subdomain, or wildcard matching. Wildcard entries are
+rejected rather than honoured, and `Access-Control-Allow-Origin` is never `*`
+(credentials are enabled, so a wildcard would grant every origin access to
+authenticated responses). The effective policy is inspectable via the
+authenticated, read-only `GET /v1/internal/cors-allowlist` endpoint.
+
+- A request with no `Origin` header is allowed: CORS is browser-enforced and is
+  **not** an authentication layer. Server-to-server callers are authenticated by
+  API key / JWT as usual.
+- Contributors adding CORS behaviour must keep the exact-match rule. Do not
+  introduce suffix, regex, or subdomain matching to "simplify" configuration.
+- `src/common/http/cors.spec.ts` and `test/cors-allowlist.e2e-spec.ts` assert
+  the deny-by-default rules, including subdomain and credential-injection
+  lookalikes. See [README.md § Cross-origin browser access](README.md#cross-origin-browser-access-cors).
+
 ## Security Response Headers
 
 Every HTTP response carries a baseline set of security headers (`nosniff`,
