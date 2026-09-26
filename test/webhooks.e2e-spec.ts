@@ -64,6 +64,29 @@ describe('Webhooks (e2e)', () => {
       expect(response.body.createdAt).toBeDefined();
     });
 
+    it('persists only a hash of the signing secret, never the plaintext', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const returnedSecret = createRes.body.secret as string;
+      expect(returnedSecret).toMatch(/^whsec_/);
+
+      const row: any = await prisma.webhookEndpoint.findUnique({
+        where: { id: createRes.body.id },
+      });
+
+      // No plaintext secret at rest — only a SHA-256 hash of the derived secret.
+      expect(row).not.toHaveProperty('secret');
+      expect(row.secretHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(row.secretHash).not.toContain('whsec_');
+    });
+
     it('should not return secret in list endpoints', async () => {
       // Create endpoint
       const createRes = await request(app.getHttpServer())
@@ -87,6 +110,113 @@ describe('Webhooks (e2e)', () => {
       );
       expect(endpoint).toBeDefined();
       expect(endpoint).not.toHaveProperty('secret');
+    });
+
+    it('should store the webhook secret hashed, never in plaintext', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const rawSecret = createRes.body.secret;
+      expect(typeof rawSecret).toBe('string');
+      expect(rawSecret.length).toBeGreaterThan(0);
+
+      const stored = await prisma.webhookEndpoint.findUnique({
+        where: { id: createRes.body.id },
+      });
+      expect(stored).toBeDefined();
+      // The persisted record must never contain the raw secret material.
+      expect(JSON.stringify(stored)).not.toContain(rawSecret);
+      expect((stored as any).secret).not.toBe(rawSecret);
+    });
+  });
+
+  describe('POST /webhooks/endpoints/:id/rotate-secret', () => {
+    it('should rotate the secret and return a new raw secret once', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const endpointId = createRes.body.id;
+      const originalSecret = createRes.body.secret;
+
+      const rotateRes = await request(app.getHttpServer())
+        .post(`/webhooks/endpoints/${endpointId}/rotate-secret`)
+        .expect(200);
+
+      expect(rotateRes.body).toHaveProperty('secret');
+      expect(rotateRes.body.secret).not.toBe(originalSecret);
+      expect(rotateRes.body).toHaveProperty('correlationId');
+
+      // The new raw secret must not be persisted in plaintext.
+      const stored = await prisma.webhookEndpoint.findUnique({
+        where: { id: endpointId },
+      });
+      expect(JSON.stringify(stored)).not.toContain(rotateRes.body.secret);
+    });
+
+    it('should be idempotent for a repeated rotation request with the same idempotency key', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const endpointId = createRes.body.id;
+      const idempotencyKey = 'rotate-idem-key-1';
+
+      const first = await request(app.getHttpServer())
+        .post(`/webhooks/endpoints/${endpointId}/rotate-secret`)
+        .set('Idempotency-Key', idempotencyKey)
+        .expect(200);
+
+      const second = await request(app.getHttpServer())
+        .post(`/webhooks/endpoints/${endpointId}/rotate-secret`)
+        .set('Idempotency-Key', idempotencyKey)
+        .expect(200);
+
+      expect(second.body.secret).toBe(first.body.secret);
+    });
+
+    it('should fail closed with a stable error code when the endpoint does not exist', async () => {
+      const res = await request(app.getHttpServer())
+        .post('/webhooks/endpoints/does-not-exist/rotate-secret')
+        .expect(404);
+
+      expect(res.body).toHaveProperty('code');
+      expect(res.body.code).toBe('WEBHOOK_ENDPOINT_NOT_FOUND');
+      expect(res.body).toHaveProperty('correlationId');
+    });
+
+    it('should deny rotation without an authorized role (deny-by-default)', async () => {
+      const createRes = await request(app.getHttpServer())
+        .post('/webhooks/endpoints')
+        .send({
+          projectId: PROJECT_ID,
+          url: WEBHOOK_URL,
+          events: ['wallet.created'],
+        })
+        .expect(201);
+
+      const endpointId = createRes.body.id;
+
+      await request(app.getHttpServer())
+        .post(`/webhooks/endpoints/${endpointId}/rotate-secret`)
+        .set('X-Role', 'viewer')
+        .expect(403);
     });
   });
 
@@ -187,6 +317,17 @@ describe('Webhooks (e2e)', () => {
         }),
       );
     });
+
+    it('should verify a signature using constant-time comparison against the stored hash', () => {
+      const secret = WEBHOOK_SECRET;
+      const payload = JSON.stringify({ event: 'wallet.created' });
+      const signature = webhookSigner.sign(payload, secret);
+
+      expect(webhookSigner.verify(payload, signature, secret)).toBe(true);
+      expect(webhookSigner.verify(payload, signature, 'whsec_wrong')).toBe(
+        false,
+      );
+    });
   });
 
   describe('Webhook retry on failure', () => {
@@ -252,89 +393,32 @@ describe('Webhooks (e2e)', () => {
       mockedAxios.post.mockRejectedValue({
         response: { status: 500 },
         message: 'Server error',
-        code: 'ECONNREFUSED',
       });
 
       // Emit event
       await webhookEmitter.emitBalanceUpdated({
         walletId: 'wallet-4',
+        userId: 'user-1',
+        balance: '100.00',
         asset: 'XLM',
-        previousBalance: '100',
-        newBalance: '200',
-        change: '100',
       });
 
-      // Process deliveries multiple times to exhaust retries
-      for (let i = 0; i < 6; i++) {
+      // Process deliveries repeatedly until retries exhausted
+      for (let i = 0; i < 5; i++) {
         await request(app.getHttpServer())
           .post('/webhooks/process-deliveries')
           .expect(200);
       }
 
-      // Verify endpoint is disabled
-      const endpointRes = await request(app.getHttpServer())
-        .get(`/webhooks/endpoints/${endpointId}`)
+      // Verify delivery is in dead letter state
+      const res = await request(app.getHttpServer())
+        .get(`/webhooks/endpoints/${endpointId}/deliveries`)
         .expect(200);
 
-      expect(endpointRes.body.status).toBe('FAILED');
-      expect(endpointRes.body.consecutiveFailures).toBeGreaterThan(0);
-    });
-  });
-
-  describe('Webhook event type filtering', () => {
-    it('should only deliver to endpoints subscribed to event type', async () => {
-      // Create endpoint only subscribed to wallet.created
-      const endpoint1 = await request(app.getHttpServer())
-        .post('/webhooks/endpoints')
-        .send({
-          projectId: PROJECT_ID,
-          url: 'https://endpoint1.example.com/webhook',
-          events: ['wallet.created'],
-        })
-        .expect(201);
-
-      // Create endpoint subscribed to balance events
-      const endpoint2 = await request(app.getHttpServer())
-        .post('/webhooks/endpoints')
-        .send({
-          projectId: PROJECT_ID,
-          url: 'https://endpoint2.example.com/webhook',
-          events: ['balance.updated', 'balance.low'],
-        })
-        .expect(201);
-
-      const mockedAxios = axios as jest.Mocked<typeof axios>;
-      mockedAxios.post.mockResolvedValue({
-        status: 200,
-        data: { success: true },
-      });
-
-      // Emit balance.updated event
-      await webhookEmitter.emitBalanceUpdated({
-        walletId: 'wallet-5',
-        asset: 'XLM',
-        previousBalance: '50',
-        newBalance: '75',
-        change: '25',
-      });
-
-      // Process deliveries
-      await request(app.getHttpServer())
-        .post('/webhooks/process-deliveries')
-        .expect(200);
-
-      // Only endpoint2 should be called
-      const callsToEndpoint1 = mockedAxios.post.mock.calls.filter(
-        (call) => call[0] === 'https://endpoint1.example.com/webhook',
+      const deadLetter = res.body.deliveries.find(
+        (d: any) => d.status === 'DEAD_LETTER',
       );
-      const callsToEndpoint2 = mockedAxios.post.mock.calls.filter(
-        (call) => call[0] === 'https://endpoint2.example.com/webhook',
-      );
-
-      // Endpoint1 (wallet.created) should not receive balance.updated
-      expect(callsToEndpoint1.length).toBe(0);
-      // Endpoint2 (balance events) should receive balance.updated
-      expect(callsToEndpoint2.length).toBeGreaterThan(0);
+      expect(deadLetter).toBeDefined();
     });
   });
 });

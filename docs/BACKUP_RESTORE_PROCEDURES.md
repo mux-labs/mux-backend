@@ -10,9 +10,32 @@ The backup system provides:
 - **Restore Drills**: Non-destructive validation of restore capability
 - **Procedure Documentation**: Operational guidelines for backup/restore
 
+## Invariants
+
+These invariants MUST hold for every backup/restore operation. They are enforced by the backup module and covered by automated tests.
+
+1. **Deny-by-default authz**: Every backup/restore entrypoint requires an authenticated principal (owner, guardian, API key, or JWT). Requests without a valid credential are rejected with `401`; requests with an insufficient role are rejected with `403`. There is no anonymous access path.
+2. **Idempotency**: Backup and restore requests carry an idempotency key. Concurrent or replayed requests with the same key return the original result and never re-execute side effects.
+3. **Fail-closed writes**: If a dependency (RPC, DB, or Horizon) is unavailable, write operations fail closed with a stable error code. No partial or best-effort writes are performed.
+4. **Source of truth**: The server/contract remains the source of truth for spends, recovery, and admin. Backup metadata is advisory and never overrides on-chain state.
+5. **No secret leakage**: Logs and metrics redact keys, JWTs, webhook secrets, and raw key material. Only correlation ids and stable error codes are emitted.
+
+## Stable Error Codes
+
+| Code | Meaning |
+|------|---------|
+| `BACKUP_UNAUTHORIZED` | Missing or invalid credential (401) |
+| `BACKUP_FORBIDDEN` | Authenticated but insufficient role (403) |
+| `BACKUP_DEPENDENCY_UNAVAILABLE` | RPC/DB/Horizon unavailable; write failed closed (503) |
+| `BACKUP_IDEMPOTENCY_CONFLICT` | Same idempotency key reused with a different payload (409) |
+| `BACKUP_INVALID_INPUT` | Adversarial or malformed input, e.g. oversized batch (400) |
+| `BACKUP_INTERNAL_ERROR` | Unexpected failure (500) |
+
+Every response includes a `correlationId` for tracing. Correlation ids are safe to log; credentials and key material are not.
+
 ## Admin Endpoints
 
-All endpoints require `X-Cron-Secret` header authentication.
+All endpoints require authentication. In addition to the `X-Cron-Secret` header used by scheduled jobs, callers may authenticate as an owner/guardian via API key or JWT. Requests are denied by default when no valid credential is present.
 
 ### Health Check
 
@@ -32,6 +55,7 @@ curl -H "X-Cron-Secret: ${CRON_SECRET}" \
   "connectionWorks": true,
   "query": "success",
   "timestamp": "2026-01-01T00:00:00.000Z",
+  "correlationId": "corr_1704067200000_abc123def",
   "message": "Database connection is healthy"
 }
 ```
@@ -40,10 +64,11 @@ curl -H "X-Cron-Secret: ${CRON_SECRET}" \
 
 **Endpoint:** `POST /backup/metadata`
 
-Collects current database metadata including record counts and timestamps. This should be saved for backup verification.
+Collects current database metadata including record counts and timestamps. This should be saved for backup verification. The request is idempotent when an `Idempotency-Key` header is supplied.
 
 ```bash
 curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+  -H "Idempotency-Key: backup-2026-01-01" \
   https://api.example.com/backup/metadata
 ```
 
@@ -54,6 +79,7 @@ curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
   "timestamp": "2026-01-01T00:00:00.000Z",
   "duration": 1234,
   "status": "success",
+  "correlationId": "corr_1704067200000_abc123def",
   "recordCounts": {
     "users": 100,
     "wallets": 250,
@@ -77,6 +103,7 @@ Performs a non-destructive validation that the database can be restored from bac
 
 ```bash
 curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+  -H "Idempotency-Key: drill-2026-01-01" \
   https://api.example.com/backup/drill
 ```
 
@@ -86,6 +113,7 @@ curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
   "drillId": "drill_1704067200000_xyz789",
   "timestamp": "2026-01-01T00:00:00.000Z",
   "success": true,
+  "correlationId": "corr_1704067200000_xyz789",
   "validationResults": {
     "tablesExist": true,
     "recordsCountMatch": true,
@@ -129,6 +157,7 @@ curl -H "X-Cron-Secret: ${CRON_SECRET}" \
 2. **Collect Backup Metadata**
    ```bash
    curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+     -H "Idempotency-Key: backup-$(date +%F)" \
      https://api.example.com/backup/metadata
    ```
    - Save the response (backupId, recordCounts, timestamp)
@@ -192,6 +221,7 @@ curl -H "X-Cron-Secret: ${CRON_SECRET}" \
 4. **Run Restore Drill**
    ```bash
    curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+     -H "Idempotency-Key: drill-$(date +%F)" \
      -H "DATABASE_URL=postgresql://restored..." \
      https://api.example.com/backup/drill
    ```
@@ -238,12 +268,14 @@ Schedule monthly restore drills to verify disaster recovery capability:
 4. **Collect Backup Metadata**
    ```bash
    curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+     -H "Idempotency-Key: backup-$(date +%F)" \
      https://staging-api.example.com/backup/metadata
    ```
 
 5. **Perform Restore Drill**
    ```bash
    curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+     -H "Idempotency-Key: drill-$(date +%F)" \
      https://staging-api.example.com/backup/drill
    ```
 
@@ -290,6 +322,27 @@ Schedule monthly restore drills to verify disaster recovery capability:
 - Identify orphaned records and delete them
 - Re-run restore drill
 
+### Dependency Outage (RPC/DB/Horizon)
+
+**Error:** `BACKUP_DEPENDENCY_UNAVAILABLE`
+
+**Behavior:** Write operations fail closed. The backup module does not attempt partial writes and does not fall back to a stale cache.
+
+**Solutions:**
+- Check dependency status pages (RPC, Horizon, managed DB)
+- Retry once the dependency recovers; the idempotency key makes retries safe
+- Do not disable fail-closed behavior to force a write through
+
+### Idempotency Conflict
+
+**Error:** `BACKUP_IDEMPOTENCY_CONFLICT`
+
+**Cause:** The same `Idempotency-Key` was reused with a different payload.
+
+**Solutions:**
+- Use a fresh idempotency key for a genuinely new operation
+- Reuse the original key only to retrieve the original result
+
 ### High Restore Duration
 
 **Issue:** Restore drill takes longer than expected
@@ -304,10 +357,5 @@ Schedule monthly restore drills to verify disaster recovery capability:
 
 - [Database Schema](../prisma/schema.prisma)
 - [Disaster Recovery Runbook](./DISASTER_RECOVERY.md)
-- [Database Maintenance](./DATABASE_MAINTENANCE.md)
-
-## Contact & Escalation
-
-- **On-Call SRE:** [Escalation Path]
-- **DBA:** [Contact Information]
-- **Incident Commander:** [Contact Information]
+- [Security Policy](../SECURITY.md)
+- [Backup Module E2E Tests](../test/backup-module-registered.e2e-spec.ts)

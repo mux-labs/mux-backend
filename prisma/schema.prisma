@@ -90,6 +90,21 @@ enum WalletNetwork {
   TESTNET
 }
 
+/// Internal lifecycle states for a domain user.
+/// Keep in sync with UserStatus in src/users/entities/user.entity.ts.
+enum UserStatus {
+  /// Created but not yet usable (e.g. awaiting first wallet provisioning).
+  PROVISIONING
+  /// Fully operational; the default for healthy accounts.
+  ACTIVE
+  /// Account is undergoing recovery (e.g. lost device, wallet rotation).
+  RECOVERY_PENDING
+  /// Operationally paused (e.g. risk hold). Reversible.
+  SUSPENDED
+  /// Permanently disabled. No further use.
+  DISABLED
+}
+
 /// User account for authentication and wallet ownership.
 model User {
   id String @id @default(uuid())
@@ -103,8 +118,8 @@ model User {
   /// User's display name (optional)
   displayName String?
 
-  /// Account status
-  status String @default("ACTIVE")
+  /// Account status — enforced by the UserStatus enum; defaults to ACTIVE.
+  status UserStatus @default(ACTIVE)
 
   /// Authentication provider type
   authProvider String @default("UNKNOWN")
@@ -219,6 +234,9 @@ model Wallet {
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  /// Fee sponsorship budgets attached to this wallet.
+  feeSponsorshipBudgets FeeSponsorshipBudget[]
 
   /// Recovery requests for this wallet
   recoveryRequests RecoveryRequest[]
@@ -552,9 +570,27 @@ model WebhookEndpoint {
   /// Endpoint configuration
   url         String
   description String?
-  
-  /// Secret for HMAC signature verification
-  secret      String
+
+  /// Version of the derived signing secret currently used to sign outbound
+  /// deliveries. The secret itself is never stored — it is re-derived from
+  /// WEBHOOK_SIGNING_KEY via HMAC-SHA256 at dispatch time.
+  secretVersion Int @default(1)
+
+  /// SHA-256 hash of derived(secretVersion). The only representation of the
+  /// signing secret persisted at rest (never the plaintext), mirroring how
+  /// API keys are stored.
+  secretHash String @default("")
+
+  /// Version staged by rotate-secret while the established secret keeps
+  /// signing during the grace window (rotation without downtime).
+  pendingSecretVersion Int?
+
+  /// SHA-256 hash of derived(pendingSecretVersion).
+  pendingSecretHash String?
+
+  /// When pendingSecretVersion becomes the active signing version. Null when
+  /// there is no rotation in progress.
+  secretGracePeriodEndsAt DateTime?
   
   /// Event types to listen for
   events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
@@ -940,6 +976,70 @@ model ApiChangelog {
   @@index([category])
   @@index([publishedAt])
   @@index([changeType])
+}
+
+/// Fee sponsorship budget lifecycle states
+enum FeeSponsorshipBudgetStatus {
+  /// Budget is active and accepting sponsorship requests.
+  ACTIVE
+  /// Budget is paused; no new sponsorships are accepted.
+  PAUSED
+  /// Budget is fully exhausted or manually closed.
+  CLOSED
+}
+
+/// Fee sponsorship budget for a wallet.
+/// Tracks the maximum amount a sponsor is willing to pay on behalf
+/// of a sponsored wallet for Stellar/Soroban transaction fees.
+///
+/// Invariants:
+/// - A wallet may have at most one active budget at a time.
+/// - Budgets are scoped to a network (mainnet/testnet).
+/// - All monetary amounts are stored as strings to preserve precision.
+/// - The server is the source of truth for spend tracking.
+model FeeSponsorshipBudget {
+  id String @id @default(uuid())
+
+  /// Wallet this budget is associated with.
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  /// Sponsor identity (e.g., sponsor wallet address or project ID).
+  sponsorId String
+
+  /// Maximum total amount the sponsor is willing to pay (in the asset's smallest unit, e.g., stroops).
+  limitAmount String
+
+  /// Asset code for the sponsorship (e.g., "XLM", "USDC"). Null for native XLM.
+  assetCode String?
+
+  /// Asset issuer for credit-alphanumeric assets. Null for native XLM.
+  assetIssuer String?
+
+  /// Network scope for this budget.
+  network WalletNetwork
+
+  /// Current remaining budget (amount left to sponsor).
+  remainingAmount String
+
+  /// Lifecycle state.
+  status FeeSponsorshipBudgetStatus @default(ACTIVE)
+
+  /// Optional note set by the sponsor or admin.
+  note String?
+
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
+  @@unique([walletId, network])
+  @@index([sponsorId])
+  @@index([status])
+  @@index([network])
+  @@index([deletedAt])
 }
 
 /// Async export job for transaction data

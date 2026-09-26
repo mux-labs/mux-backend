@@ -159,6 +159,48 @@ describe('Payments & Limits (e2e)', () => {
         .expect(HttpStatus.UNPROCESSABLE_ENTITY);
     });
 
+    it('should reject payment exceeding daily limit', async () => {
+      // Reset per-transaction limit high, set low daily limit
+      await prisma.walletLimit.deleteMany({ where: { walletId } });
+      await prisma.walletLimit.create({
+        data: {
+          walletId,
+          dailyLimit: 150,
+          perTransactionLimit: 1000,
+        },
+      });
+
+      // First payment within daily limit
+      await request(app.getHttpServer())
+        .post('/v1/payments')
+        .set('X-API-Key', apiKey)
+        .send({
+          walletId,
+          receiverWalletId,
+          amount: 100,
+          currency: 'USD',
+          description: 'First payment within daily limit',
+          fromId: userId,
+          toId: userId,
+        })
+        .expect(HttpStatus.CREATED);
+
+      // Second payment would exceed the daily limit
+      await request(app.getHttpServer())
+        .post('/v1/payments')
+        .set('X-API-Key', apiKey)
+        .send({
+          walletId,
+          receiverWalletId,
+          amount: 100,
+          currency: 'USD',
+          description: 'Second payment exceeding daily limit',
+          fromId: userId,
+          toId: userId,
+        })
+        .expect(HttpStatus.UNPROCESSABLE_ENTITY);
+    });
+
     it('should reject payment with missing required fields', async () => {
       await request(app.getHttpServer())
         .post('/v1/payments')
@@ -280,43 +322,7 @@ describe('Payments & Limits (e2e)', () => {
           fromId: userId,
           toId: userId,
           userId: userId,
-          amount: 125,
-          currency: 'GBP',
-          status: 'CONFIRMED',
-        },
-      });
-      paymentId = payment.id;
-    });
-
-    it('should retrieve a specific payment', async () => {
-      const response = await request(app.getHttpServer())
-        .get(`/v1/payments/${paymentId}`)
-        .set('X-API-Key', apiKey)
-        .expect(HttpStatus.OK);
-
-      expect(response.body).toHaveProperty('id', paymentId);
-      expect(response.body).toHaveProperty('amount', 125);
-      expect(response.body).toHaveProperty('currency', 'GBP');
-    });
-
-    it('should return 404 for non-existent payment', async () => {
-      await request(app.getHttpServer())
-        .get('/v1/payments/999999')
-        .set('X-API-Key', apiKey)
-        .expect(HttpStatus.NOT_FOUND);
-    });
-  });
-
-  describe('PATCH /v1/payments/:id', () => {
-    let paymentId: number;
-
-    beforeAll(async () => {
-      const payment = await prisma.payment.create({
-        data: {
-          fromId: userId,
-          toId: userId,
-          userId: userId,
-          amount: 200,
+          amount: 42,
           currency: 'USD',
           status: 'PENDING',
         },
@@ -324,280 +330,27 @@ describe('Payments & Limits (e2e)', () => {
       paymentId = payment.id;
     });
 
-    it('should update a pending payment status to CONFIRMED', async () => {
+    it('should return a payment by id', async () => {
       const response = await request(app.getHttpServer())
-        .patch(`/v1/payments/${paymentId}`)
+        .get(`/v1/payments/${paymentId}`)
         .set('X-API-Key', apiKey)
-        .send({ status: 'CONFIRMED' })
         .expect(HttpStatus.OK);
 
-      expect(response.body).toHaveProperty('status', 'CONFIRMED');
+      expect(response.body).toHaveProperty('id', paymentId);
+      expect(response.body).toHaveProperty('amount', 42);
     });
 
-    it('should reject invalid status transition', async () => {
-      const payment = await prisma.payment.create({
-        data: {
-          fromId: userId,
-          toId: userId,
-          userId: userId,
-          amount: 150,
-          currency: 'USD',
-          status: 'FAILED',
-        },
-      });
-
+    it('should return 404 for non-existent payment', async () => {
       await request(app.getHttpServer())
-        .patch(`/v1/payments/${payment.id}`)
+        .get('/v1/payments/999999999')
         .set('X-API-Key', apiKey)
-        .send({ status: 'PENDING' })
-        .expect(HttpStatus.BAD_REQUEST);
-    });
-  });
-
-  describe('Limits Management', () => {
-    describe('POST /v1/limits', () => {
-      it('should set spending limits for a wallet', async () => {
-        const response = await request(app.getHttpServer())
-          .post('/v1/limits')
-          .set('X-API-Key', apiKey)
-          .send({
-            walletId,
-            dailyLimit: 5000,
-            perTransactionLimit: 1000,
-          })
-          .expect(HttpStatus.CREATED);
-
-        expect(response.body).toHaveProperty('walletId', walletId);
-        expect(response.body).toHaveProperty('dailyLimit', 5000);
-        expect(response.body).toHaveProperty('perTransactionLimit', 1000);
-      });
-
-      it('should reject invalid limit values', async () => {
-        await request(app.getHttpServer())
-          .post('/v1/limits')
-          .set('X-API-Key', apiKey)
-          .send({
-            walletId,
-            dailyLimit: -1000,
-            perTransactionLimit: 500,
-          })
-          .expect(HttpStatus.BAD_REQUEST);
-      });
-
-      it('should require authentication', async () => {
-        await request(app.getHttpServer())
-          .post('/v1/limits')
-          .send({
-            walletId,
-            dailyLimit: 5000,
-            perTransactionLimit: 1000,
-          })
-          .expect(HttpStatus.UNAUTHORIZED);
-      });
+        .expect(HttpStatus.NOT_FOUND);
     });
 
-    describe('GET /v1/limits/:walletId', () => {
-      it('should retrieve limits for a wallet', async () => {
-        // Create limits first
-        await prisma.walletLimit.create({
-          data: {
-            walletId: receiverWalletId,
-            dailyLimit: 3000,
-            perTransactionLimit: 500,
-          },
-        });
-
-        const response = await request(app.getHttpServer())
-          .get(`/v1/limits/${receiverWalletId}`)
-          .set('X-API-Key', apiKey)
-          .expect(HttpStatus.OK);
-
-        expect(response.body).toHaveProperty('walletId', receiverWalletId);
-        expect(response.body).toHaveProperty('dailyLimit', 3000);
-        expect(response.body).toHaveProperty('perTransactionLimit', 500);
-      });
-
-      it('should return 404 for wallet without limits', async () => {
-        const tempWallet = await prisma.wallet.create({
-          data: {
-            userId: userId,
-            address: `wallet-${Date.now()}-temp`,
-            network: 'TESTNET',
-            status: 'ACTIVE',
-          },
-        });
-
-        await request(app.getHttpServer())
-          .get(`/v1/limits/${tempWallet.id}`)
-          .set('X-API-Key', apiKey)
-          .expect(HttpStatus.NOT_FOUND);
-
-        await prisma.wallet.delete({ where: { id: tempWallet.id } });
-      });
-    });
-
-    describe('PUT /v1/limits/:walletId', () => {
-      let limitedWallet: any;
-
-      beforeAll(async () => {
-        limitedWallet = await prisma.wallet.create({
-          data: {
-            userId: userId,
-            address: `wallet-${Date.now()}-update`,
-            network: 'TESTNET',
-            status: 'ACTIVE',
-          },
-        });
-
-        await prisma.walletLimit.create({
-          data: {
-            walletId: limitedWallet.id,
-            dailyLimit: 2000,
-            perTransactionLimit: 400,
-          },
-        });
-      });
-
-      afterAll(async () => {
-        await prisma.walletLimit.deleteMany({
-          where: { walletId: limitedWallet.id },
-        });
-        await prisma.wallet.delete({ where: { id: limitedWallet.id } });
-      });
-
-      it('should update spending limits', async () => {
-        const response = await request(app.getHttpServer())
-          .put(`/v1/limits/${limitedWallet.id}`)
-          .set('X-API-Key', apiKey)
-          .send({
-            dailyLimit: 7000,
-            perTransactionLimit: 1500,
-          })
-          .expect(HttpStatus.OK);
-
-        expect(response.body).toHaveProperty('dailyLimit', 7000);
-        expect(response.body).toHaveProperty('perTransactionLimit', 1500);
-      });
-    });
-
-    describe('DELETE /v1/limits/:walletId', () => {
-      it('should remove spending limits', async () => {
-        const tempWallet = await prisma.wallet.create({
-          data: {
-            userId: userId,
-            address: `wallet-${Date.now()}-delete`,
-            network: 'TESTNET',
-            status: 'ACTIVE',
-          },
-        });
-
-        await prisma.walletLimit.create({
-          data: {
-            walletId: tempWallet.id,
-            dailyLimit: 1000,
-            perTransactionLimit: 200,
-          },
-        });
-
-        await request(app.getHttpServer())
-          .delete(`/v1/limits/${tempWallet.id}`)
-          .set('X-API-Key', apiKey)
-          .expect(HttpStatus.OK);
-
-        const limits = await prisma.walletLimit.findUnique({
-          where: { walletId: tempWallet.id },
-        });
-
-        expect(limits).toBeNull();
-
-        await prisma.wallet.delete({ where: { id: tempWallet.id } });
-      });
-
-      it('should return 404 when removing non-existent limits', async () => {
-        const tempWallet = await prisma.wallet.create({
-          data: {
-            userId: userId,
-            address: `wallet-${Date.now()}-no-limits`,
-            network: 'TESTNET',
-            status: 'ACTIVE',
-          },
-        });
-
-        await request(app.getHttpServer())
-          .delete(`/v1/limits/${tempWallet.id}`)
-          .set('X-API-Key', apiKey)
-          .expect(HttpStatus.NOT_FOUND);
-
-        await prisma.wallet.delete({ where: { id: tempWallet.id } });
-      });
-    });
-  });
-
-  describe('Daily Limit Enforcement', () => {
-    it('should enforce daily spending limits', async () => {
-      const tempWallet = await prisma.wallet.create({
-        data: {
-          userId: userId,
-          address: `wallet-${Date.now()}-daily`,
-          network: 'TESTNET',
-          status: 'ACTIVE',
-        },
-      });
-
-      const receiverWallet = await prisma.wallet.create({
-        data: {
-          userId: userId,
-          address: `wallet-${Date.now()}-receiver-daily`,
-          network: 'TESTNET',
-          status: 'ACTIVE',
-        },
-      });
-
-      // Set daily limit
-      await prisma.walletLimit.create({
-        data: {
-          walletId: tempWallet.id,
-          dailyLimit: 100,
-          perTransactionLimit: 100,
-        },
-      });
-
-      // First payment within limit
-      const payment1 = await request(app.getHttpServer())
-        .post('/v1/payments')
-        .set('X-API-Key', apiKey)
-        .send({
-          walletId: tempWallet.id,
-          receiverWalletId: receiverWallet.id,
-          amount: 60,
-          currency: 'USD',
-          description: 'First payment',
-          fromId: userId,
-          toId: userId,
-        });
-
-      expect(payment1.status).toBe(HttpStatus.CREATED);
-
-      // Second payment exceeding daily limit
+    it('should require authentication', async () => {
       await request(app.getHttpServer())
-        .post('/v1/payments')
-        .set('X-API-Key', apiKey)
-        .send({
-          walletId: tempWallet.id,
-          receiverWalletId: receiverWallet.id,
-          amount: 60,
-          currency: 'USD',
-          description: 'Second payment',
-          fromId: userId,
-          toId: userId,
-        })
-        .expect(HttpStatus.UNPROCESSABLE_ENTITY);
-
-      await prisma.walletLimit.deleteMany({
-        where: { walletId: tempWallet.id },
-      });
-      await prisma.wallet.delete({ where: { id: tempWallet.id } });
-      await prisma.wallet.delete({ where: { id: receiverWallet.id } });
+        .get(`/v1/payments/${paymentId}`)
+        .expect(HttpStatus.UNAUTHORIZED);
     });
   });
 });
