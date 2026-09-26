@@ -1218,6 +1218,30 @@ Testing
 
 Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
 
+### Transaction Memo Validation
+
+The `memo` field is client-supplied free text that is stored, indexed, searchable
+(`?memo=`), and ultimately becomes a Stellar `MemoText` on-chain. Stellar caps
+`MemoText` at **28 bytes**, so a memo that looks fine in JavaScript can still be
+un-submittable. `src/transactions/transaction-memo.ts` is the single place that
+decides admissibility, and `TransactionsService.createTransaction()` calls
+`normalizeMemo()` **before** the insert.
+
+* **Length is measured in UTF-8 bytes, not characters.** A 14-character emoji
+  memo is 28 bytes and is refused; 28 ASCII characters are accepted. Checking
+  `.length` would let an un-submittable memo through.
+* **No truncation.** An over-long memo is an error, never silently shortened to
+  something the client did not ask for.
+* **Whitespace-only is an error** (`MEMO_EMPTY`), not a stored blank, so a
+  caller cannot believe a memo was recorded when it was not.
+* **Control characters and unpaired surrogates are refused.** They cannot
+  survive XDR encoding and are a log-injection vector once stored.
+* **`undefined`/`null` mean "no memo"** and are never an error.
+
+Stable codes (`src/transactions/transaction-memo.ts`): `MEMO_TYPE_INVALID`,
+`MEMO_TOO_LONG`, `MEMO_CHARSET_INVALID`, `MEMO_EMPTY`. Error messages never
+echo the memo itself.
+
 ### Transaction Status Lifecycle (#498)
 
 Internal transaction statuses and their Horizon result mappings:
