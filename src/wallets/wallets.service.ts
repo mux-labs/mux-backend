@@ -35,6 +35,10 @@ import {
   LogContext,
 } from '../common/logging/structured-logger';
 import { TransactionStatus } from '../transactions/domain/transaction.model';
+import {
+  DEFAULT_WALLET_LIST_LIMIT,
+  MAX_WALLET_LIST_LIMIT,
+} from './dto/list-wallets-query.dto';
 
 /** Wallet shape safe to return from the API (no encrypted secret material). */
 export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
@@ -62,6 +66,28 @@ export interface WalletListResult {
   limit: number;
   offset: number;
   hasMore: boolean;
+}
+
+/**
+ * Clamp a requested page size into `[1, MAX_WALLET_LIST_LIMIT]` ([#936]).
+ *
+ * The controller validates the query DTO, but the service clamps too so any
+ * internal caller is bounded as well. A negative or zero `limit` would
+ * otherwise reach the database as a nonsensical page.
+ */
+export function clampWalletListLimit(limit?: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) {
+    return DEFAULT_WALLET_LIST_LIMIT;
+  }
+  return Math.min(Math.max(Math.trunc(limit), 1), MAX_WALLET_LIST_LIMIT);
+}
+
+/** Clamp `offset` to a non-negative integer, so paging cannot run backwards. */
+export function clampWalletListOffset(offset?: number): number {
+  if (offset === undefined || !Number.isFinite(offset)) {
+    return 0;
+  }
+  return Math.max(Math.trunc(offset), 0);
 }
 
 export interface WalletCreationResult {
@@ -179,8 +205,8 @@ export class WalletsService implements OnModuleDestroy {
       if (
         error &&
         typeof error === 'object' &&
-        (error as any).code === 'P2002' &&
-        (error as any).meta?.target?.includes('publicKey')
+        error.code === 'P2002' &&
+        error.meta?.target?.includes('publicKey')
       ) {
         this.logger.error(
           `Public key collision detected during wallet creation for user ${userId} on ${network}`,
@@ -322,7 +348,10 @@ export class WalletsService implements OnModuleDestroy {
     }
   }
 
-  async signStellarEnvelope(walletId: string, unsignedXdr: string): Promise<string> {
+  async signStellarEnvelope(
+    walletId: string,
+    unsignedXdr: string,
+  ): Promise<string> {
     const privateKey = await this.getDecryptedPrivateKey(walletId);
     try {
       const transaction = TransactionBuilder.fromXDR(
@@ -594,8 +623,8 @@ export class WalletsService implements OnModuleDestroy {
       where.status = { not: WalletStatus.ARCHIVED };
     }
 
-    const limit = Math.min(filters?.limit ?? 20, 100);
-    const offset = filters?.offset ?? 0;
+    const limit = clampWalletListLimit(filters?.limit);
+    const offset = clampWalletListOffset(filters?.offset);
 
     const [wallets, total] = await Promise.all([
       this.prisma.wallet.findMany({
@@ -812,29 +841,33 @@ export class WalletsService implements OnModuleDestroy {
   }
 
   private generateTestData(filters: WalletListFilters): WalletListResult {
-    const limit = Math.min(filters?.limit ?? 20, 100);
-    const offset = filters?.offset ?? 0;
+    const limit = clampWalletListLimit(filters?.limit);
+    const offset = clampWalletListOffset(filters?.offset);
     const totalTestWallets = 1000;
 
-    const testWallets: PublicWallet[] = Array.from({ length: limit }, (_, i) => {
-      const index = offset + i;
-      return {
-        id: `test-wallet-${index}`,
-        userId: `test-user-${index % 100}`,
-        publicKey: `0x${'a'.repeat(64)}${index.toString().padStart(2, '0')}`,
-        encryptionVersion: 1,
-        secretVersion: 1,
-        keyVersion: 1,
-        network: (index % 2 === 0 ? WalletNetwork.MAINNET : WalletNetwork.TESTNET) as WalletNetwork,
-        status: WalletStatus.ACTIVE as WalletStatus,
-        statusReason: 'Test wallet',
-        statusChangedAt: new Date(Date.now() - index * 1000),
-        rotatedFromId: null,
-        successorId: null,
-        createdAt: new Date(Date.now() - index * 1000),
-        updatedAt: new Date(Date.now() - index * 1000),
-      };
-    });
+    const testWallets: PublicWallet[] = Array.from(
+      { length: limit },
+      (_, i) => {
+        const index = offset + i;
+        return {
+          id: `test-wallet-${index}`,
+          userId: `test-user-${index % 100}`,
+          publicKey: `0x${'a'.repeat(64)}${index.toString().padStart(2, '0')}`,
+          encryptionVersion: 1,
+          secretVersion: 1,
+          keyVersion: 1,
+          network:
+            index % 2 === 0 ? WalletNetwork.MAINNET : WalletNetwork.TESTNET,
+          status: WalletStatus.ACTIVE,
+          statusReason: 'Test wallet',
+          statusChangedAt: new Date(Date.now() - index * 1000),
+          rotatedFromId: null,
+          successorId: null,
+          createdAt: new Date(Date.now() - index * 1000),
+          updatedAt: new Date(Date.now() - index * 1000),
+        };
+      },
+    );
 
     return {
       data: testWallets,

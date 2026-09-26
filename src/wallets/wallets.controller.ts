@@ -30,33 +30,20 @@ import { UpdateWalletDto } from './dto/update-wallet.dto';
 import { UpdateWalletNicknameDto } from './dto/update-wallet-nickname.dto';
 import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
 import { WalletResponseDto } from './dto/wallet-response.dto';
+import { ListWalletsQueryDto } from './dto/list-wallets-query.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
 import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
 import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { RateLimitGuard, SensitiveEndpoint } from '../rate-limit/rate-limit.guard';
+import {
+  RateLimitGuard,
+  SensitiveEndpoint,
+} from '../rate-limit/rate-limit.guard';
 import {
   FeatureFlag,
   FeatureFlagGuard,
 } from '../common/feature-flags/feature-flag.guard';
-
-/** Parse a pagination query param, throwing 400 on invalid input */
-function parsePaginationParam(
-  value: string | undefined,
-  name: string,
-  max = 100,
-): number | undefined {
-  if (value === undefined) return undefined;
-  const n = Number(value);
-  if (!Number.isInteger(n) || n < 0) {
-    throw new BadRequestException(`${name} must be a non-negative integer`);
-  }
-  if (name === 'limit' && n > max) {
-    throw new BadRequestException(`limit must not exceed ${max}`);
-  }
-  return n;
-}
 
 /**
  * Public wallet API (`/v1/wallets`).
@@ -145,7 +132,8 @@ export class WalletsController {
   @ApiQuery({
     name: 'includeArchived',
     required: false,
-    description: 'Include archived wallets in the results (excluded by default)',
+    description:
+      'Include archived wallets in the results (excluded by default)',
     example: false,
   })
   @ApiQuery({
@@ -170,24 +158,8 @@ export class WalletsController {
     example: false,
   })
   @Get()
-  findAll(
-    @Query('userId') userId?: string,
-    @Query('network') network?: WalletNetwork,
-    @Query('status') status?: WalletStatus,
-    @Query('includeArchived') includeArchived?: string,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
-    @Query('loadTestMode') loadTestMode?: string,
-  ) {
-    return this.walletsService.findAll({
-      userId,
-      network,
-      status,
-      includeArchived: includeArchived === 'true',
-      limit: parsePaginationParam(limit, 'limit'),
-      offset: parsePaginationParam(offset, 'offset'),
-      loadTestMode: loadTestMode === 'true',
-    });
+  findAll(@Query() query: ListWalletsQueryDto) {
+    return this.walletsService.findAll(query);
   }
 
   @Patch(':id/archive')
@@ -231,7 +203,10 @@ export class WalletsController {
       'Address uniqueness is enforced at the DB level (@@unique([network, publicKey])); ' +
       'this endpoint surfaces that constraint as a human-readable query.',
   })
-  @ApiParam({ name: 'publicKey', description: 'Stellar public key (G-address)' })
+  @ApiParam({
+    name: 'publicKey',
+    description: 'Stellar public key (G-address)',
+  })
   @ApiQuery({
     name: 'network',
     enum: WalletNetwork,
@@ -243,7 +218,10 @@ export class WalletsController {
     description: 'Wallet found',
     type: WalletResponseDto,
   })
-  @ApiResponse({ status: 404, description: 'No wallet found for this public key on the given network' })
+  @ApiResponse({
+    status: 404,
+    description: 'No wallet found for this public key on the given network',
+  })
   @Get('address/:publicKey')
   async findByPublicKey(
     @Param('publicKey') publicKey: string,
