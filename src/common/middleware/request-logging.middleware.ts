@@ -1,133 +1,54 @@
+import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
-import { Logger } from '@nestjs/common';
-import { randomUUID } from 'crypto';
-import { RequestContextService } from '../request-context/request-context.service';
-
-// Client-reported app version, e.g. "2.4.1" or "ios-2.4.1". Kept
-// intentionally permissive (covers semver plus common platform prefixes)
-// while still rejecting anything long enough or shaped enough to be log
-// injection / control characters rather than a genuine version string.
-const CLIENT_VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/;
+import { REQUEST_ID_HEADER, MAX_REQUEST_ID_LENGTH } from '../interceptors/request-id.interceptor';
 
 /**
- * Reads and validates the optional `X-Client-Version` header used to tag
- * support logs with the reporting client's app version. Returns undefined
- * (never throws) when the header is absent, empty, or doesn't look like a
- * safe version string — callers should treat a missing client version as a
- * non-fatal, expected case.
+ * Middleware that ensures every request has a correlation id
+ * in the x-request-id header. If the client supplies one,
+ * it is validated and passed through; otherwise a server-generated
+ * id is set.
+ *
+ * The correlation id is also attached to the request object so
+ * downstream handlers can access it without re-reading headers.
  */
-export function extractClientVersion(req: Request | any): string | undefined {
-  if (!req || !req.headers) {
-    return undefined;
-  }
+@Injectable()
+export class RequestLoggingMiddleware implements NestMiddleware {
+  private readonly logger = new Logger('RequestLogging');
 
-  const raw = req.headers['x-client-version'] ?? req.headers['X-Client-Version'];
-  const value = Array.isArray(raw) ? raw[0] : raw;
+  use(req: Request, res: Response, next: NextFunction): void {
+    const incomingId = req.headers[REQUEST_ID_HEADER] as string | undefined;
+    const requestId = this.normalizeRequestId(incomingId);
 
-  if (typeof value !== 'string') {
-    return undefined;
-  }
+    // Attach to request for downstream use
+    (req as any).requestId = requestId;
 
-  const trimmed = value.trim();
-  if (!trimmed || !CLIENT_VERSION_PATTERN.test(trimmed)) {
-    return undefined;
-  }
+    // Set response header so the client can correlate
+    res.setHeader(REQUEST_ID_HEADER, requestId);
 
-  return trimmed;
-}
+    this.logger.debug(`${req.method} ${req.url} requestId=${requestId}`);
 
-export function requestLogger(
-  req: Request | any,
-  res: Response | any,
-  next: NextFunction,
-) {
-  const logger = new Logger('RequestLogger');
-
-  if (!req) {
-    logger.warn('Request logging skipped: invalid request object');
     next();
-    return;
   }
 
-  let clientVersion: string | undefined;
-  let id: string;
-
-  try {
-    const idHeader =
-      req.headers &&
-      (req.headers['x-request-id'] || req.headers['X-Request-Id']);
-    id =
-      typeof idHeader === 'string' && idHeader.length > 0
-        ? idHeader
-        : randomUUID();
-    const start = Date.now();
-
-    req.requestId = id;
-
-    // Optional client app version, e.g. "2.4.1". Never fatal to the request
-    // — a missing or malformed header simply means downstream support logs
-    // won't be tagged with a client version.
-    clientVersion = extractClientVersion(req);
-    req.clientVersion = clientVersion;
-
-    if (res && typeof res.setHeader === 'function') {
-      try {
-        res.setHeader('x-request-id', id);
-      } catch (e) {
-        /* best-effort */
-      }
+  private normalizeRequestId(incoming: string | undefined): string {
+    if (!incoming) {
+      return this.generateRequestId();
     }
 
-    const ip =
-      (req.ip || (req.socket && req.socket.remoteAddress)) || 'unknown';
-    const method = req.method || 'UNKNOWN';
-    const url = (req.originalUrl || req.url) || 'unknown';
-    const clientVersionSuffix = clientVersion
-      ? ` clientVersion=${clientVersion}`
-      : '';
-
-    logger.log(`${method} ${url} id=${id} ip=${ip}${clientVersionSuffix}`);
-
-    if (res && typeof res.on === 'function') {
-      res.on('finish', () => {
-        const ms = Date.now() - start;
-        try {
-          logger.log(
-            `Completed ${res.statusCode || 0} in ${ms}ms id=${id}${clientVersionSuffix}`,
-          );
-        } catch (e) {
-          logger.warn(
-            'Failed to log response finish: ' + (e && (e as Error).message),
-          );
-        }
-      });
+    if (incoming.length > MAX_REQUEST_ID_LENGTH) {
+      return this.generateRequestId();
     }
 
-    RequestContextService.run({ requestId: id, clientVersion }, () => {
-      try {
-        next();
-      } catch (e) {
-        logger.warn('next() threw in requestLogger');
-      }
-    });
-  } catch (err: any) {
-    logger.warn('Request logging failed: ' + (err && err.message));
-    try {
-      // Propagate the request ID (and client version, when present) through
-      // AsyncLocalStorage so downstream code (controllers, services — e.g.
-      // auth/session flows) can access it via RequestContextService without
-      // needing direct access to the Express request object.
-      if (id) {
-        RequestContextService.run({ requestId: id, clientVersion }, () =>
-          next(),
-        );
-      } else {
-        next();
-      }
-    } catch (e) {
-      logger.warn('next() threw after requestLogger error');
+    // Only allow safe characters to prevent log injection
+    const pattern = /^[A-Za-z0-9._:-]+$/;
+    if (!pattern.test(incoming)) {
+      return this.generateRequestId();
     }
+
+    return incoming;
+  }
+
+  private generateRequestId(): string {
+    return crypto.randomUUID();
   }
 }
-
-export default requestLogger;
