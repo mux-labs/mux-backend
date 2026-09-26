@@ -106,16 +106,66 @@ mutating requests fail closed with `503 Service Unavailable`.
 
 ### Health & Monitoring
 
-#### `GET /health`
+Health is split into two **separate** probes. They answer different questions
+and must not be pointed at the same Kubernetes probe ([#933](https://github.com/mux-labs/mux-backend/issues/933)).
 
-Liveness probe endpoint for Kubernetes and container orchestration platforms.
+| Endpoint           | Probe type | Checks the DB? | Answers                                     |
+| ------------------ | ---------- | --------------- | ------------------------------------------- |
+| `GET /health`      | liveness   | no              | Should this process be **restarted**?       |
+| `GET /health/live` | liveness   | no              | Same as `/health`; explicit alias.          |
+| `GET /health/ready`| readiness  | yes             | Should this pod **receive traffic**?        |
+| `GET /ready`       | readiness  | yes             | Compatibility alias for `/health/ready`.    |
 
-**Purpose**: Indicates whether the application process is alive and responsive. This is a lightweight check that does NOT verify external dependencies like databases.
+> [!IMPORTANT]
+> **Do not configure `/health/ready` as the liveness probe.** A transient
+> database blip would then fail liveness on every replica and Kubernetes would
+> restart the entire fleet — turning a recoverable dependency outage into a
+> self-inflicted outage. Liveness performs no I/O and only fails when the
+> process itself is broken.
+
+#### `GET /health` (liveness)
+
+**Purpose**: Indicates whether the application process is alive and responsive.
+This check performs **no** I/O and does **not** verify external dependencies such
+as the database, so it stays `200` during a database outage.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ok",
+  "build": { "gitSha": "a1b2c3d4e5f6" }
+}
+```
+
+`build.gitSha` comes from the `GIT_SHA` build arg (see `Dockerfile`) and is
+`"unknown"` on local/dev builds. It is a commit hash only — never a secret.
+
+#### `GET /health/ready` (readiness)
+
+**Purpose**: Indicates whether the application is ready to serve traffic by
+verifying database connectivity. **Fails closed** with `503` when a dependency
+is unavailable, so a pod that cannot serve wallet/payment traffic is drained
+from the load balancer instead of erroring on live requests.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ok",
+  "info": { "database": { "status": "up" } },
+  "error": {},
+  "details": { "database": { "status": "up" } },
+  "build": { "gitSha": "a1b2c3d4e5f6" }
+}
+```
+
+**Response (503 Service Unavailable)**: Returned when the database is not
+accessible. The dependency status is included for operators; no secret or key
+material is ever present in the body.
+
 #### `GET /ready`
 
-Readiness probe endpoint for Kubernetes and container orchestration platforms.
-
-**Purpose**: Indicates whether the application is ready to serve traffic by verifying database connectivity.
+Compatibility alias for the readiness probe, backed by `AppService`. Same
+semantics: `200` when the database responds, `503` when it does not.
 
 **Response (200 OK)**:
 ```json
@@ -129,15 +179,23 @@ Readiness probe endpoint for Kubernetes and container orchestration platforms.
 }
 ```
 
-**Response (503 Service Unavailable)**: Returned when the database is not accessible.
-
 **Use Cases**:
-- Kubernetes readiness probes
+- Kubernetes liveness probes (`/health`) and readiness probes (`/health/ready`)
 - Load balancer health checks
 - Container orchestration platforms
 - CI/CD deployment verification
 
-**Authentication**: Public endpoint (no API key required)
+**Authentication**: Public endpoints (no API key required)
+
+**Example Kubernetes probe config**:
+```yaml
+livenessProbe:
+  httpGet: { path: /v1/health, port: 3000 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /v1/health/ready, port: 3000 }
+  periodSeconds: 5
+```
 
 ---
 
