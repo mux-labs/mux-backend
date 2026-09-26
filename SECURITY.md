@@ -217,6 +217,11 @@ invariants and operational expectations.
    against a stale schema.
 6. No secrets, JWTs, or raw key material appear in container logs,
    error responses, or metrics.
+7. Shutdown is **drain-first**: the image declares `STOPSIGNAL SIGTERM`, and on
+   a signal the process refuses new writes (`503 SHUTDOWN_IN_PROGRESS`) while
+   draining in-flight operations for at most `GRACEFUL_SHUTDOWN_TIMEOUT_MS`
+   before closing Prisma. Escalate to `SIGKILL` only after that budget, never
+   before — see [docs/GRACEFUL-SHUTDOWN.md](docs/GRACEFUL-SHUTDOWN.md).
 
 ### Operational notes
 
@@ -275,6 +280,23 @@ surface and must be treated with extra care.
   responses, or metrics.
 - See [README.md](README.md#fee-sponsorship-budgets) for the full API reference
   and operational guidance.
+
+### Dependency Outages and Stable Error Codes
+
+Every failure returned to a client carries a stable, machine-readable
+`errorCode` plus a `requestId` correlation id — never a driver message, a
+connection string, a JWT, or key material. The catalog (HTTP status, category,
+retryability, recommended client action) is documented in
+[docs/ERROR-CODES.md](docs/ERROR-CODES.md) and served from the public
+`GET /v1/error-codes` endpoint.
+
+- **Horizon reads are fail-closed.** Transient Horizon failures are retried
+  (bounded, jittered) and, if the budget is exhausted, the read fails and **no
+  balance write is applied** — an outage degrades freshness, never correctness.
+  See [docs/HORIZON-RETRY.md](docs/HORIZON-RETRY.md).
+- **The database pool is explicit.** Pool sizing is opt-in and validated at boot;
+  a malformed value fails startup rather than reverting to an unbounded pool. See
+  [docs/DB-POOL-SIZING.md](docs/DB-POOL-SIZING.md).
 
 ## Stellar Wave Contributors
 

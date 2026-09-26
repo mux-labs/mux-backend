@@ -10,6 +10,7 @@ import {
 import { Reflector } from '@nestjs/core';
 import { ApiKeyService } from './api-key.service';
 import { ApiKeyErrorCode } from './domain/api-key.model';
+import { IS_PUBLIC_KEY, REQUIRE_API_KEY_KEY } from './api-key.decorator';
 import {
   assertNetworkMatch,
   extractRequestedNetwork,
@@ -43,7 +44,8 @@ export class ApiKeyGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC, [
+    // Check if route is public
+    const isPublic = this.reflector.getAllAndOverride<boolean>(IS_PUBLIC_KEY, [
       context.getHandler(),
       context.getClass(),
     ]);
@@ -52,17 +54,32 @@ export class ApiKeyGuard implements CanActivate {
       return true;
     }
 
-    const request = context.switchToHttp().getRequest();
-    const authHeader = request.headers?.authorization as string | undefined;
+    // Check if route explicitly requires API key (default behavior)
+    const requireApiKey = this.reflector.getAllAndOverride<boolean>(
+      REQUIRE_API_KEY_KEY,
+      [context.getHandler(), context.getClass()],
+    );
 
-    if (!authHeader) {
+    const request = context.switchToHttp().getRequest();
+    const authorization = request.headers?.authorization;
+    const apiKeyHeader = request.headers?.['x-api-key'];
+
+    let apiKey: string | undefined;
+
+    if (authorization?.startsWith('ApiKey ')) {
+      apiKey = authorization.slice(7).trim();
+    } else if (apiKeyHeader) {
+      apiKey = Array.isArray(apiKeyHeader) ? apiKeyHeader[0] : apiKeyHeader;
+    }
+
+    if (!apiKey) {
       throw new UnauthorizedException({
         code: ApiKeyErrorCode.UNAUTHORIZED,
         message: 'API key is required',
       });
     }
+    }
 
-    const apiKey = this.extractApiKey(authHeader);
     if (!apiKey) {
       throw new UnauthorizedException({
         code: ApiKeyErrorCode.INVALID_FORMAT,

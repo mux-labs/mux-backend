@@ -577,4 +577,67 @@ export class ApiKeyService implements OnModuleDestroy {
   private unauthorized(code: ApiKeyErrorCode, message: string) {
     return new UnauthorizedException({ code, message });
   }
+
+  /**
+   * Hashes an API key using SHA-256.
+   */
+  private hashKey(key: string): string {
+    return crypto.createHash('sha256').update(key).digest('hex');
+  }
+
+  /**
+   * Records API key usage for analytics and rate limiting.
+   */
+  async recordUsageLegacy(data: {
+    apiKeyId: string;
+    projectId: string;
+    endpoint: string;
+    method: string;
+    statusCode: number;
+    ipAddress: string;
+    userAgent: string;
+    responseTime: number;
+  }): Promise<void> {
+    try {
+      await this.prisma.
+  }
+
+  /**
+   * Hashes an API key using SHA-256.
+   */
+  private hashKey(key: string): string {
+    return createHash('sha256').update(key).digest('hex');
+  }
+
+  /**
+   * Records API key usage for analytics and rate limiting.
+   */
+  async recordUsage(data: {
+    apiKeyId: string;
+    projectId: string;
+    endpoint: string;
+    method: string;
+    statusCode: number;
+    ipAddress: string;
+    userAgent: string;
+    responseTime: number;
+  }): Promise<void> {
+    try {
+      await this.prisma.apiKeyUsage.create({
+        data: {
+          apiKeyId: data.apiKeyId,
+          projectId: data.projectId,
+          endpoint: data.endpoint,
+          method: data.method,
+          statusCode: data.statusCode,
+          ipAddress: data.ipAddress,
+          userAgent: data.userAgent,
+          responseTime: data.responseTime,
+        },
+      });
+    } catch (error) {
+      this.logger.error('Failed to record API key usage', error);
+      // Non-blocking - don't throw on analytics failure
+    }
+  }
 }
