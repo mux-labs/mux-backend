@@ -4,6 +4,7 @@ import { SorobanInvokeController } from './soroban-invoke.controller';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { ApiKeyService } from '../api-keys/api-key.service';
+import { ApiKeyAuditService } from '../api-keys/api-key-audit.service';
 
 /**
  * Soroban invoke orchestration.
@@ -17,7 +18,15 @@ import { ApiKeyService } from '../api-keys/api-key.service';
  */
 @Module({
   controllers: [SorobanInvokeController],
-  providers: [SorobanInvokeService, MetricsService, ApiKeyGuard, ApiKeyService],
+  providers: [
+    SorobanInvokeService,
+    MetricsService,
+    ApiKeyGuard,
+    ApiKeyService,
+    // Audit sink for the guard: every API key decision on this surface is
+    // recorded (fingerprint only, never key material).
+    ApiKeyAuditService,
+  ],
   exports: [SorobanInvokeService],
 })
 export class SorobanInvokeModule {}

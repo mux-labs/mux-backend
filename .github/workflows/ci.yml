@@ -282,6 +282,44 @@ jobs:
         # error-severity finding, 2/3 on verifier misuse.
         run: pnpm verify:key-consolidation
 
+  api-key-audit-log:
+    name: API Key Audit Log (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify audit specs are present
+        # #956: Fail closed if the specs go missing so the API key audit
+        # invariants (no key material, bounded fields, fail-soft sink) can
+        # never be silently un-gated.
+        run: |
+          test -f src/api-keys/api-key-audit.service.spec.ts
+          test -f test/api-key-audit-log.e2e-spec.ts
+
+      - name: Run API key audit log unit tests
+        # Pure in-process suite: no DB, network, or secrets required.
+        run: pnpm exec jest --runTestsByPath src/api-keys/api-key-audit.service.spec.ts
+
+      - name: Run API key audit log e2e
+        # Exercises the real guard + audit sink through the Nest DI container.
+        run: pnpm test:e2e -- test/api-key-audit-log.e2e-spec.ts
+
   login-smoke-e2e:
     name: Login Smoke E2E (required)
     runs-on: ubuntu-latest
