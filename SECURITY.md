@@ -77,6 +77,23 @@ transaction relaying happen server-side.
 - See [docs/custody-security-model.md](docs/custody-security-model.md) for the full
   custody model (key generation, encryption envelope, rotation, fail-closed decrypt).
 
+## Soroban Contract ID Boot Validation
+
+Enabling `SOROBAN_INVOKE_ENABLED` also enables a **fail-closed boot gate**
+(`SorobanContractBootValidatorService`). Before the invoke surface can serve
+traffic, every contract id in the allowlist must be configured for the networks
+it is enabled on, be a structurally valid Soroban contract id (56 characters,
+`C` version byte, base32 alphabet, valid CRC-16 checksum), and differ between
+testnet and mainnet. Anything else prevents startup with a stable code
+(`SOROBAN_CONTRACT_ID_MISSING` / `_INVALID` / `_NETWORK_COLLISION`).
+
+This is a mainnet-safety control: the same id configured for both networks would
+otherwise mean mainnet value driven at a testnet deployment, discovered only on
+the first live invoke. A mainnet id is required only for contracts with a
+`mainnetEnabled` function, and the gate is inert while the surface is disabled.
+Contract ids are never written to logs. Full contract and rollback:
+[docs/SOROBAN-CONTRACT-ID-BOOT.md](docs/SOROBAN-CONTRACT-ID-BOOT.md).
+
 ## Internal Cron Jobs & Secret Guard
 
 Internal, cron-triggered endpoints (cleanup workers, reconciliation jobs, and other

@@ -28,6 +28,22 @@ Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 | `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | enabled  |
 | `FEE_SPONSORSHIP_ENABLED`     | Fee sponsorship budget writes on mainnet | **disabled** (deny-by-default) |
 | `SOROBAN_INVOKE_ENABLED`      | Soroban contract invocation            | **disabled** (deny-by-default) |
+
+## Soroban Contract ID Boot Validation
+
+When `SOROBAN_INVOKE_ENABLED=true`, the application additionally validates every
+configured contract id **at boot** and refuses to start if one is missing,
+malformed, or configured for the wrong network:
+
+| Variable | Required when |
+|----------|---------------|
+| `SOROBAN_CONTRACT_<CONTRACT>_TESTNET_ID` | the contract is allowlisted |
+| `SOROBAN_CONTRACT_<CONTRACT>_MAINNET_ID` | the contract has a `mainnetEnabled` function |
+
+Failure codes: `SOROBAN_CONTRACT_ID_MISSING`, `SOROBAN_CONTRACT_ID_INVALID`,
+`SOROBAN_CONTRACT_ID_NETWORK_COLLISION`. The gate is inert while the surface is
+disabled, so a testnet-only deployment is never blocked. Full contract:
+[docs/SOROBAN-CONTRACT-ID-BOOT.md](docs/SOROBAN-CONTRACT-ID-BOOT.md).
 | `MULTI_ASSET_PAYMENTS_ENABLED` | Credit-asset payment writes (non-native) | **disabled** (deny-by-default) |
 | `KEY_ROTATION_ENABLED`        | Wallet `keyVersion` rotation writes     | **disabled** (deny-by-default) |
 | `BALANCE_SYNC_ENABLED`        | Horizon balance sync/reconcile writes   | **disabled** (deny-by-default) |

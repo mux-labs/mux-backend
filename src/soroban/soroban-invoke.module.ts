@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { SorobanInvokeService } from './soroban-invoke.service';
+import { SorobanContractBootValidatorService } from './soroban-contract-boot-validator.service';
 import { SorobanInvokeController } from './soroban-invoke.controller';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
@@ -17,7 +18,16 @@ import { ApiKeyService } from '../api-keys/api-key.service';
  */
 @Module({
   controllers: [SorobanInvokeController],
-  providers: [SorobanInvokeService, MetricsService, ApiKeyGuard, ApiKeyService],
+  providers: [
+    SorobanInvokeService,
+    // #954: fail-closed boot gate. Runs onModuleInit before the surface can
+    // serve traffic, so a bad contract id is a startup failure rather than a
+    // confusing RPC error on the first live invoke.
+    SorobanContractBootValidatorService,
+    MetricsService,
+    ApiKeyGuard,
+    ApiKeyService,
+  ],
   exports: [SorobanInvokeService],
 })
 export class SorobanInvokeModule {}
