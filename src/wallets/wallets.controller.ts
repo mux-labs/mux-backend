@@ -18,29 +18,32 @@ import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { RateLimitGuard } from '../rate-limit/rate-limit.guard';
 
-@ApiTags('wallets')
-@ApiSecurity('api-key')
 @Controller('wallets')
 @UseGuards(ApiKeyGuard, RateLimitGuard)
 export class WalletsController {
   constructor(private readonly walletsService: WalletsService) {}
 
-  @ApiOperation({ summary: 'Create a new wallet' })
   @Post()
   create(@Body() createWalletDto: CreateWalletDto) {
     return this.walletsService.create(createWalletDto);
   }
 
-  @ApiOperation({ summary: 'List all wallets' })
+  /**
+   * List wallets.
+   *
+   * Results are automatically scoped to the authenticated developer's wallets
+   * (#973: developer isolation).  The API key context injected by ApiKeyGuard
+   * carries the developerId which is forwarded to WalletsService.findAll().
+   */
   @Get()
-  findAll() {
-    return this.walletsService.findAll();
+  findAll(@ApiKeyCtx() context?: ApiKeyContext) {
+    const developerId = context?.developer?.id;
+    return this.walletsService.findAll({ developerId });
   }
 
   @RequireApiKey()
   @Get('protected')
   async protectedEndpoint(@ApiKeyCtx() context: ApiKeyContext) {
-    // context contains developer, project, and apiKey info
     return {
       message: 'This endpoint is protected by API key',
       developer: context.developer.email,
@@ -71,15 +74,11 @@ export class WalletsController {
     return this.walletsService.findOne(id);
   }
 
-  @ApiOperation({ summary: 'Update a wallet' })
-  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Patch(':id')
   update(@Param('id') id: string, @Body() updateWalletDto: UpdateWalletDto) {
     return this.walletsService.update(id, updateWalletDto);
   }
 
-  @ApiOperation({ summary: 'Delete a wallet' })
-  @ApiParam({ name: 'id', description: 'Wallet ID' })
   @Delete(':id')
   remove(@Param('id') id: string) {
     return this.walletsService.remove(id);

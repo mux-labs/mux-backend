@@ -704,6 +704,31 @@ model KeyRotationAuditLog {
   @@index([expiresAt])
 }
 
+/// Persistent cursor for Horizon balance import jobs.
+/// Enables crash-resume: on restart the import picks up from lastLedger / pagingToken
+/// rather than re-scanning from genesis (issue #975).
+model HorizonImportCursor {
+  id          String   @id @default(uuid())
+
+  /// Logical stream identifier — e.g. "wallet:<walletId>" or "network:TESTNET"
+  streamKey   String   @unique
+
+  /// Last Stellar ledger sequence number that was successfully imported
+  lastLedger  Int      @default(0)
+
+  /// Horizon paging token for the next page of operations (stellar-sdk cursor)
+  pagingToken String?
+
+  /// When this cursor was last successfully advanced
+  updatedAt   DateTime @updatedAt
+
+  /// When this cursor record was first created
+  createdAt   DateTime @default(now())
+
+  @@index([streamKey])
+  @@index([updatedAt])
+}
+
 /// Transaction lifecycle states
 enum TransactionStatus {
   PENDING    // Transaction created but not yet submitted to network

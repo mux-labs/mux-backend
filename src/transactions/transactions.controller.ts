@@ -44,6 +44,15 @@ export class TransactionsController {
     return this.transactionsService.create(createTransactionDto);
   }
 
+  /**
+   * List transactions with optional filters.
+   *
+   * Cursor pagination (preferred):
+   *   GET /transactions?limit=20&cursor=<transactionId>
+   *
+   * Offset pagination (legacy, mutually exclusive with cursor):
+   *   GET /transactions?limit=20&offset=40
+   */
   @Get()
   findAll(
     @Query('senderWalletId') senderWalletId?: string,
@@ -51,6 +60,7 @@ export class TransactionsController {
     @Query('status') status?: TransactionStatus,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('cursor') cursor?: string,
   ) {
     return this.transactionsService.findAll({
       senderWalletId,
@@ -58,18 +68,26 @@ export class TransactionsController {
       status: status as TransactionStatus,
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
+      cursor,
     });
   }
 
+  /**
+   * List transactions for a specific wallet with cursor pagination.
+   *
+   *   GET /transactions/wallet/:walletId?limit=20&cursor=<transactionId>
+   */
   @Get('wallet/:walletId')
   findByWallet(
     @Param('walletId') walletId: string,
     @Query('limit') limit?: string,
     @Query('offset') offset?: string,
+    @Query('cursor') cursor?: string,
   ) {
     return this.transactionsService.findByWallet(walletId, {
       limit: limit ? parseInt(limit, 10) : undefined,
       offset: offset ? parseInt(offset, 10) : undefined,
+      cursor,
     });
   }
 
