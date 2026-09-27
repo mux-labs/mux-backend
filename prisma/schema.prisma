@@ -379,6 +379,10 @@ model ApiKey {
   /// Last 4 characters of the key for identification
   lastFour        String
 
+  /// Network scope derived from key prefix: MAINNET for mux_live_ keys,
+  /// TESTNET for mux_test_ keys.  Used for network-mismatch enforcement (#977).
+  network         String?
+
   /// Project reference
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
@@ -592,6 +596,14 @@ model WebhookEndpoint {
   /// there is no rotation in progress.
   secretGracePeriodEndsAt DateTime?
   
+  /// Pending (new) secret created during a dual-secret rotation window.
+  /// Both `secret` and `pendingSecret` are valid until `pendingSecretExpiresAt`.
+  pendingSecret           String?
+  
+  /// When the dual-secret rotation window expires.
+  /// After this timestamp only `secret` (the new one) is valid.
+  pendingSecretExpiresAt  DateTime?
+  
   /// Event types to listen for
   events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
   
@@ -619,6 +631,7 @@ model WebhookEndpoint {
   @@index([projectId])
   @@index([status])
   @@index([deletedAt])
+  @@index([pendingSecretExpiresAt])
 }
 
 /// Webhook delivery attempt tracking
