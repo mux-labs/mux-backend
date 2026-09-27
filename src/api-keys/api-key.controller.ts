@@ -1,138 +1,104 @@
 import {
-  Controller,
-  Post,
-  Get,
   Body,
-  Param,
+  Controller,
   Delete,
-  Query,
   HttpCode,
   HttpStatus,
+  Param,
+  Post,
+  Req,
+  UseGuards,
 } from '@nestjs/common';
 import {
-  ApiKeyService,
-  CreateApiKeyRequest,
-  ListApiKeysRequest,
-} from './api-key.service';
+  ApiOperation,
+  ApiParam,
+  ApiResponse,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
+import { ApiKeyService } from './api-key.service';
+import { ApiKeyGuard } from './api-key.guard';
+import { ApiKeyErrorCode, ApiKeyStatus } from './domain/api-key.model';
 import { CreateApiKeyDto } from './dto/create-api-key.dto';
 
+/**
+ * API key management surface (#942).
+ *
+ * Every route is guarded by `ApiKeyGuard`, so the caller is always an
+ * already-authenticated developer and ownership is taken from the presenting
+ * key — never from the request body. Revocation takes effect immediately:
+ * the very next request with the revoked key is refused.
+ */
+@ApiTags('api-keys')
+@ApiSecurity('api-key')
 @Controller('api-keys')
+@UseGuards(ApiKeyGuard)
 export class ApiKeyController {
   constructor(private readonly apiKeyService: ApiKeyService) {}
 
-  /**
-   * Creates a new API key for a project
-   */
+  @ApiOperation({
+    summary: 'Create an API key',
+    description:
+      'Mints a new key for the project. The plaintext key is returned exactly ' +
+      'once, at creation; only its hash is stored.',
+  })
+  @ApiResponse({ status: 201, description: 'Key created' })
+  @ApiResponse({ status: 401, description: 'Missing or invalid API key' })
   @Post()
   @HttpCode(HttpStatus.CREATED)
-  async createApiKey(@Body() request: CreateApiKeyDto) {
-    const result = await this.apiKeyService.createApiKey(request as CreateApiKeyRequest);
-
-    return {
-      message: 'Store this key securely — it will not be shown again',
-      apiKey: {
-        id: result.apiKey.id,
-        name: result.apiKey.name,
-        keyPrefix: result.apiKey.keyPrefix,
-        lastFour: result.apiKey.lastFour,
-        status: result.apiKey.status,
-        createdAt: result.apiKey.createdAt,
-      },
-      // WARNING: This is the only time the plain text key is returned!
-      plainTextKey: result.plainTextKey,
-    };
-  }
-
-  /**
-   * Lists all API keys for a project with pagination
-   */
-  @Get()
-  async listApiKeys(
-    @Query('projectId') projectId: string,
-    @Query('page') page?: string,
-    @Query('pageSize') pageSize?: string,
-    @Query('developerId') developerId?: string,
-  ) {
-    const result = await this.apiKeyService.listApiKeys({
-      projectId,
-      page: page ? parseInt(page, 10) : 1,
-      pageSize: pageSize ? parseInt(pageSize, 10) : 10,
-      developerId,
+  async create(@Body() body: CreateApiKeyDto) {
+    const result = await this.apiKeyService.createApiKey({
+      name: body.name,
+      projectId: body.projectId,
+      expiresAt: body.expiresAt,
+      network: body.network,
     });
 
     return {
-      keys: result.keys.map((key) => ({
-        id: key.id,
-        name: key.name,
-        keyPrefix: key.keyPrefix,
-        lastFour: key.lastFour,
-        status: key.status,
-        lastUsedAt: key.lastUsedAt,
-        createdAt: key.createdAt,
-        expiresAt: key.expiresAt,
-        projectId: key.projectId,
-      })),
-      pagination: {
-        page: result.page,
-        pageSize: result.pageSize,
-        total: result.total,
-        totalPages: Math.ceil(result.total / result.pageSize),
-      },
-    };
-  }
-
-  /**
-   * Revokes an API key (idempotent)
-   */
-  @Post(':apiKeyId/revoke')
-  @HttpCode(HttpStatus.OK)
-  async revokeApiKey(
-    @Param('apiKeyId') apiKeyId: string,
-    @Body() body: { reason?: string; developerId?: string },
-  ) {
-    const apiKey = await this.apiKeyService.revokeApiKey(
-      apiKeyId,
-      body.reason,
-      body.developerId,
-    );
-
-    return {
-      id: apiKey.id,
-      status: apiKey.status,
-      revokedAt: apiKey.revokedAt,
-      revokedReason: apiKey.revokedReason,
-    };
-  }
-
-  /**
-   * Rotates an API key (creates new, marks old with grace period)
-   */
-  @Post(':apiKeyId/rotate')
-  @HttpCode(HttpStatus.OK)
-  async rotateApiKey(
-    @Param('apiKeyId') apiKeyId: string,
-    @Body() body: { name?: string; developerId?: string },
-  ) {
-    const result = await this.apiKeyService.rotateApiKey(
-      {
-        apiKeyId,
-        name: body.name,
-      },
-      body.developerId,
-    );
-
-    return {
-      message: 'Store this key securely — it will not be shown again',
-      apiKey: {
-        id: result.apiKey.id,
-        name: result.apiKey.name,
-        keyPrefix: result.apiKey.keyPrefix,
-        lastFour: result.apiKey.lastFour,
-        status: result.apiKey.status,
-        createdAt: result.apiKey.createdAt,
-      },
-      // WARNING: This is the only time the new plain text key is returned!
+      id: result.apiKey.id,
+      name: result.apiKey.name,
+      keyPrefix: result.apiKey.keyPrefix,
+      lastFour: result.apiKey.lastFour,
+      network: result.apiKey.network ?? null,
+      status: result.apiKey.status,
+      expiresAt: result.apiKey.expiresAt ?? null,
+      // Returned once and never retrievable again.
       plainTextKey: result.plainTextKey,
     };
   }
+
+  @ApiOperation({
+    summary: 'Revoke an API key',
+    description:
+      'Revokes the key. Revocation is immediate and idempotent: the next ' +
+      'request presenting the key is refused with API_KEY_REVOKED.',
+  })
+  @ApiParam({ name: 'id', description: 'API key id' })
+  @ApiResponse({ status: 200, description: 'Key revoked' })
+  @ApiResponse({ status: 401, description: 'Missing or invalid API key' })
+  @ApiResponse({
+    status: 403,
+    description: 'The key belongs to a different developer',
+  })
+  @ApiResponse({ status: 404, description: 'Unknown key id' })
+  @Delete(':id')
+  async revoke(@Param('id') id: string, @Req() req: any) {
+    const developerId = req.apiKey?.developer?.id;
+    const reason = req.headers?.['x-revoke-reason'] as string | undefined;
+
+    const revoked = await this.apiKeyService.revokeApiKey(
+      id,
+      reason,
+      developerId,
+    );
+
+    return {
+      id: revoked.id,
+      status: revoked.status ?? ApiKeyStatus.REVOKED,
+      revokedAt: revoked.revokedAt ?? null,
+    };
+  }
 }
+
+/** Re-exported so callers can branch on the stable codes without a deep import. */
+export { ApiKeyErrorCode };

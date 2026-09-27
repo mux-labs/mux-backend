@@ -1,0 +1,56 @@
+version: '3.9'
+
+services:
+  # ─────────────────────────────────────────────────────────
+  # PostgreSQL database
+  # ─────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: mux
+      POSTGRES_PASSWORD: mux_secret
+      POSTGRES_DB: mux_db
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U mux -d mux_db']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # ─────────────────────────────────────────────────────────
+  # Mux backend API
+  # ─────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: postgresql://mux:mux_secret@db:5432/mux_db
+      PORT: 3000
+    ports:
+      - '3000:3000'
+    # Graceful shutdown (#950): give the app time to drain in-flight payments
+    # (GRACEFUL_SHUTDOWN_TIMEOUT_MS defaults to 25s) before Docker escalates to
+    # SIGKILL. Keep this strictly greater than GRACEFUL_SHUTDOWN_TIMEOUT_MS.
+    stop_grace_period: 30s
+    # Run as non-root user (mux, UID 1001) for container hardening.
+    # The Dockerfile creates the mux user with UID 1001; this
+    # matches so the container user stays consistent across
+    # docker compose and production deployments.
+    user: "1001:1001"
+    # Deny new privileges at runtime for defense-in-depth.
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

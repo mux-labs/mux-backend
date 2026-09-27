@@ -32,20 +32,31 @@ model Payment {
   id          Int           @id @default(autoincrement())
   amount      Float
   currency    String
+  assetCode   String?       // ISO 4217 or custom asset identifier
   status      PaymentStatus @default(PENDING)
   description String?
 
-  fromId Int
-  from   LegacyUser @relation("SentPayments", fields: [fromId], references: [id])
+  fromId Int?
+  from   LegacyUser? @relation("SentPayments", fields: [fromId], references: [id])
 
-  toId Int
-  to   LegacyUser @relation("ReceivedPayments", fields: [toId], references: [id])
+  toId Int?
+  to   LegacyUser? @relation("ReceivedPayments", fields: [toId], references: [id])
 
-  userId Int // Legacy field
-  user   LegacyUser @relation("UserPayments", fields: [userId], references: [id])
+  userId Int? // Legacy compatibility field
+  user   LegacyUser? @relation("UserPayments", fields: [userId], references: [id])
+
+  /// UUID wallet identity; retained alongside legacy IDs during migration.
+  senderWalletId   String?
+  receiverWalletId String?
+  transactionId    String? @unique
+
+  /// Client-supplied idempotency key to prevent duplicate submissions
+  idempotencyKey String? @unique
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
+
+  @@index([idempotencyKey])
 }
 
 model UserLimit {
@@ -66,13 +77,32 @@ model WalletLimit {
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
+  /// Soft-delete timestamp (null = active)
+  deletedAt           DateTime?
+
   @@index([walletId])
+  @@index([deletedAt])
 }
 
 /// Mainnet/testnet separation for all wallets.
 enum WalletNetwork {
   MAINNET
   TESTNET
+}
+
+/// Internal lifecycle states for a domain user.
+/// Keep in sync with UserStatus in src/users/entities/user.entity.ts.
+enum UserStatus {
+  /// Created but not yet usable (e.g. awaiting first wallet provisioning).
+  PROVISIONING
+  /// Fully operational; the default for healthy accounts.
+  ACTIVE
+  /// Account is undergoing recovery (e.g. lost device, wallet rotation).
+  RECOVERY_PENDING
+  /// Operationally paused (e.g. risk hold). Reversible.
+  SUSPENDED
+  /// Permanently disabled. No further use.
+  DISABLED
 }
 
 /// User account for authentication and wallet ownership.
@@ -88,14 +118,24 @@ model User {
   /// User's display name (optional)
   displayName String?
 
-  /// Account status
-  status String @default("ACTIVE")
+  /// Account status — enforced by the UserStatus enum; defaults to ACTIVE.
+  status UserStatus @default(ACTIVE)
 
   /// Authentication provider type
   authProvider String @default("UNKNOWN")
 
+  /// Preferred network (mainnet/testnet) for wallet operations that don't
+  /// explicitly specify one. Null = no preference set.
+  defaultNetwork WalletNetwork?
+
   /// Last login timestamp
   lastLoginAt DateTime?
+
+  /// IP address captured on the most recent successful login
+  lastLoginIp String?
+
+  /// User-Agent header captured on the most recent successful login
+  lastLoginUserAgent String?
 
   /// Operational metadata
   createdAt DateTime  @default(now())
@@ -107,8 +147,15 @@ model User {
   /// Relation to user's wallets
   wallets Wallet[]
 
+  /// Developer accounts owned by this user (their projects/API keys are
+  /// cleaned up when the user is deleted)
+  developers Developer[]
+
   /// Relation to user's spending limits
   spendingLimits SpendingLimit[]
+
+  /// Relation to user's refresh tokens
+  refreshTokens RefreshToken[]
 
   @@index([authId])
   @@index([authProvider])
@@ -134,6 +181,9 @@ enum WalletStatus {
 
   /// Wallet is suspected compromised; permanently blocked from use.
   COMPROMISED
+
+  /// Wallet is archived; hidden from default listings, no further use.
+  ARCHIVED
 }
 
 /// Persistence-ready internal representation of an "invisible wallet".
@@ -156,8 +206,17 @@ model Wallet {
   /// Supports rotation by incrementing secret material while preserving history.
   secretVersion Int @default(1)
 
+  /// Key algorithm/derivation scheme version (e.g. 1 = Stellar Ed25519 via stellar-sdk).
+  /// Increment when the key algorithm or derivation path changes so consumers can detect
+  /// stale material and trigger re-encryption or re-issuance.
+  keyVersion Int @default(1)
+
   network WalletNetwork
   status  WalletStatus  @default(PROVISIONING)
+
+  /// Optional user-defined label for the wallet (e.g. "Savings", "Hot wallet").
+  /// Max 100 characters; enforced in the application layer.
+  nickname        String?
 
   /// Operational metadata for audits/debugging.
   statusReason    String?
@@ -176,6 +235,9 @@ model Wallet {
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
+  /// Fee sponsorship budgets attached to this wallet.
+  feeSponsorshipBudgets FeeSponsorshipBudget[]
+
   /// Recovery requests for this wallet
   recoveryRequests RecoveryRequest[]
   balances         WalletBalance[]
@@ -192,6 +254,7 @@ model Wallet {
   @@unique([network, publicKey])
   @@index([userId, network])
   @@index([status, network])
+  @@index([status, createdAt])
   @@index([rotatedFromId])
   @@index([successorId])
 }
@@ -238,6 +301,12 @@ model Developer {
   email       String   @unique
   name        String?
   company     String?
+
+  /// Owning user account. Null = platform/onboarding developer not tied to a
+  /// user (e.g. seeded starter accounts). When the owner user is deleted, the
+  /// developer's projects, API keys, and webhook endpoints are cleaned up.
+  userId      String?
+  user        User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
   
   /// Developer status
   status      String   @default("ACTIVE")
@@ -255,6 +324,7 @@ model Developer {
   @@index([email])
   @@index([status])
   @@index([deletedAt])
+  @@index([userId])
 }
 
 /// Project entity for organizing API keys and usage
@@ -313,6 +383,9 @@ model ApiKey {
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
 
+  /// Network scope for this key (null = all networks, MAINNET/TESTNET = specific network)
+  network         WalletNetwork?
+
   /// Key status
   status          ApiKeyStatus @default(ACTIVE)
 
@@ -326,6 +399,9 @@ model ApiKey {
   revokedAt       DateTime?
   revokedReason   String?
 
+  /// Grace period end for revoked keys still accepting requests
+  gracePeriodEndsAt DateTime?
+
   /// Metadata
   createdAt       DateTime     @default(now())
   updatedAt       DateTime     @updatedAt
@@ -338,6 +414,7 @@ model ApiKey {
   @@index([projectId])
   @@index([status])
   @@index([keyPrefix])
+  @@index([network])
 }
 
 /// Sliding-window rate limit tracking per API key and endpoint
@@ -446,6 +523,7 @@ model WalletBalance {
 /// Balance sync job tracking for reliability
 model BalanceSyncJob {
   id        String   @id @default(uuid())
+  requestId String?  // Request ID for propagation and tracking
   
   /// Job metadata
   jobType   String   // "FULL_SYNC", "INCREMENTAL_SYNC", "RECONCILIATION"
@@ -492,9 +570,27 @@ model WebhookEndpoint {
   /// Endpoint configuration
   url         String
   description String?
-  
-  /// Secret for HMAC signature verification
-  secret      String
+
+  /// Version of the derived signing secret currently used to sign outbound
+  /// deliveries. The secret itself is never stored — it is re-derived from
+  /// WEBHOOK_SIGNING_KEY via HMAC-SHA256 at dispatch time.
+  secretVersion Int @default(1)
+
+  /// SHA-256 hash of derived(secretVersion). The only representation of the
+  /// signing secret persisted at rest (never the plaintext), mirroring how
+  /// API keys are stored.
+  secretHash String @default("")
+
+  /// Version staged by rotate-secret while the established secret keeps
+  /// signing during the grace window (rotation without downtime).
+  pendingSecretVersion Int?
+
+  /// SHA-256 hash of derived(pendingSecretVersion).
+  pendingSecretHash String?
+
+  /// When pendingSecretVersion becomes the active signing version. Null when
+  /// there is no rotation in progress.
+  secretGracePeriodEndsAt DateTime?
   
   /// Event types to listen for
   events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
@@ -729,6 +825,58 @@ model HorizonImportCursor {
   @@index([updatedAt])
 }
 
+/// Refresh token status lifecycle
+enum RefreshTokenStatus {
+  ACTIVE
+  ROTATED
+  REVOKED
+  EXPIRED
+}
+
+/// Refresh token management with automatic rotation on use
+model RefreshToken {
+  id String @id @default(uuid())
+
+  /// User reference
+  userId String
+  user   User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Refresh token hash (never store plaintext)
+  tokenHash String @unique
+
+  /// Rotation chain - previous token in rotation sequence
+  previousTokenId String?
+  previousToken   RefreshToken?  @relation("TokenRotation", fields: [previousTokenId], references: [id])
+  nextToken       RefreshToken[] @relation("TokenRotation")
+
+  /// Token status
+  status RefreshTokenStatus @default(ACTIVE)
+
+  /// Expiration timestamp
+  expiresAt DateTime
+
+  /// Usage tracking
+  lastUsedAt DateTime?
+  usageCount Int @default(0)
+
+  /// Rotation tracking
+  rotatedAt DateTime?
+  rotatedReason String?
+
+  /// Revocation details
+  revokedAt DateTime?
+  revokeReason String?
+
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId, status])
+  @@index([tokenHash])
+  @@index([expiresAt])
+  @@index([previousTokenId])
+}
+
 /// Transaction lifecycle states
 enum TransactionStatus {
   PENDING    // Transaction created but not yet submitted to network
@@ -756,7 +904,10 @@ model Transaction {
   
   receiverWalletId  String?
   receiverWallet    Wallet? @relation("ReceivedTransactions", fields: [receiverWalletId], references: [id])
-  
+
+  /// Optional memo attached at creation, searchable (max 28 bytes, Stellar text memo limit)
+  memo String?
+
   /// Lifecycle state
   status TransactionStatus @default(PENDING)
   
@@ -788,9 +939,243 @@ model Transaction {
   @@index([receiverWalletId])
   @@index([senderWalletId, status])
   @@index([receiverWalletId, status])
+  @@index([senderWalletId, createdAt])
+  @@index([receiverWalletId, createdAt])
   @@index([status, createdAt])
   @@index([stellarHash])
   @@index([stellarLedger])
   @@index([createdAt])
   @@index([idempotencyKey])
+}
+
+enum ChangeType {
+  ADDED
+  CHANGED
+  DEPRECATED
+  REMOVED
+  FIXED
+  SECURITY
+}
+enum ChangeCategory {
+  WALLETS
+  PAYMENTS
+  LIMITS
+  RECOVERY
+  AUTHENTICATION
+  WEBHOOKS
+  GENERAL
+}
+
+model ApiChangelog {
+  id String @id @default(uuid())
+
+  /// Semantic version (e.g., 1.2.0)
+  version String
+
+  /// Type of change
+  changeType ChangeType
+
+  /// Category of the change
+  category ChangeCategory
+
+  /// Brief title of the change
+  title String
+
+  /// Detailed description of the change
+  description String
+
+  /// List of affected API endpoints (e.g., ["GET /wallets", "POST /payments"])
+  affectedEndpoints String[]
+
+  /// Migration guide for API consumers
+  migrationGuide String?
+
+  /// When this entry was published
+  publishedAt DateTime @default(now())
+
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([version])
+  @@index([category])
+  @@index([publishedAt])
+  @@index([changeType])
+}
+
+/// Fee sponsorship budget lifecycle states
+enum FeeSponsorshipBudgetStatus {
+  /// Budget is active and accepting sponsorship requests.
+  ACTIVE
+  /// Budget is paused; no new sponsorships are accepted.
+  PAUSED
+  /// Budget is fully exhausted or manually closed.
+  CLOSED
+}
+
+/// Fee sponsorship budget for a wallet.
+/// Tracks the maximum amount a sponsor is willing to pay on behalf
+/// of a sponsored wallet for Stellar/Soroban transaction fees.
+///
+/// Invariants:
+/// - A wallet may have at most one active budget at a time.
+/// - Budgets are scoped to a network (mainnet/testnet).
+/// - All monetary amounts are stored as strings to preserve precision.
+/// - The server is the source of truth for spend tracking.
+model FeeSponsorshipBudget {
+  id String @id @default(uuid())
+
+  /// Wallet this budget is associated with.
+  walletId String
+  wallet   Wallet @relation(fields: [walletId], references: [id], onDelete: Cascade)
+
+  /// Sponsor identity (e.g., sponsor wallet address or project ID).
+  sponsorId String
+
+  /// Maximum total amount the sponsor is willing to pay (in the asset's smallest unit, e.g., stroops).
+  limitAmount String
+
+  /// Asset code for the sponsorship (e.g., "XLM", "USDC"). Null for native XLM.
+  assetCode String?
+
+  /// Asset issuer for credit-alphanumeric assets. Null for native XLM.
+  assetIssuer String?
+
+  /// Network scope for this budget.
+  network WalletNetwork
+
+  /// Current remaining budget (amount left to sponsor).
+  remainingAmount String
+
+  /// Lifecycle state.
+  status FeeSponsorshipBudgetStatus @default(ACTIVE)
+
+  /// Optional note set by the sponsor or admin.
+  note String?
+
+  /// Operational metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  /// Soft-delete timestamp (null = active)
+  deletedAt DateTime?
+
+  @@unique([walletId, network])
+  @@index([sponsorId])
+  @@index([status])
+  @@index([network])
+  @@index([deletedAt])
+}
+
+/// Async export job for transaction data
+/// Tracks status, progress, and result location for large exports
+model TransactionExportJob {
+  id        String @id @default(uuid())
+
+  /// Project scope for the export (tenant isolation)
+  projectId String
+
+  /// Who initiated the export (optional — API key ID)
+  requestedBy String?
+
+  /// Filter parameters used for this export (stored as JSON)
+  filters   Json?
+
+  /// Export format: CSV or JSON
+  format    String @default("CSV")
+
+  /// Job lifecycle status
+  status    String @default("PENDING") // PENDING | RUNNING | COMPLETED | FAILED | EXPIRED
+
+  /// Number of rows exported
+  rowCount  Int @default(0)
+
+  /// Signed URL or file path where the export result can be downloaded
+  downloadUrl String?
+
+  /// When this download link expires
+  expiresAt DateTime?
+
+  /// Error details if job failed
+  errorMessage String?
+
+  /// Timing
+  startedAt   DateTime?
+  completedAt DateTime?
+
+  /// Metadata
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([projectId])
+  @@index([status])
+  @@index([createdAt])
+  @@index([expiresAt])
+}
+
+
+/// Global operational switch used to reject mutating HTTP routes during maintenance.
+model MaintenanceState {
+  id                String   @id @default("global")
+  enabled           Boolean  @default(false)
+  message           String?
+  retryAfterSeconds Int?
+  enabledAt         DateTime?
+  updatedBy         String?
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+}
+
+/// Lifecycle status of a resumable Horizon history import stream.
+enum HorizonImportStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+/// Tracks resumable Horizon history import progress per Stellar account +
+/// history resource (e.g. "payments", "operations"). Persists the last
+/// successfully processed Horizon paging token ("cursor") so a re-run of the
+/// import resumes exactly where it left off instead of re-scanning history
+/// from the beginning after a restart or transient Horizon failure.
+///
+/// The cursor is only advanced on a successful page fetch+persist; a failed
+/// attempt records `status = FAILED` and `lastError` but leaves `cursor`
+/// untouched so the next run retries from the last known-good position.
+model HorizonImportCursor {
+  id     String @id @default(uuid())
+
+  /// Stellar account public key whose history is being imported
+  accountId String
+
+  /// Network scope — the same account may be imported on both networks
+  network WalletNetwork @default(TESTNET)
+
+  /// Horizon history resource being streamed, e.g. "payments", "operations", "transactions"
+  resourceType String
+
+  /// Last successfully processed Horizon paging token. Null = import has not
+  /// made progress yet (starts from the beginning of history on next run).
+  cursor String?
+
+  /// Lifecycle status of the most recent import attempt
+  status HorizonImportStatus @default(PENDING)
+
+  /// Cumulative count of records imported across all resumed runs
+  recordsImported Int @default(0)
+
+  /// Error tracking for the most recent failed attempt.
+  /// Only ever holds a short human-readable message — never response bodies,
+  /// headers, or credentials, so failures can be persisted without risking
+  /// secret leakage into the database or logs.
+  lastError     String?
+  lastAttemptAt DateTime?
+  lastSuccessAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@unique([accountId, resourceType, network])
+  @@index([status])
 }

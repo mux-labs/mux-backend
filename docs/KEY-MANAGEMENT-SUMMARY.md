@@ -102,7 +102,30 @@ The key generation functionality has been successfully consolidated from `Wallet
 
 ## Verification
 
-### ✅ Code Quality Checks
+### ✅ Automated gate (#918)
+
+The repository ships a fail-closed, CI-enforced verifier for the key-management
+consolidation invariants:
+
+```bash
+# Human-readable report (CI-friendly, stable exit codes)
+pnpm verify:key-consolidation
+
+# Machine-readable report with a JSON summary
+pnpm verify:key-consolidation --json
+```
+
+- Exit code **0** = all error-severity checks pass.
+- Exit code **1** = at least one error-severity finding (fail-closed).
+- Exit codes **2/3** = verifier I/O failure or misuse; the gate cannot be
+  bypassed with an environment variable.
+
+The same checks are executed by the `verify-key-management-consolidation.spec.ts`
+unit suite (`pnpm test:scripts`) so the tool's own behavior (auth negatives,
+secret redaction, deterministic/idempotent output, exit-code mapping) is covered
+by automated tests.
+
+### ✅ Targeted checks
 
 ```bash
 # No direct crypto key generation remains

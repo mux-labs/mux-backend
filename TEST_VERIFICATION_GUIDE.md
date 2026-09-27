@@ -3,6 +3,72 @@
 ## Overview
 This guide provides step-by-step instructions to verify that the `/v1` API prefix implementation is working correctly. The implementation includes both updates to existing tests and a new comprehensive test suite.
 
+## E2E Proof: auth → wallet → limits → dry-run payment
+
+This section documents the end-to-end proof for the critical money path. It is the
+canonical verification for issue #983 and must stay consistent with
+`docs/PAYMENT-DRY-RUN.md`. The proof exercises the full chain in order:
+
+1. **auth** — authenticate a principal and obtain a session/JWT.
+2. **wallet** — resolve or provision the invisible wallet for that principal.
+3. **limits** — read and enforce the spend/velocity limits for the wallet.
+4. **dry-run payment** — simulate a payment without moving funds.
+
+### Invariants
+
+- The server is the source of truth for spends, recovery, and admin actions.
+- Every step is deny-by-default: missing/expired/revoked credentials fail closed.
+- Writes are idempotent: a replayed request with the same idempotency key returns
+  the original result and never double-spends.
+- On dependency outage (RPC/DB/Horizon) writes fail closed; reads may degrade.
+- Dry-run never mutates balances and never broadcasts a transaction.
+- No secrets (keys, JWTs, webhook secrets) appear in logs or responses.
+
+### Running the E2E proof
+
+```bash
+# Full critical-path proof
+pnpm test:e2e -- test/e2e-auth-wallet-limits-dryrun.e2e-spec.ts
+
+# Authz negatives only
+pnpm test:e2e -- test/e2e-auth-wallet-limits-dryrun.e2e-spec.ts -t "authz"
+
+# Idempotency / replay only
+pnpm test:e2e -- test/e2e-auth-wallet-limits-dryrun.e2e-spec.ts -t "idempotency"
+
+# Fail-closed on dependency outage only
+pnpm test:e2e -- test/e2e-auth-wallet-limits-dryrun.e2e-spec.ts -t "fail-closed"
+```
+
+### Critical-path cases
+
+```
+✓ auth: valid principal obtains a session
+✓ auth: missing credentials -> 401 (fail closed)
+✓ auth: expired JWT -> 401
+✓ auth: revoked delegate -> 403
+✓ auth: wrong role (guardian on owner-only route) -> 403
+✓ auth: API key without required scope -> 403
+✓ wallet: resolves wallet for authenticated principal
+✓ wallet: cannot read another principal's wallet -> 403/404
+✓ limits: returns spend/velocity limits for the wallet
+✓ limits: payment exceeding limit -> 422 (deny by default)
+✓ dry-run: simulates payment without mutating balances
+✓ dry-run: response carries correlation id (x-request-id)
+✓ idempotency: replayed dry-run with same key returns original result
+✓ idempotency: concurrent duplicate requests do not double-apply
+✓ fail-closed: RPC/DB/Horizon outage -> write rejected, no partial state
+✓ observability: errors are actionable and redact secrets
+```
+
+### Manual checklist (when automation cannot cover extensions)
+
+- [ ] Confirm `x-request-id` is echoed on every step and present in logs.
+- [ ] Confirm dry-run responses contain no raw key material or JWTs.
+- [ ] Confirm the money-path feature flag / kill-switch is documented in
+      `docs/FEATURE-FLAGS.md` and defaults to safe (off) on mainnet.
+- [ ] Confirm testnet vs mainnet config cannot be silently swapped.
+
 ## Pre-Verification Checklist
 
 Before running tests, ensure:
@@ -33,6 +99,8 @@ These test files were updated to use the new `/v1` prefix:
 
 4. **test/wallets.e2e-spec.ts**
    - Tests wallet endpoint: `GET /v1/wallets/protected`
+   - Tests wallet creation and wallet status paths
+   - Verifies `x-request-id` propagation in headers
    - Verifies API key authentication with prefix
 
 ### New Test File
@@ -274,83 +342,4 @@ curl http://localhost:3000/v1/non-existent-endpoint
 **Solution:** Run `pnpm install` to install dependencies
 
 ### Issue: Database connection errors
-**Solution:** Verify DATABASE_URL environment variable is set correctly in .env file
-
-### Issue: Port 3000 already in use
-**Solution:** Change PORT environment variable or kill process using port 3000
-
-### Issue: Tests timeout
-**Solution:** Increase Jest timeout: `jest.setTimeout(30000)`
-
-### Issue: Auth endpoint returns 500 error
-**Solution:** Verify database is running and accessible
-
-## Acceptance Criteria Verification
-
-Use this checklist to confirm all acceptance criteria are met:
-
-### ✓ Behavior is covered by tests and documented
-- [ ] Run `pnpm test:e2e` - all tests pass
-- [ ] Comprehensive test suite in test/api-prefix-v1.e2e-spec.ts
-- [ ] All test cases cover /v1 prefix behavior
-- [ ] API_PREFIX_V1_IMPLEMENTATION.md documents all changes
-
-### ✓ No regressions in closely related user or API flows
-- [ ] Authentication still works with `/v1/auth/authenticate`
-- [ ] Public endpoints still accessible without API key
-- [ ] Rate limiting and API key validation unchanged
-- [ ] Error handling works correctly with new prefix
-- [ ] Request logging includes correct paths
-
-### ✓ Handles edge cases gracefully
-- [ ] Non-existent endpoints return proper 404
-- [ ] Error responses include prefix in path
-- [ ] Custom headers preserved
-- [ ] All HTTP methods work correctly
-
-### ✓ Follows existing patterns
-- [ ] Uses NestJS built-in setGlobalPrefix() method
-- [ ] Test structure matches existing patterns
-- [ ] Module organization unchanged
-- [ ] No modification to controller decorators
-
-## Test Execution Report Template
-
-Use this template to document test results:
-
-```
-=== API Prefix v1 Test Execution Report ===
-Date: [Date]
-Environment: [Development/Staging/Production]
-Tester: [Name]
-
-Test Execution Results:
-- Total Tests Run: ___
-- Tests Passed: ___
-- Tests Failed: ___
-- Tests Skipped: ___
-
-Issues Found: 
-[None / List any issues]
-
-Coverage:
-- Core implementation: ✓
-- Error handling: ✓
-- Public endpoints: ✓
-- Authentication: ✓
-- All HTTP methods: ✓
-
-Approval: [Date/Signature]
-```
-
-## Summary
-
-The test verification process confirms:
-1. ✅ All endpoints properly prefixed with `/v1`
-2. ✅ Non-prefixed routes return 404
-3. ✅ Public endpoints remain accessible
-4. ✅ Error handling includes prefix
-5. ✅ All HTTP methods work correctly
-6. ✅ No regressions in existing functionality
-
-The implementation is production-ready when all tests pass.
+**Solution:** Verify DATABASE_URL environment variable is set and the database is reachable.

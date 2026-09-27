@@ -1,15 +1,23 @@
 import { Module } from '@nestjs/common';
 import { KeyManagementService } from './key-management.service';
 import { KeyManagementController } from './key-management.controller';
-import { StellarKeyProvider } from './providers/stellar-key.provider';
-import { EncryptionModule } from '../encryption/encryption.module';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
-import { PrismaModule } from '../prisma/prisma.module';
 
+/**
+ * Key Management Module
+ *
+ * Centralizes all cryptographic key operations (generate, sign, validate,
+ * rotate) and provides key management statistics endpoints.
+ *
+ * This module is internal-only and should not be exposed to the public
+ * internet. All endpoints are under /internal/key-management/* and
+ * must be protected by authentication/authorization guards.
+ *
+ * @see {@link https://github.com/mux-labs/mux-backend/blob/main/docs/KEY-STATISTICS-FEATURE.md}
+ */
 @Module({
-  imports: [EncryptionModule, PrismaModule],
   controllers: [KeyManagementController],
-  providers: [KeyManagementService, StellarKeyProvider, KeyRotationAuditService],
-  exports: [KeyManagementService, KeyRotationAuditService],
+  providers: [KeyManagementService, KeyRotationAuditService],
+  exports: [KeyManagementService],
 })
 export class KeyManagementModule {}

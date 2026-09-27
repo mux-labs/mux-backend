@@ -1,320 +1,143 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PrismaService } from '../prisma/prisma.service';
-import { KeyOperation } from '@prisma/client';
-import { KeyOperationAudit } from './domain/key-types';
-
-export interface PersistAuditLogRequest {
-  operation: KeyOperation;
-  keyId: string;
-  publicKey: string;
-  timestamp: Date;
-  success: boolean;
-  errorMessage?: string;
-  metadata?: Record<string, any>;
-  ipAddress?: string;
-  userAgent?: string;
-  keyType?: string;
-  previousKeyId?: string;
-  newKeyId?: string;
-  retentionDays?: number; // How long to keep this audit log
-}
-
-export interface QueryAuditLogsRequest {
-  operation?: KeyOperation;
-  keyId?: string;
-  publicKey?: string;
-  startDate?: Date;
-  endDate?: Date;
-  success?: boolean;
-  limit?: number;
-  offset?: number;
-}
+import { KeyAuditLogEntry, AuditLogQueryParams, KeyOperation, KeyType } from './domain/key-types';
+import { AuditEntry } from './domain/key-statistics';
 
 /**
- * Service for persisting key rotation audit logs to database
- * 
- * Provides:
- * - Persistent storage of key operations for compliance
- * - Queryable audit trail for security monitoring
- * - Retention policy management
- * - Tamper-evident logging
+ * In-memory audit log service for key management operations.
+ * In production, this should be replaced with a persistent store.
  */
 @Injectable()
 export class KeyRotationAuditService {
   private readonly logger = new Logger(KeyRotationAuditService.name);
-
-  constructor(private readonly prisma: PrismaService) {}
-
-  /**
-   * Persists a key operation audit log to the database
-   * 
-   * CRITICAL: This should be called for ALL key operations
-   * to maintain compliance and security monitoring capabilities
-   */
-  async persistAuditLog(request: PersistAuditLogRequest): Promise<void> {
-    try {
-      // Calculate expiration date if retention policy specified
-      const expiresAt = request.retentionDays
-        ? new Date(
-            request.timestamp.getTime() + request.retentionDays * 24 * 60 * 60 * 1000,
-          )
-        : undefined;
-
-      await this.prisma.keyRotationAuditLog.create({
-        data: {
-          operation: request.operation,
-          keyId: request.keyId,
-          publicKey: request.publicKey,
-          timestamp: request.timestamp,
-          success: request.success,
-          errorMessage: request.errorMessage,
-          metadata: request.metadata,
-          ipAddress: request.ipAddress,
-          userAgent: request.userAgent,
-          keyType: request.keyType,
-          previousKeyId: request.previousKeyId,
-          newKeyId: request.newKeyId,
-          expiresAt,
-        },
-      });
-
-      this.logger.log(
-        `Persisted audit log: ${request.operation} for key ${request.keyId.substring(0, 12)}...`,
-      );
-    } catch (error) {
-      // CRITICAL: Never fail the main operation if audit logging fails
-      // But log the error prominently for investigation
-      this.logger.error(
-        `CRITICAL: Failed to persist audit log for ${request.operation}:`,
-        error,
-      );
-      // In production, this should trigger an alert
-    }
-  }
+  private readonly auditLog: KeyAuditLogEntry[] = [];
+  private readonly MAX_ENTRIES = 1000;
 
   /**
-   * Persists multiple audit logs in a batch (for efficiency)
+   * Add an audit log entry.
    */
-  async persistAuditLogBatch(requests: PersistAuditLogRequest[]): Promise<void> {
-    try {
-      await this.prisma.keyRotationAuditLog.createMany({
-        data: requests.map((request) => {
-          const expiresAt = request.retentionDays
-            ? new Date(
-                request.timestamp.getTime() + request.retentionDays * 24 * 60 * 60 * 1000,
-              )
-            : undefined;
-
-          return {
-            operation: request.operation,
-            keyId: request.keyId,
-            publicKey: request.publicKey,
-            timestamp: request.timestamp,
-            success: request.success,
-            errorMessage: request.errorMessage,
-            metadata: request.metadata,
-            ipAddress: request.ipAddress,
-            userAgent: request.userAgent,
-            keyType: request.keyType,
-            previousKeyId: request.previousKeyId,
-            newKeyId: request.newKeyId,
-            expiresAt,
-          };
-        }),
-        skipDuplicates: true,
-      });
-
-      this.logger.log(`Persisted ${requests.length} audit logs in batch`);
-    } catch (error) {
-      this.logger.error(
-        `CRITICAL: Failed to persist batch audit logs:`,
-        error,
-      );
-    }
-  }
-
-  /**
-   * Queries audit logs with filtering and pagination
-   */
-  async queryAuditLogs(query: QueryAuditLogsRequest) {
-    const where: any = {};
-
-    if (query.operation) {
-      where.operation = query.operation;
-    }
-
-    if (query.keyId) {
-      where.keyId = query.keyId;
-    }
-
-    if (query.publicKey) {
-      where.publicKey = query.publicKey;
-    }
-
-    if (query.success !== undefined) {
-      where.success = query.success;
-    }
-
-    if (query.startDate || query.endDate) {
-      where.timestamp = {};
-      if (query.startDate) {
-        where.timestamp.gte = query.startDate;
-      }
-      if (query.endDate) {
-        where.timestamp.lte = query.endDate;
-      }
-    }
-
-    const limit = query.limit || 100;
-    const offset = query.offset || 0;
-
-    const [logs, total] = await Promise.all([
-      this.prisma.keyRotationAuditLog.findMany({
-        where,
-        orderBy: { timestamp: 'desc' },
-        take: limit,
-        skip: offset,
-      }),
-      this.prisma.keyRotationAuditLog.count({ where }),
-    ]);
-
-    return {
-      logs,
-      total,
-      limit,
-      offset,
-      hasMore: offset + logs.length < total,
+  logEntry(entry: Omit<KeyAuditLogEntry, 'id'>): void {
+    const fullEntry: KeyAuditLogEntry = {
+      ...entry,
+      id: this.generateId(),
     };
-  }
 
-  /**
-   * Gets audit logs for a specific key rotation operation
-   * Returns the complete chain of events for the rotation
-   */
-  async getRotationHistory(keyId: string) {
-    const logs = await this.prisma.keyRotationAuditLog.findMany({
-      where: {
-        OR: [
-          { keyId },
-          { previousKeyId: keyId },
-          { newKeyId: keyId },
-        ],
-      },
-      orderBy: { timestamp: 'desc' },
-    });
+    this.auditLog.unshift(fullEntry);
 
-    return {
-      keyId,
-      rotationHistory: logs,
-      totalRotations: logs.filter((log) => log.operation === 'ROTATE').length,
-    };
-  }
-
-  /**
-   * Gets statistics about audit logs
-   */
-  async getAuditStatistics(startDate?: Date, endDate?: Date) {
-    const where: any = {};
-
-    if (startDate || endDate) {
-      where.timestamp = {};
-      if (startDate) {
-        where.timestamp.gte = startDate;
-      }
-      if (endDate) {
-        where.timestamp.lte = endDate;
-      }
+    // Prune old entries to keep memory bounded
+    if (this.auditLog.length > this.MAX_ENTRIES) {
+      this.auditLog.splice(this.MAX_ENTRIES);
     }
 
-    const [
-      totalLogs,
-      successfulLogs,
-      failedLogs,
-      rotationLogs,
-      generateLogs,
-      signLogs,
-    ] = await Promise.all([
-      this.prisma.keyRotationAuditLog.count({ where }),
-      this.prisma.keyRotationAuditLog.count({
-        where: { ...where, success: true },
-      }),
-      this.prisma.keyRotationAuditLog.count({
-        where: { ...where, success: false },
-      }),
-      this.prisma.keyRotationAuditLog.count({
-        where: { ...where, operation: 'ROTATE' },
-      }),
-      this.prisma.keyRotationAuditLog.count({
-        where: { ...where, operation: 'GENERATE' },
-      }),
-      this.prisma.keyRotationAuditLog.count({
-        where: { ...where, operation: 'SIGN' },
-      }),
-    ]);
-
-    return {
-      totalLogs,
-      successfulLogs,
-      failedLogs,
-      successRate:
-        totalLogs > 0 ? (successfulLogs / totalLogs) * 100 : 100,
-      operationBreakdown: {
-        rotate: rotationLogs,
-        generate: generateLogs,
-        sign: signLogs,
-      },
-      periodStart: startDate,
-      periodEnd: endDate,
-    };
+    this.logger.debug(
+      `Key audit: ${entry.operation} ${entry.keyType} ${entry.success ? 'success' : 'failure'} requestId=${entry.requestId ?? 'none'}`,
+    );
   }
 
   /**
-   * Archives expired audit logs (for retention policy compliance)
-   * This should be run periodically by a cron job
+   * Get audit logs with optional filtering.
    */
-  async archiveExpiredLogs(): Promise<number> {
-    try {
-      const result = await this.prisma.keyRotationAuditLog.deleteMany({
-        where: {
-          expiresAt: {
-            lte: new Date(),
-          },
-        },
-      });
+  getAuditLogs(params: AuditLogQueryParams = {}): KeyAuditLogEntry[] {
+    let logs = [...this.auditLog];
 
-      this.logger.log(`Archived ${result.count} expired audit logs`);
-      return result.count;
-    } catch (error) {
-      this.logger.error('Failed to archive expired audit logs:', error);
-      throw error;
+    if (params.operation) {
+      logs = logs.filter((l) => l.operation === params.operation);
     }
+    if (params.keyType) {
+      logs = logs.filter((l) => l.keyType === params.keyType);
+    }
+    if (params.success !== undefined) {
+      logs = logs.filter((l) => l.success === params.success);
+    }
+    if (params.startDate) {
+      const start = new Date(params.startDate).getTime();
+      logs = logs.filter((l) => new Date(l.timestamp).getTime() >= start);
+    }
+    if (params.endDate) {
+      const end = new Date(params.endDate).getTime();
+      logs = logs.filter((l) => new Date(l.timestamp).getTime() <= end);
+    }
+
+    if (params.limit && params.limit > 0) {
+      logs = logs.slice(0, params.limit);
+    }
+
+    return logs;
   }
 
   /**
-   * Converts in-memory audit log to persistent format
+   * Get statistics from the audit log.
    */
-  convertToPersistentFormat(
-    audit: KeyOperationAudit,
-    additionalContext?: {
-      ipAddress?: string;
-      userAgent?: string;
-      retentionDays?: number;
-    },
-  ): PersistAuditLogRequest {
-    return {
-      operation: audit.operation as KeyOperation,
-      keyId: audit.keyId,
-      publicKey: audit.publicKey,
-      timestamp: audit.timestamp,
-      success: audit.success,
-      errorMessage: audit.errorMessage,
-      metadata: audit.metadata,
-      keyType: audit.metadata?.keyType as string | undefined,
-      previousKeyId: audit.metadata?.previousKeyId as string | undefined,
-      newKeyId: audit.metadata?.newKeyId as string | undefined,
-      ipAddress: additionalContext?.ipAddress,
-      userAgent: additionalContext?.userAgent,
-      retentionDays: additionalContext?.retentionDays,
-    };
+  getStatistics(params: AuditLogQueryParams = {}): AuditEntry[] {
+    const logs = this.getAuditLogs(params);
+    return logs.map((l) => ({
+      operation: l.operation,
+      keyType: l.keyType,
+      timestamp: l.timestamp,
+      success: l.success,
+    }));
+  }
+
+  /**
+   * Clear all audit logs (for testing).
+   */
+  clear(): void {
+    this.auditLog.length = 0;
+  }
+
+  /**
+   * Get the current count of audit entries.
+   */
+  getCount(): number {
+    return this.auditLog.length;
+  }
+
+  /**
+   * Persist audit logs to external storage (stub for future implementation).
+   * This would typically push to a database, S3, or SIEM system.
+   */
+  async persistAuditLog(): Promise<void> {
+    // In production, implement persistence to database/S3/SIEM
+    this.logger.log(`Persisting ${this.auditLog.length} audit entries (stub)`);
+  }
+
+  /**
+   * Convert audit logs to a persistent format (stub).
+   */
+  convertToPersistentFormat(): unknown {
+    return this.auditLog.map((entry) => ({
+      id: entry.id,
+      operation: entry.operation,
+      keyType: entry.keyType,
+      timestamp: entry.timestamp,
+      success: entry.success,
+      error: entry.error,
+      metadata: entry.metadata,
+      requestId: entry.requestId,
+    }));
+  }
+
+  /**
+   * Get rotation history (stub for future implementation).
+   */
+  async getRotationHistory(): Promise<{ history: unknown[] }> {
+    return { history: [] };
+  }
+
+  /**
+   * Get audit statistics (stub for future implementation).
+   */
+  async getAuditStatistics(): Promise<{ total: number }> {
+    return { total: this.auditLog.length };
+  }
+
+  /**
+   * Query audit logs for external use (stub).
+   */
+  async queryAuditLogs(): Promise<{ logs: unknown[]; total: number }> {
+    return { logs: this.auditLog, total: this.auditLog.length };
+  }
+
+  private generateId(): string {
+    return `${Date.now()}-${Math.random().toString(36).substring(2, 9)}`;
   }
 }

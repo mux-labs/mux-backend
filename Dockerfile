@@ -1,0 +1,65 @@
+# ── Stage 1: install & build ─────────────────────────────────
+FROM node:22-alpine AS builder
+
+WORKDIR /app
+
+# Enable corepack for pnpm
+RUN corepack enable && corepack prepare pnpm@9 --activate
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+
+COPY . .
+RUN pnpm prisma:generate
+RUN pnpm run build
+
+# ── Stage 2: production image ─────────────────────────────────────────
+FROM node:22-alpine AS runner
+
+WORKDIR /app
+
+# Create a non-root user and group for the application.
+# UID/GID 1001 avoids collision with the built-in `node` user (UID 1000)
+# and any host-side IDs that may map into the container.
+RUN addgroup -S mux --gid 1001 && \
+    adduser -S mux --uid 1001 -G mux
+
+# Install production dependencies as root (layer cache), then fix ownership.
+# corepack is needed at runtime for `npx prisma` in the entrypoint.
+RUN corepack enable && corepack prepare pnpm@9 --activate
+
+COPY pnpm-workspace.yaml package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile --prod
+
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/src/generated ./src/generated
+COPY prisma ./prisma
+
+# Build identity: pass --build-arg GIT_SHA=$(git rev-parse HEAD) so it's
+# exposed via GET /health. Defaults to "unknown" for local/dev builds.
+ARG GIT_SHA=unknown
+ENV GIT_SHA=$GIT_SHA
+
+EXPOSE 3000
+
+# Graceful shutdown (#950): send SIGTERM (the Docker/Nest default is SIGTERM,
+# but stating it explicitly makes the contract obvious) so Nest runs
+# `beforeApplicationShutdown` and waits up to GRACEFUL_SHUTDOWN_TIMEOUT_MS for
+# in-flight payments to drain before the process exits.
+STOPSIGNAL SIGTERM
+
+# Copy entrypoint script that runs `prisma migrate deploy` before the app
+# starts. If migrations fail the container exits non-zero so orchestrators
+# (Kubernetes, ECS) can detect the failure immediately.
+COPY docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
+
+# Take ownership of the entire app directory so the non-root user can
+# read all files and write to runtime directories (e.g. Prisma cache).
+RUN chown -R mux:mux /app
+
+# Run as non-root user for container hardening.
+USER mux
+
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+CMD ["node", "dist/main"]

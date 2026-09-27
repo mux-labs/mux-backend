@@ -4,6 +4,35 @@
 
 This guide helps developers update their code to use the consolidated `KeyManagementService` instead of direct key generation.
 
+> **Related docs:** This guide is the developer-facing companion to the
+> [Key Management Migration Runbook](./migration-recovery-runbook.md) (operational
+> cutover, rollback, and recovery) and the
+> [Custody Security Model](./custody-security-model.md) (threat model and
+> invariants). Read all three before touching the key migration path.
+
+## Key Migration Invariants
+
+These invariants are non-negotiable for the key migration path. Any change that
+violates one of them must be rejected in review.
+
+1. **Server is the source of truth.** Key material is generated, encrypted, and
+   versioned server-side only. Clients never supply or receive raw private key
+   material except for the single immediate-use case documented below.
+2. **Fail-closed on decrypt.** If decryption, version resolution, or KMS access
+   fails, the operation aborts. Never fall back to plaintext, an older key
+   version, or a default key.
+3. **Versioned envelopes.** Every persisted key records its
+   `encryptionVersion`. Migration never rewrites a stored envelope in place
+   without recording the new version.
+4. **Idempotent migration.** Re-running a migration step for an already-migrated
+   key is a no-op keyed by `(walletId, encryptionVersion)`; replays must not
+   double-rotate or double-spend.
+5. **Deny-by-default authz.** Every migration entrypoint enforces
+   owner/delegate/guardian/API-key/JWT policy. A revoked delegate or expired
+   token cannot complete a migration step.
+6. **No secrets in logs.** Logs, metrics, and error envelopes carry correlation
+   ids and stable error codes only — never raw keys, JWTs, or webhook secrets.
+
 ## What Changed?
 
 ### Before (Old Pattern)
@@ -328,174 +357,23 @@ const isValid = await this.keyManagementService.validateKey(
 
 **Cause:** The key type is not supported or provider not registered.
 
-**Solution:**
-```typescript
-// Make sure you're using a supported KeyType
-import { KeyType } from '../key-management/domain/key-types';
+**Fix:** Ensure the key type is registered in the `KeyManagementModule`
+providers and that the module is imported where the service is used.
 
-// Use one of:
-KeyType.STELLAR_ED25519
-KeyType.ETHEREUM_SECP256K1 // If available
-```
+### Issue: "Decryption failed" / "Unsupported encryption version"
 
-### Issue: Tests failing with "Cannot find module 'KeyManagementService'"
+**Cause:** The stored envelope's `encryptionVersion` is not resolvable by the
+current key set, or the ciphertext is corrupt.
 
-**Cause:** Module not imported in test.
+**Fix:** This is a **fail-closed** condition — do not retry with a fallback key.
+Verify the KMS key set includes the version recorded on the wallet, then follow
+the [Key Management Migration Runbook](./migration-recovery-runbook.md) for
+recovery. Never log the ciphertext or key material while diagnosing.
 
-**Solution:**
-```typescript
-// Add to test module providers
-{
-  provide: KeyManagementService,
-  useValue: mockKeyManagementService,
-}
-```
+### Issue: "Unauthorized" during migration
 
-### Issue: "Private key not returned"
+**Cause:** The caller's owner/delegate/guardian/API-key/JWT policy does not
+permit the migration step, or the delegate was revoked / token expired.
 
-**Cause:** By design - KeyManagementService never returns private keys.
-
-**Solution:**
-```typescript
-// If you need the private key temporarily (only during creation):
-const privateKey = this.encryptionService.deserializeAndDecrypt(
-  encryptedKeyMaterial.encryptedData,
-);
-
-// Use immediately, don't store
-```
-
-### Issue: Circular dependency
-
-**Cause:** Module importing itself.
-
-**Solution:**
-```typescript
-// Don't import KeyManagementModule in EncryptionModule
-// KeyManagementModule imports EncryptionModule, not the other way around
-```
-
-## Verification Checklist
-
-After migration, verify:
-
-- [ ] No direct `crypto.generateKeyPairSync()` calls remain
-- [ ] All services inject `KeyManagementService`
-- [ ] All modules import `KeyManagementModule`
-- [ ] All tests mock `KeyManagementService`
-- [ ] No private key generation methods remain
-- [ ] Integration tests pass
-- [ ] Unit tests pass
-- [ ] Audit logs show key operations
-- [ ] No plaintext private keys are logged
-- [ ] Database only contains encrypted keys
-
-## Testing Your Migration
-
-### 1. Run Unit Tests
-
-```bash
-npm test -- --testPathPattern=your-service.spec.ts
-```
-
-### 2. Run Integration Tests
-
-```bash
-npm test -- --testPathPattern=integration.spec.ts
-```
-
-### 3. Verify Audit Logs
-
-```typescript
-const auditLog = keyManagementService.getAuditLog(10);
-console.log(auditLog);
-
-// Should show GENERATE operations with success: true
-```
-
-### 4. Check for Security Issues
-
-```bash
-# Search for any remaining direct key generation
-grep -r "generateKeyPairSync" src/
-
-# Should return no results in your service files
-```
-
-## Getting Help
-
-### Common Questions
-
-**Q: Can I still use the old pattern temporarily?**
-A: Not recommended. Migrate as soon as possible for consistency and security.
-
-**Q: What happens to existing keys in the database?**
-A: They remain valid. The encryption format hasn't changed.
-
-**Q: Do I need to regenerate all keys?**
-A: No. Existing keys are compatible.
-
-**Q: Can I use multiple key providers?**
-A: Yes. Specify different `KeyType` values for different providers.
-
-### Resources
-
-- [Key Management README](../src/key-management/README.md)
-- [Consolidation Documentation](./key-management-consolidation.md)
-- [Integration Tests](../src/wallets/wallets-keygen-integration.spec.ts)
-
-## Example Pull Request
-
-Here's a sample PR description for your migration:
-
-```markdown
-## Migrate to Consolidated KeyManagementService
-
-### Changes
-- Replaced direct `crypto` key generation with `KeyManagementService`
-- Added `KeyManagementModule` import to module
-- Updated constructor to inject `KeyManagementService`
-- Updated tests to mock `KeyManagementService`
-- Removed private key generation methods
-
-### Benefits
-- Centralized key generation for consistency
-- Automatic audit logging
-- Provider abstraction for future HSM/KMS support
-- Better security through single point of control
-
-### Testing
-- ✅ All unit tests pass
-- ✅ All integration tests pass
-- ✅ Audit logs show key operations
-- ✅ No plaintext keys in logs or database
-
-### Breaking Changes
-None - API remains the same, implementation changed internally
-```
-
-## Timeline
-
-Recommended migration timeline:
-
-1. **Week 1**: Update WalletsService and WalletCreationOrchestrator (✅ Done)
-2. **Week 2**: Update other services that generate keys
-3. **Week 3**: Remove old key generation utilities
-4. **Week 4**: Final verification and documentation updates
-
-## Next Steps
-
-After completing your migration:
-
-1. Review the [Key Management README](../src/key-management/README.md)
-2. Set up monitoring for audit logs
-3. Consider implementing key rotation policies
-4. Plan for HSM/KMS integration if needed
-5. Document any custom key handling patterns
-
-## Contact
-
-For questions or issues during migration:
-- File an issue in the repository
-- Contact the security team
-- Review existing PRs that completed migration
+**Fix:** Re-authenticate with a principal that holds the required role. Do not
+add bypass paths — migration entrypoints are deny-by-default.

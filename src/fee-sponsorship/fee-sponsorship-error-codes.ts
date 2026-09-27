@@ -1,0 +1,40 @@
+/**
+ * Stable, typed error codes for fee sponsorship budget operations.
+ *
+ * Clients branch on these codes, not on human-readable messages.
+ * Add new codes; never repurpose existing ones.
+ */
+export const FeeSponsorshipErrorCode = {
+  // Validation
+  INVALID_INPUT: 'FEE_SPONSORSHIP_INVALID_INPUT',
+  MISSING_REQUIRED_FIELD: 'FEE_SPONSORSHIP_MISSING_REQUIRED_FIELD',
+
+  // Authz
+  NOT_AUTHORIZED: 'FEE_SPONSORSHIP_NOT_AUTHORIZED',
+  INSUFFICIENT_ROLE: 'FEE_SPONSORSHIP_INSUFFICIENT_ROLE',
+
+  // Not found
+  BUDGET_NOT_FOUND: 'FEE_SPONSORSHIP_BUDGET_NOT_FOUND',
+  WALLET_NOT_FOUND: 'FEE_SPONSORSHIP_WALLET_NOT_FOUND',
+
+  // Conflict
+  BUDGET_ALREADY_EXISTS: 'FEE_SPONSORSHIP_BUDGET_ALREADY_EXISTS',
+  BUDGET_CLOSED: 'FEE_SPONSORSHIP_BUDGET_CLOSED',
+  IDEMPOTENCY_CONFLICT: 'FEE_SPONSORSHIP_IDEMPOTENCY_CONFLICT',
+
+  // Limit exceeded
+  BUDGET_EXCEEDED: 'FEE_SPONSORSHIP_BUDGET_EXCEEDED',
+  SPONSORSHIP_LIMIT_REACHED: 'FEE_SPONSORSHIP_SPONSORSHIP_LIMIT_REACHED',
+
+  // Dependency / fail-closed
+  DEPENDENCY_UNAVAILABLE: 'FEE_SPONSORSHIP_DEPENDENCY_UNAVAILABLE',
+
+  // Feature flag
+  FEATURE_FLAG_DISABLED: 'FEE_SPONSORSHIP_FEATURE_FLAG_DISABLED',
+
+  // Idempotency
+  IDEMPOTENCY_KEY_REQUIRED: 'FEE_SPONSORSHIP_IDEMPOTENCY_KEY_REQUIRED',
+} as const;
+
+export type FeeSponsorshipErrorCode =
+  (typeof FeeSponsorshipErrorCode)[keyof typeof FeeSponsorshipErrorCode];

@@ -1,61 +1,49 @@
 import { Request, Response, NextFunction } from 'express';
-import { Logger } from '@nestjs/common';
 import { randomUUID } from 'crypto';
+import { REQUEST_ID_HEADER, resolveRequestId } from '../interceptors';
 
-export function requestLogger(
-  req: Request | any,
-  res: Response | any,
-  next: NextFunction,
-) {
-  const logger = new Logger('RequestLogger');
-  try {
-    const idHeader =
-      req &&
-      req.headers &&
-      (req.headers['x-request-id'] || req.headers['X-Request-Id']);
-    const id =
-      typeof idHeader === 'string' && idHeader.length > 0
-        ? idHeader
-        : randomUUID();
-    const start = Date.now();
+/**
+ * Request logging middleware that:
+ * - Generates/propagates X-Request-ID header
+ * - Logs incoming requests with correlation IDs
+ * - Measures request duration
+ */
+@Injectable()
+export class RequestLoggingMiddleware implements NestMiddleware {
+  private readonly logger = new Logger('RequestLogger');
 
-    if (res && typeof res.setHeader === 'function') {
-      try {
-        res.setHeader('x-request-id', id);
-      } catch (e) {
-        /* best-effort */
-      }
-    }
+  use(req: Request, res: Response, next: NextFunction): void {
+    const startTime = Date.now();
 
-    const ip =
-      (req && (req.ip || (req.socket && req.socket.remoteAddress))) ||
-      'unknown';
-    const method = (req && req.method) || 'UNKNOWN';
-    const url = (req && (req.originalUrl || req.url)) || 'unknown';
+    // Resolve or generate request ID
+    const requestId = resolveRequestId(req.headers[REQUEST_ID_HEADER]);
+    req.headers[REQUEST_ID_HEADER] = requestId;
+    (req as any).requestId = requestId;
 
-    logger.log(`${method} ${url} id=${id} ip=${ip}`);
+    // Set response header
+    res.setHeader(REQUEST_ID_HEADER, requestId);
 
-    if (res && typeof res.on === 'function') {
-      res.on('finish', () => {
-        const ms = Date.now() - start;
-        try {
-          logger.log(`Completed ${res.statusCode || 0} in ${ms}ms id=${id}`);
-        } catch (e) {
-          logger.warn(
-            'Failed to log response finish: ' + (e && (e as Error).message),
-          );
-        }
-      });
-    }
-  } catch (err: any) {
-    logger.warn('Request logging failed: ' + (err && err.message));
-  } finally {
-    try {
-      next();
-    } catch (e) {
-      logger.warn('next() threw in requestLogger');
-    }
+    // Log request
+    this.logger.log(
+      `${req.method} ${req.originalUrl} - Request ID: ${requestId}`,
+    );
+
+    // Log response when finished
+    res.on('finish', () => {
+      const duration = Date.now() - startTime;
+      this.logger.log(
+        `${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms - Request ID: ${requestId}`,
+      );
+    });
+
+    next();
   }
 }
+
+// Export a function that creates the middleware instance
+export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
+  const middleware = new RequestLoggingMiddleware();
+  middleware.use(req, res, next);
+};
 
 export default requestLogger;
