@@ -74,6 +74,30 @@ credential alive, so close the window deliberately.
 
 ---
 
+## Where the secret is enforced
+
+`MaintenanceAdminGuard`
+([`src/maintenance/maintenance-admin.guard.ts`](../src/maintenance/maintenance-admin.guard.ts))
+is the **only** consumer of the admin secret, and it guards exactly one route:
+
+| Route                    | Guard                          | Effect of the secret       |
+|--------------------------|--------------------------------|----------------------------|
+| `GET  /v1/maintenance`   | none (`@Public()`)             | none — status is public    |
+| `PATCH /v1/maintenance`  | `ApiKeyGuard` + `MaintenanceAdminGuard` | authorizes the write |
+
+`PATCH /v1/maintenance` carries `@AllowDuringMaintenance()`, so it stays
+reachable while maintenance mode is freezing every other write. Without that
+exemption the kill-switch would be a one-way door: an operator who enabled
+maintenance mode could not disable it again.
+
+Every refusal is the same `401` with the stable code
+`MAINTENANCE_UNAUTHORIZED`, whatever the reason (`MISSING`, `MISMATCH`,
+`PREVIOUS_EXPIRED`, `NOT_CONFIGURED`). The specific reason is logged for the
+operator but never returned, so the endpoint cannot be used to probe which part
+of a guess was correct.
+
+---
+
 ## Verifying a rotation
 
 - `GET /v1/maintenance` is public and unaffected by the secret.
@@ -94,6 +118,7 @@ credential alive, so close the window deliberately.
 | `..._PREVIOUS_EXPIRES_AT` unparseable      | Previous secret is **not** accepted (fail-closed)   | Fix the timestamp format (ISO-8601)                               |
 | `MAINTENANCE_ADMIN_SECRET` unset           | Every `PATCH` returns `401`; nothing is authorized  | Restore from the secret manager; there is deliberately no fallback |
 | DB unavailable while maintenance is enabled | Writes return `503` `MAINTENANCE_STATE_UNAVAILABLE` | Restore DB connectivity; the guard fails closed, not open        |
+| Operator on the previous secret          | `200`, logged at `warn` as a rotation in progress    | Complete the rotation before the window closes                   |
 | `Retry-After` configured                    | Returned in the `Retry-After` header on `503`       | Honor it client-side; do not retry-storm the endpoint            |
 
 ---

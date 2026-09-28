@@ -98,7 +98,7 @@ describe('WalletsController list — pagination + network filter (e2e, #936)', (
     app.useGlobalGuards(
       new ApiKeyGuard(apiKeyStub as never, reflector),
       new FeatureFlagGuard(flagStub as never, reflector),
-      new RateLimitGuard(rateLimitStub as never, reflector),
+      new RateLimitGuard(),
     );
     await app.init();
   });

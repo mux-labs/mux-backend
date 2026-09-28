@@ -205,7 +205,9 @@ The correlation id (`X-Request-ID`) is resolved once per request by
 log, the error envelope, and outbound webhooks, so one identifier traces a
 request end to end. A client-supplied id is honoured only when it is short and
 log-safe; anything else is replaced server-side, preventing log injection
-through a spoofed header. (#927)
+through a spoofed header. Every layer — including the global exception filter —
+reads the id through that one resolver rather than re-deriving it, so the access
+log and the error envelope cannot disagree about a request. (#927)
 
 ## Secret Rotation
 
@@ -218,6 +220,11 @@ expiry is in the future; a missing or unparseable expiry closes the window
 | Secret | Runbook |
 |--------|---------|
 | `MAINTENANCE_ADMIN_SECRET` | [docs/MAINTENANCE-SECRET-ROTATION.md](docs/MAINTENANCE-SECRET-ROTATION.md) (#925) |
+
+`MaintenanceAdminGuard` is the only consumer of the maintenance admin secret
+and guards only `PATCH /v1/maintenance`. That route is exempt from the
+maintenance kill-switch so an operator can always unfreeze the deployment;
+every other mutating route is still frozen.
 | `WALLET_ENCRYPTION_KEY` | [docs/MIGRATION-KEY-MANAGEMENT.md](docs/MIGRATION-KEY-MANAGEMENT.md) |
 | Webhook signing key | [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md) |
 
@@ -232,8 +239,10 @@ cannot raise its own abuse ceiling. The `auth` tier is keyed by client IP
 because no API key exists at a credential endpoint. A malformed or non-positive
 limit falls back to the tier default rather than disabling it, and a strict tier
 can be tightened but never raised above the `default` ceiling. Refusals use the
-stable code `RATE_LIMITED`. See [docs/RATE-LIMITING.md](docs/RATE-LIMITING.md).
-(#926)
+stable code `RATE_LIMITED`. The tiers are enforced by the global
+`RateLimitGuard`, which keys the `auth` tier on the client address and every
+other tier on the server-resolved API-key id — never on presented key
+material. See [docs/RATE-LIMITING.md](docs/RATE-LIMITING.md). (#926)
 
 ## Local Development Data
 
