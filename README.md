@@ -66,6 +66,35 @@ exception provides them. `requestId` is echoed back from the `X-Request-ID`
 request header when present. In production, `message` on unhandled 500 errors
 is sanitized to strip connection strings, file paths, and secrets.
 
+### Correlation IDs (`X-Request-ID`) (#927)
+
+A single correlation id ties together the access log, the error envelope, and
+any webhook the request caused, so one identifier can be quoted in a support
+request and traced end to end.
+
+- **Sent:** `X-Request-ID` is returned on every response, and included as
+  `requestId` in every error envelope.
+- **Accepted:** a client may supply its own `X-Request-ID`. It is honoured only
+  when it is at most 128 characters and matches `[A-Za-z0-9._:-]+`. Anything
+  else — control characters, whitespace, an over-long value — is **replaced**
+  with a server-generated UUID, so a hostile header cannot forge a log line or
+  a metric label.
+- **Resolved once:** `getRequestId()` in `src/common/http/correlation.ts` is the
+  single source of truth shared by the logging middleware, the exception filter,
+  and the outbound webhook path, so one client-supplied header can never produce
+  a different id in the log than in the error envelope.
+- **In logs:** every request/response and error line carries the id alongside
+  the method, path, status, and duration. No header value, body, or credential
+  is ever logged.
+- **In webhooks:** outbound deliveries carry the id in the `X-Request-Id`
+  header and as `requestId` in the payload envelope, so a subscriber can
+  correlate a delivery with the API call that caused it. Events raised by a
+  background job rather than a request get a server-generated id instead, so
+  they remain traceable without ever echoing untrusted input.
+
+Contract and helpers: `src/common/http/correlation.ts`
+(`getRequestId`, `buildWebhookCorrelationHeaders`, `withWebhookCorrelation`).
+
 ### Request body size
 
 JSON and URL-encoded request bodies are limited to 100 KiB by default. Set
@@ -91,6 +120,22 @@ Inspect the current maintenance status with `GET /v1/maintenance` (public endpoi
 send `PATCH /v1/maintenance` with normal API-key authentication plus the
 `X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`. This secret
 is required in production — startup fails fast if it is unset.
+
+The maintenance endpoint itself remains available while maintenance mode is on
+so an authorized operator can disable it. If the persisted state cannot be read,
+mutating requests fail closed with `503 Service Unavailable` and the stable code
+`MAINTENANCE_STATE_UNAVAILABLE` — an unknown maintenance state is never reported
+as "not in maintenance".
+
+The admin secret is **rotated with an overlap window** so an operator is never
+locked out of the endpoint they need during a rotation: set the new value in
+`MAINTENANCE_ADMIN_SECRET`, move the old one to
+`MAINTENANCE_ADMIN_SECRET_PREVIOUS` with a
+`MAINTENANCE_ADMIN_SECRET_PREVIOUS_EXPIRES_AT` deadline, and both are accepted
+until that instant. With no expiry configured — or an unparseable one — the
+previous secret is **not** accepted, so a stale value can never become a
+permanent second credential. Full procedure and failure modes:
+[docs/MAINTENANCE-SECRET-ROTATION.md](docs/MAINTENANCE-SECRET-ROTATION.md). (#925)
 
 ```json
 {
@@ -641,6 +686,17 @@ This seed also creates an onboarding developer account and a starter project for
 A new developer API route is available: `GET /developers/:id/projects` returns the projects belonging to a developer.
 ```
 
+> **The seed is local-only (#928).** It creates wallets whose `encryptedSecret`
+> is a literal placeholder and transactions with fabricated amounts, so it must
+> never run against a database that matters. `pnpm prisma:seed` refuses to
+> start when `NODE_ENV=production` (no override), when `STELLAR_NETWORK` is
+> mainnet/public (no override), or when `DATABASE_URL` points at a non-local
+> host. The last case can be waived for a throwaway database with
+> `PRISMA_SEED_ALLOW_NON_LOCAL=true`; the demo `MAINNET` wallet rows are
+> additionally opt-in via `PRISMA_SEED_INCLUDE_MAINNET=true`. Each refusal exits
+> non-zero with a stable code (`SEED_BLOCKED_*`). Full contract:
+> [docs/SEED-SAFETY.md](docs/SEED-SAFETY.md).
+
 > Developer ownership: `Developer.userId` links a developer account to the `User` that owns it. When that user is deleted, the developer, its projects, API keys, and webhook endpoints are cleaned up automatically (see [User Lifecycle](#user-lifecycle)). Seeded onboarding developers have no `userId` and are never touched by user deletion.
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
@@ -915,6 +971,23 @@ User authentication is orchestrated via the auth service and integrates with Web
 - User status is checked during authentication; inactive users cannot authenticate
 - Once authenticated, API key usage is tracked independently of user status
 - Sensitive endpoints (payments, transactions) apply stricter rate limits
+
+On top of the per-key and per-developer budgets, requests are classified into
+**rate-limit tiers** chosen from the request path, not from tenant
+configuration — so a tenant cannot raise its own abuse ceiling:
+
+| Tier | Surfaces | Keyed by | Default |
+|------|----------|----------|---------|
+| `auth` | `/auth/login`, `/auth/register`, `/auth/verify`, `/auth/refresh`, `/auth/challenge` | Client **IP** (no API key exists yet) | 10 / 60s |
+| `payments` | `/v1/payments*`, `/v1/transactions*` | API key | 60 / 60s |
+| `default` | Everything else | API key | 600 / 60s |
+
+Invariants: a malformed or non-positive limit falls back to the tier default
+rather than disabling it; a strict tier can be tightened but never raised above
+the `default` ceiling; and an unrecognised path still lands in `default`, so
+adding a route never leaves it unthrottled. Refusals are `429` with the stable
+code `RATE_LIMITED`. Full contract, failure modes, and alerting:
+[docs/RATE-LIMITING.md](docs/RATE-LIMITING.md). (#926)
 
 ### Environment Variables
 
