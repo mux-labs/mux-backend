@@ -1379,3 +1379,8 @@ Testnet Friendbot funding is performed outside the transaction and is non-blocki
 ```
 
 Query parameters: `userId`, `network`, `status`, `includeArchived` (default `false`), `limit` (max 100, default 20), `offset` (default 0). Archived wallets are excluded by default; pass `includeArchived=true` to include them. `encryptedSecret` is never present in list responses.
+
+## Handsoff notes
+
+<!-- handsoff-issue-990 -->
+- #990: Key management e2e
