@@ -82,6 +82,14 @@ export const MAINTENANCE_STATE_UNAVAILABLE_ERROR_CODE =
   'MAINTENANCE_STATE_UNAVAILABLE';
 
 /**
+ * Stable error code returned when the maintenance admin secret is missing,
+ * malformed, or does not match — including a previous secret presented outside
+ * its rotation window. The specific reason is deliberately **not** returned to
+ * the client; it is logged (secret-free) for the operator.
+ */
+export const MAINTENANCE_UNAUTHORIZED_ERROR_CODE = 'MAINTENANCE_UNAUTHORIZED';
+
+/**
  * Constant-time string comparison that does not leak length through an early
  * return. `timingSafeEqual` requires equal-length buffers, so both values are
  * hashed to a fixed width first — this keeps the comparison constant-time

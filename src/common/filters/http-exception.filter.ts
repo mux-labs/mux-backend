@@ -7,7 +7,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { Request, Response } from 'express';
-import { randomUUID } from 'crypto';
+import { getRequestId } from '../http/correlation';
 
 /**
  * Structured error response format
@@ -72,7 +72,11 @@ export class HttpExceptionFilter implements ExceptionFilter {
     const request = ctx.getRequest<Request>();
 
     const requestId = this.resolveRequestId(request);
-    const errorResponse = this.buildErrorResponse(exception, request, requestId);
+    const errorResponse = this.buildErrorResponse(
+      exception,
+      request,
+      requestId,
+    );
 
     // Log error with context
     this.logError(exception, request, errorResponse);
@@ -82,18 +86,18 @@ export class HttpExceptionFilter implements ExceptionFilter {
   }
 
   /**
-   * Resolve the correlation id for the current request, generating one when
-   * the client did not supply a valid `x-request-id` header.
+   * Resolve the correlation id for the current request.
+   *
+   * Delegated to the shared `getRequestId()` (#927) rather than re-derived
+   * here. The filter previously accepted *any* non-empty `x-request-id` header,
+   * which meant (a) the id in an error envelope could disagree with the one in
+   * the access log for the same request, and (b) a client could inject control
+   * characters or an unbounded string into the log line this filter writes.
+   * `getRequestId()` prefers the id already stamped on the request, re-validates
+   * it, and generates a UUID otherwise — so all layers agree by construction.
    */
   private resolveRequestId(request: Request): string {
-    const header = request.headers['x-request-id'];
-    const incoming = Array.isArray(header) ? header[0] : header;
-
-    if (typeof incoming === 'string' && incoming.trim().length > 0) {
-      return incoming.trim();
-    }
-
-    return randomUUID();
+    return getRequestId(request as never);
   }
 
   /**
@@ -271,7 +275,9 @@ export class HttpExceptionFilter implements ExceptionFilter {
     status: number,
   ): string | string[] {
     if (Array.isArray(message)) {
-      return message.map((entry) => this.sanitizeMessage(entry, status) as string);
+      return message.map(
+        (entry) => this.sanitizeMessage(entry, status) as string,
+      );
     }
 
     if (process.env.NODE_ENV === 'production' && status >= 500) {

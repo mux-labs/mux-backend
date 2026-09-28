@@ -5,8 +5,10 @@ import {
   ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../prisma/prisma.service';
 import { MAINTENANCE_STATE_UNAVAILABLE_ERROR_CODE } from './maintenance-secret.service';
+import { ALLOW_DURING_MAINTENANCE } from './maintenance.decorator';
 
 /**
  * Guard that blocks mutating requests when maintenance mode is enabled.
@@ -29,7 +31,10 @@ export class MaintenanceGuard implements CanActivate {
   private cacheExpiresAt = 0;
   private readonly CACHE_TTL_MS = 5000; // 5 seconds cache
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly reflector: Reflector,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     // Only check maintenance mode for mutating methods
@@ -38,6 +43,14 @@ export class MaintenanceGuard implements CanActivate {
 
     const mutatingMethods = ['POST', 'PUT', 'PATCH', 'DELETE'];
     if (!mutatingMethods.includes(method)) {
+      return true;
+    }
+
+    // The maintenance toggle is the control that turns maintenance mode off.
+    // Blocking it here would mean an operator could freeze every write and
+    // then be unable to unfreeze it, so routes that opt in are exempt. They
+    // carry their own authentication (see `MaintenanceAdminGuard`).
+    if (this.isAllowedDuringMaintenance(context)) {
       return true;
     }
 
@@ -80,6 +93,20 @@ export class MaintenanceGuard implements CanActivate {
     }
 
     return true;
+  }
+
+  /**
+   * Whether the handler (or controller) opted into running while maintenance
+   * mode is enabled. Defaults to `false`, so a new route is never accidentally
+   * exempt.
+   */
+  private isAllowedDuringMaintenance(context: ExecutionContext): boolean {
+    return (
+      this.reflector.getAllAndOverride<boolean>(ALLOW_DURING_MAINTENANCE, [
+        context.getHandler(),
+        context.getClass(),
+      ]) === true
+    );
   }
 
   private async getMaintenanceState(): Promise<{

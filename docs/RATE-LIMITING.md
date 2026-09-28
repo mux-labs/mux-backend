@@ -79,6 +79,36 @@ These are asserted by `src/rate-limit/rate-limit.policy.spec.ts`.
 
 ---
 
+## Where the tiers are enforced
+
+`RateLimitGuard`
+([`src/rate-limit/rate-limit.guard.ts`](../src/rate-limit/rate-limit.guard.ts))
+is registered as a global `APP_GUARD`, so every request is classified and
+counted. The guard holds no policy of its own: it calls
+`resolveRateLimitTier()` and `resolveRateLimitPolicy()` and enforces exactly
+what they return, so tightening a tier in configuration tightens it here.
+
+Subject selection:
+
+- the `auth` tier counts per **client address** (`request.ip`, falling back to
+  the socket's remote address). Headers a client controls, such as
+  `X-Forwarded-For`, are deliberately not trusted — a spoofable address would
+  let an attacker mint a fresh budget per request. Terminate the limit at a
+  trusted proxy if the deployment needs proxy-aware client IPs;
+- every other tier counts per **server-resolved API-key id**. A request with no
+  resolved key falls back to its own address rather than to a shared constant
+  bucket, so one unauthenticated caller can never exhaust another's budget.
+
+The tracked-subject map is bounded per tier
+(`MAX_TRACKED_SUBJECTS = 10_000`); at the cap the least-recently-seen entry is
+evicted, which costs that caller a fresh window rather than a refusal.
+
+`@SensitiveEndpoint()` remains available to mark a route explicitly, but it is
+not required: an unrecognised path still lands in `default` and is still
+limited.
+
+---
+
 ## Observability
 
 Log/metric fields (values only, no credentials):
