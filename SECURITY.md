@@ -171,6 +171,10 @@ authenticated, read-only `GET /v1/internal/cors-allowlist` endpoint.
 - A request with no `Origin` header is allowed: CORS is browser-enforced and is
   **not** an authentication layer. Server-to-server callers are authenticated by
   API key / JWT as usual.
+- A request from a non-allowlisted origin is refused **without** an error: it is
+  served normally but receives no `Access-Control-Allow-Origin`, so the browser
+  blocks it. Refusing this way keeps the denial in the CORS layer instead of
+  surfacing a `5xx` for an expected policy outcome.
 - Contributors adding CORS behaviour must keep the exact-match rule. Do not
   introduce suffix, regex, or subdomain matching to "simplify" configuration.
 - `src/common/http/cors.spec.ts` and `test/cors-allowlist.e2e-spec.ts` assert

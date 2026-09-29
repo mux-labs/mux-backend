@@ -9,27 +9,18 @@ import {
   Param,
   Query,
 } from '@nestjs/common';
+import {
+  ApiOperation,
+  ApiQuery,
+  ApiResponse,
+  ApiSecurity,
+  ApiTags,
+} from '@nestjs/swagger';
 import { WalletsService } from './wallets.service';
-import { CreateWalletDto } from './dto/create-wallet.dto';
-import { UpdateWalletDto } from './dto/update-wallet.dto';
-import { UpdateWalletNicknameDto } from './dto/update-wallet-nickname.dto';
-import { SetNetworkPreferenceDto } from './dto/set-network-preference.dto';
-import { WalletResponseDto } from './dto/wallet-response.dto';
 import { ListWalletsQueryDto } from './dto/list-wallets-query.dto';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import { WalletCreationOrchestrator } from './wallet-creation-orchestrator.service';
-import { RequireApiKey } from '../api-keys/decorators/require-api-key.decorator';
-import { ApiKeyCtx } from '../api-keys/decorators/api-key-context.decorator';
-import type { ApiKeyContext } from '../api-keys/domain/api-key.model';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import {
-  RateLimitGuard,
-  SensitiveEndpoint,
-} from '../rate-limit/rate-limit.guard';
-import {
-  FeatureFlag,
-  FeatureFlagGuard,
-} from '../common/feature-flags/feature-flag.guard';
 
 /**
  * Public wallet API (`/v1/wallets`).
@@ -54,7 +45,8 @@ export class WalletsController {
   @HttpCode(HttpStatus.CREATED)
   @UseGuards(ApiKeyGuard)
   async createWallet(
-    @Body() body: {
+    @Body()
+    body: {
       userId: string;
       network: WalletNetwork;
       idempotencyKey?: string;
@@ -69,7 +61,13 @@ export class WalletsController {
   }
 
   /**
-   * #496: List wallets with optional filters and offset-based pagination.
+   * #496 / #936: List wallets with validated filters and bounded
+   * offset-based pagination.
+   *
+   * The query is parsed into `ListWalletsQueryDto`, so an unknown `network`
+   * or `status`, an out-of-range `limit`, or an unrecognized parameter is
+   * rejected with `400` instead of silently widening the result set across
+   * testnet and mainnet.
    */
   @ApiOperation({
     summary: 'List wallets with optional filters and pagination',
@@ -80,9 +78,21 @@ export class WalletsController {
     schema: {
       type: 'object',
       properties: {
+        // Described structurally rather than as a `$ref`: the DTO that would
+        // back that component no longer exists, and a dangling `$ref` makes
+        // the published OpenAPI document invalid.
         data: {
           type: 'array',
-          items: { $ref: '#/components/schemas/WalletResponseDto' },
+          items: {
+            type: 'object',
+            properties: {
+              id: { type: 'string' },
+              userId: { type: 'string' },
+              publicKey: { type: 'string' },
+              network: { type: 'string', enum: Object.values(WalletNetwork) },
+              status: { type: 'string', enum: Object.values(WalletStatus) },
+            },
+          },
         },
         total: { type: 'number' },
         limit: { type: 'number' },
@@ -147,16 +157,4 @@ export class WalletsController {
   async getWallet(@Param('id') id: string) {
     return this.walletsService.getWalletStatus(id);
   }
-  @Get()
-  @UseGuards(ApiKeyGuard)
-  async listWallets(@Query() query: ListWalletsQueryDto) {
-    return this.walletsService.findAll(query);
-  }
-
-  @Get(':id')
-  @UseGuards(ApiKeyGuard)
-  async getWallet(@Param('id') id: string) {
-    return this.walletsService.getWalletStatus(id);
-  }
-
 }

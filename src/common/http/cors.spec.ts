@@ -178,11 +178,29 @@ describe('CORS allowlist policy (#934)', () => {
       ).resolves.toBe(true);
     });
 
-    it('refuses a non-allowlisted origin with an error', async () => {
-      // The browser then blocks the response; no ACAO header is emitted.
+    it('refuses a non-allowlisted origin without raising an error', async () => {
+      // The browser then blocks the response; no ACAO header is emitted. The
+      // refusal must not be signalled with an `Error`, because `cors` turns
+      // that into a 500 for what is an expected, policy-driven outcome.
       await expect(checkOrigin(ALLOWLIST, 'https://evil.com')).resolves.toBe(
         false,
       );
+    });
+
+    it('passes no error to the origin callback on refusal', async () => {
+      // Regression guard for the 500: `cors` short-circuits to `next(err)`
+      // when the callback receives an Error.
+      const options = buildCorsOptions(ALLOWLIST);
+      const err = await new Promise<Error | null>((resolve) => {
+        (
+          options.origin as (
+            o?: string,
+            cb: (e: Error | null, a?: boolean) => void,
+          ) => void
+        )('https://evil.com', (e) => resolve(e));
+      });
+
+      expect(err).toBeNull();
     });
 
     it('refuses a subdomain of an allowlisted origin', async () => {
