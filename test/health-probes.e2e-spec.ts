@@ -26,6 +26,10 @@ jest.mock('../src/prisma/prisma.service', () => ({
 describe('Health probes: liveness vs readiness (e2e, #933)', () => {
   let app: INestApplication;
   let pingCheck: jest.Mock;
+  // The Prisma client the controller is expected to hand to Terminus. It
+  // stands in for the real `PrismaService`; the identity is asserted so the
+  // test fails if the client and the options are ever swapped.
+  const prismaStub = { $runCommandRaw: jest.fn().mockResolvedValue({ ok: 1 }) };
 
   beforeEach(async () => {
     pingCheck = jest.fn().mockResolvedValue({ database: { status: 'up' } });
@@ -66,7 +70,7 @@ describe('Health probes: liveness vs readiness (e2e, #933)', () => {
           },
         },
         { provide: PrismaHealthIndicator, useValue: { pingCheck } },
-        { provide: PrismaService, useValue: {} },
+        { provide: PrismaService, useValue: prismaStub },
         {
           provide: ConfigService,
           useValue: { get: (_k: string, d: string) => d },
@@ -128,10 +132,16 @@ describe('Health probes: liveness vs readiness (e2e, #933)', () => {
       });
     });
 
-    it('actually pings the database', async () => {
+    it('actually pings the database, passing the Prisma client', async () => {
       await request(app.getHttpServer()).get('/v1/health/ready').expect(200);
 
-      expect(pingCheck).toHaveBeenCalledWith('database', { timeout: 3000 });
+      // `pingCheck(key, prismaClient, options)`. The client must be the second
+      // argument: handing Terminus the options object there makes it call
+      // `$runCommandRaw` on a plain object, so the indicator reports `down` and
+      // the pod is never marked ready.
+      expect(pingCheck).toHaveBeenCalledWith('database', prismaStub, {
+        timeout: 3000,
+      });
     });
 
     it('serves 503 at /v1/health/ready when the database is down', async () => {

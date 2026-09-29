@@ -36,9 +36,13 @@ import {
 } from '../common/logging/structured-logger';
 import { TransactionStatus } from '../transactions/domain/transaction.model';
 import {
-  DEFAULT_WALLET_LIST_LIMIT,
-  MAX_WALLET_LIST_LIMIT,
+  clampWalletListLimit,
+  clampWalletListOffset,
 } from './dto/list-wallets-query.dto';
+
+// Re-exported so existing callers can keep importing the clamps from the
+// service while the implementation lives beside the DTO bounds it enforces.
+export { clampWalletListLimit, clampWalletListOffset };
 
 /** Wallet shape safe to return from the API (no encrypted secret material). */
 export type PublicWallet = Omit<Wallet, 'encryptedSecret'>;
@@ -66,28 +70,6 @@ export interface WalletListResult {
   limit: number;
   offset: number;
   hasMore: boolean;
-}
-
-/**
- * Clamp a requested page size into `[1, MAX_WALLET_LIST_LIMIT]` ([#936]).
- *
- * The controller validates the query DTO, but the service clamps too so any
- * internal caller is bounded as well. A negative or zero `limit` would
- * otherwise reach the database as a nonsensical page.
- */
-export function clampWalletListLimit(limit?: number): number {
-  if (limit === undefined || !Number.isFinite(limit)) {
-    return DEFAULT_WALLET_LIST_LIMIT;
-  }
-  return Math.min(Math.max(Math.trunc(limit), 1), MAX_WALLET_LIST_LIMIT);
-}
-
-/** Clamp `offset` to a non-negative integer, so paging cannot run backwards. */
-export function clampWalletListOffset(offset?: number): number {
-  if (offset === undefined || !Number.isFinite(offset)) {
-    return 0;
-  }
-  return Math.max(Math.trunc(offset), 0);
 }
 
 export interface WalletCreationResult {

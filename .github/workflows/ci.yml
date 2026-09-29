@@ -222,7 +222,20 @@ jobs:
           AUTH_RATE_LIMIT_MAX: 10
           AUTH_RATE_LIMIT_WINDOW_MS: 60000
 
+      - name: Verify OpenAPI lint config is present
+        # #948: Fail closed when the lint config is missing so the gate can
+        # never be skipped by an absent file.
+        run: test -f redocly.yaml
+
+      - name: Verify OpenAPI lint contract
+        # #948: Fails when redocly.yaml names a rule Redocly does not know, a
+        # contract invariant is downgraded to `warn`, the CLI is unpinned, or CI
+        # stops running the lint/drift gates. Exits non-zero (fail-closed).
+        run: pnpm run openapi:check-lint-config
+
       - name: Lint OpenAPI spec
+        # #948: Pinned CLI + the checked-in redocly.yaml rules. Every contract
+        # rule is an `error`, so a spec regression fails the build.
         run: pnpm run openapi:lint
 
       - name: Check OpenAPI spec for drift

@@ -39,11 +39,17 @@ money movement into transaction history.
    `DATABASE_URL` is refused with `SEED_BLOCKED_DATABASE_URL` — the seed never
    assumes "probably local".
 5. **A flag typo is an error, not a default.** An unrecognized value for a
-   `PRISMA_SEED_*` flag raises `SEED_BLOCKED_INVALID_FLAG` rather than being
-   read as either true or false.
-6. **Mainnet demo wallets are opt-in.** The `MAINNET` wallet rows are only
+   `PRISMA_SEED_*` flag is refused with `SEED_BLOCKED_INVALID_FLAG` rather than
+   being read as either true or false. Every refusal — including a typo — is
+   reported through the same stable `code`, so the operator always gets an
+   actionable message.
+6. **A typo cannot mask a worse refusal.** The non-overridable blocks
+   (`NODE_ENV=production`, mainnet `STELLAR_NETWORK`) are evaluated *before* the
+   flags are parsed, so a malformed flag never hides the production or mainnet
+   refusal — those keep their own codes regardless.
+7. **Mainnet demo wallets are opt-in.** The `MAINNET` wallet rows are only
    created with `PRISMA_SEED_INCLUDE_MAINNET=true`; the default is off.
-7. **No credentials in output.** A refusal reports the stable code, the
+8. **No credentials in output.** A refusal reports the stable code, the
    remediation, and the database *host* only — never the password.
 
 ---

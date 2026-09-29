@@ -3,10 +3,9 @@ import { Request, Response, NextFunction } from 'express';
 import { REQUEST_ID_HEADER, getRequestId } from '../http/correlation';
 
 /**
- * Middleware that ensures every request has a correlation id
- * in the x-request-id header. If the client supplies one,
- * it is validated and passed through; otherwise a server-generated
- * id is set.
+ * Middleware that ensures every request has a correlation id in the
+ * x-request-id header. If the client supplies one, it is validated and passed
+ * through; otherwise a server-generated id is set.
  *
  * The correlation id is also attached to the request object so
  * downstream handlers can access it without re-reading headers.

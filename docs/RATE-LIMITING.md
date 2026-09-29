@@ -32,7 +32,19 @@ loosened past the default ceiling.
 |------------|--------------------------------------------------------------|----------|--------------|-------------------------------------------------------|
 | `auth`     | `/auth/login`, `/auth/register`, `/auth/verify`, `/auth/refresh`, `/auth/challenge`, `/v1/auth/*` | Client **IP** | 10 / 60s  | `AUTH_RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_WINDOW_MS`     |
 | `payments` | `/v1/payments*`, `/v1/transactions*`                          | API key  | 60 / 60s     | `PAYMENT_RATE_LIMIT_MAX`, `PAYMENT_RATE_LIMIT_WINDOW_MS` |
-| `default`  | Everything else                                               | API key  | 600 / 60s    | tenant `RATE_LIMIT_RPM`                               |
+| `default`  | Everything else                                               | API key  | 600 / 60s    | `DEFAULT_RATE_LIMIT_MAX`, `DEFAULT_RATE_LIMIT_WINDOW_MS` (tenant `RATE_LIMIT_RPM` is separate) |
+
+**Each tier reads only its own variables.** An override for one tier is never
+inherited by another. This matters: the `default` tier previously read
+`PAYMENT_RATE_LIMIT_*`, so raising that value to loosen the money path also
+raised the ceiling for every other route on the API — and since strict tiers
+are clamped to the `default` ceiling, that single value could un-cap the money
+path too. The tiers are now independent, and `default` has its own
+`DEFAULT_RATE_LIMIT_*` pair.
+
+**`DEFAULT_RATE_LIMIT_MAX` has a hard ceiling.** It may move the default tier
+within `MAX_DEFAULT_RATE_LIMIT_RPM` (10 000), but never past it — so no
+configuration can express "unlimited" for the whole API.
 
 **Why the auth tier is IP-keyed.** Credential endpoints are reached *before* an
 API key exists. Keying them by API key would make them unthrottled for exactly
@@ -52,9 +64,13 @@ These are asserted by `src/rate-limit/rate-limit.policy.spec.ts`.
    non-integer, or non-numeric limit resolves to the tier's built-in default —
    never to "unlimited" and never to zero. A deployment with no configuration
    is still protected.
-2. **Stricter tiers can only tighten.** `auth` and `payments` limits are
-   clamped to the `default` ceiling, so a typo that *raises* a limit cannot
-   open the money path.
+2. **Tiers are independent, and stricter ones can only tighten.** A tier reads
+   only its own `*_RATE_LIMIT_*` variables, so no tier's override widens
+   another. `auth` and `payments` limits are clamped to the *resolved*
+   `default` ceiling, so a typo that *raises* a limit cannot open the money
+   path. The `default` ceiling is itself clamped to
+   `MAX_DEFAULT_RATE_LIMIT_RPM`, so the clamp can never be lifted out to
+   "unlimited".
 3. **No route escapes limiting.** Path classification is deny-by-default in
    effect: an unrecognised path lands in `default`, which is still rate
    limited. Adding a route never leaves it unthrottled.
@@ -73,7 +89,9 @@ These are asserted by `src/rate-limit/rate-limit.policy.spec.ts`.
 |----------------------------------------|-------------------------------------------------------------------------------------------|----------------------------------------------------------------------------------|
 | `AUTH_RATE_LIMIT_MAX=0`                | Falls back to 10/60s (limit is never disabled)                                             | Fix the value; check the deployed env matches `.env.example`                    |
 | `AUTH_RATE_LIMIT_MAX=abc`              | Falls back to 10/60s and logs nothing sensitive                                             | Same                                                                              |
-| `PAYMENT_RATE_LIMIT_MAX=100000`        | Clamped to the `default` ceiling (600/60s)                                                  | Raise `default` deliberately instead, after a capacity review                   |
+| `PAYMENT_RATE_LIMIT_MAX=100000`        | Clamped to the `default` ceiling (600/60s); `default` itself is unaffected  | Raise `DEFAULT_RATE_LIMIT_MAX` deliberately instead, after a capacity review  |
+| `DEFAULT_RATE_LIMIT_MAX=1000000`        | Clamped to `MAX_DEFAULT_RATE_LIMIT_RPM` (10 000) — never unlimited            | Raise the code-level ceiling deliberately, after a capacity review           |
+| `DEFAULT_RATE_LIMIT_MAX=0` / `abc`      | Falls back to 600/60s (limit is never disabled)                                | Fix the value; check the deployed env matches `.env.example`                   |
 | A new route added                      | Classified `default` — still limited                                                        | Classify it explicitly if it is auth- or money-bearing                           |
 | Legitimate traffic burst               | `429` + `RATE_LIMITED`; client retries with backoff                                          | Raise the tier limit, or shard the caller across keys                            |
 
@@ -115,8 +133,11 @@ Log/metric fields (values only, no credentials):
 
 - `rateLimitTier_auth_limit`, `rateLimitTier_payments_limit`, `rateLimitTier_default_limit`
 - `rateLimitTier_*_windowMs`, `rateLimitTier_*_keyedByIp`
-- On refusal: the tier name, the correlation id, and the limit — never the
-  presented API key.
+- `rateLimitTier_<tier>_allowed` / `rateLimitTier_<tier>_refused` — incremented on
+  every decision by the guard
+- On refusal: a `warn` log with the tier, the limit, the retry delay, and the
+  correlation id — never the subject key, so neither an API-key id nor a client
+  address can leak into logs.
 
 Alert on a sustained `429` rate for the `auth` tier: it is the signature of
 credential stuffing rather than of a misconfigured client.

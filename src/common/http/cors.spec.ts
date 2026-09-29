@@ -18,7 +18,7 @@ function checkOrigin(
     const options = buildCorsOptions(allowlist);
     (
       options.origin as (
-        o?: string,
+        o: string | undefined,
         cb: (e: Error | null, a?: boolean) => void,
       ) => void
     )(origin, (err, allow) => resolve(err === null && allow === true));
@@ -194,7 +194,7 @@ describe('CORS allowlist policy (#934)', () => {
       const err = await new Promise<Error | null>((resolve) => {
         (
           options.origin as (
-            o?: string,
+            o: string | undefined,
             cb: (e: Error | null, a?: boolean) => void,
           ) => void
         )('https://evil.com', (e) => resolve(e));

@@ -1,4 +1,9 @@
-import { Controller, Get, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Controller,
+  Get,
+  Inject,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import {
   HealthCheck,
@@ -20,6 +25,30 @@ export interface HealthBuildInfo {
 }
 
 /**
+ * Readiness response: the standard Terminus envelope plus the build identity.
+ *
+ * `build` is declared here rather than spread onto `HealthCheckResult`,
+ * because Terminus types that result with exactly `status`/`info`/`error`/
+ * `details` and rejects the extra key at compile time.
+ */
+export type ReadinessProbeResult = HealthCheckResult & {
+  build: HealthBuildInfo;
+};
+
+/**
+ * The slice of a Prisma client that Terminus actually pings.
+ *
+ * `PrismaHealthIndicator.pingCheck` only calls `$runCommandRaw` (falling back
+ * to `$queryRawUnsafe`), so the probe depends on that structural contract
+ * rather than on the concrete `PrismaService` type. Keeping the dependency
+ * narrow means the probe stays typecheckable independently of how the Prisma
+ * client is generated, and it documents exactly what the readiness check uses.
+ */
+type PingablePrismaClient = {
+  $runCommandRaw: (command: Record<string, number>) => unknown;
+};
+
+/**
  * `/health` and `/health/ready` are deliberately different probes (#933).
  *
  * | Endpoint           | Kubernetes probe | Checks DB? | Use when                        |
@@ -38,7 +67,8 @@ export interface HealthBuildInfo {
  * that will error on every request.
  *
  * `/v1/ready` (in `AppController`) is retained as a compatibility alias for the
- * readiness probe; both behave identically.
+ * readiness probe; it delegates to the same database check and both behave
+ * identically.
  */
 @ApiTags('health')
 @Controller('health')
@@ -46,7 +76,11 @@ export class HealthController {
   constructor(
     private readonly health: HealthCheckService,
     private readonly db: PrismaHealthIndicator,
-    private readonly prisma: PrismaService,
+    // Injected by the `PrismaService` token but typed structurally: Terminus
+    // only needs `$runCommandRaw`. The explicit `@Inject` keeps the DI token
+    // clear while the narrow type keeps the probe independent of how the
+    // Prisma client is generated.
+    @Inject(PrismaService) private readonly prisma: PingablePrismaClient,
     private readonly configService: ConfigService,
   ) {}
 
@@ -107,10 +141,14 @@ export class HealthController {
     description:
       'A dependency is unavailable; the pod must not receive traffic',
   })
-  async check(): Promise<HealthCheckResult> {
+  async check(): Promise<ReadinessProbeResult> {
     try {
       const result = await this.health.check([
-        () => this.db.pingCheck('database', { timeout: 3000 }),
+        // The client is the second positional argument: `pingCheck(key, prismaClient, options)`.
+        // Passing `{ timeout }` there instead makes Terminus call
+        // `$runCommandRaw` on a plain object, which always throws, so the
+        // indicator reports `down` and the pod is permanently un-ready.
+        () => this.db.pingCheck('database', this.prisma, { timeout: 3000 }),
       ]);
 
       return { ...result, build: this.buildInfo() };

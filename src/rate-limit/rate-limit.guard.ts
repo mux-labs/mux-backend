@@ -4,8 +4,12 @@ import {
   HttpException,
   HttpStatus,
   Injectable,
+  Logger,
+  Optional,
   SetMetadata,
 } from '@nestjs/common';
+import { MetricsService } from '../common/metrics/metrics.service';
+import { getRequestId } from '../common/http/correlation';
 import {
   RATE_LIMITED_ERROR_CODE,
   RateLimitPolicy,
@@ -44,6 +48,13 @@ interface RateLimitedRequest {
   ip?: string;
   socket?: { remoteAddress?: string };
   set?: (name: string, value: string) => void;
+  /**
+   * Correlation-id fields, present so this shape satisfies
+   * `RequestLike` from `common/http/correlation`. The refusal log quotes the
+   * id, so it must be resolvable from the request the guard was handed.
+   */
+  headers?: Record<string, unknown>;
+  requestId?: string;
 }
 
 /**
@@ -87,9 +98,24 @@ export const MAX_TRACKED_SUBJECTS = 10_000;
  * 5. **Stable, non-leaking refusal.** `429` with `RATE_LIMITED`, the tier
  *    name, `Retry-After`, and the standard `X-RateLimit-*` headers. The
  *    subject key never appears in the response.
+ * 6. **Observable refusals.** Every decision increments a per-tier counter
+ *    (`rateLimitTier_<tier>_allowed` / `_refused`) and a refusal is logged with
+ *    the tier, the limit, and the correlation id — never the subject key. A
+ *    sustained `auth` refusal rate is the signature of credential stuffing, so
+ *    it has to be visible without reading request bodies.
  */
 @Injectable()
 export class RateLimitGuard implements CanActivate {
+  private readonly logger = new Logger(RateLimitGuard.name);
+
+  /**
+   * Metrics are optional so the guard can be constructed in isolation (unit
+   * tests, standalone harnesses) without a DI container. When absent the guard
+   * still enforces limits — observability is additive, never load-bearing for
+   * the decision.
+   */
+  constructor(@Optional() private readonly metrics?: MetricsService) {}
+
   /** Per-tier windows, so one tier's traffic cannot evict another's. */
   private readonly windows = new Map<RateLimitTier, Map<string, Window>>();
 
@@ -104,9 +130,11 @@ export class RateLimitGuard implements CanActivate {
     const window = this.consume(policy.tier, subject, policy.windowMs, now);
 
     if (window.count > policy.limit) {
+      this.metrics?.incrementCounter(`rateLimitTier_${policy.tier}_refused`);
       this.refuse(request, policy, window.resetAt, now);
     }
 
+    this.metrics?.incrementCounter(`rateLimitTier_${policy.tier}_allowed`);
     this.setRateLimitHeaders(request, policy.limit, window);
     return true;
   }
@@ -211,6 +239,15 @@ export class RateLimitGuard implements CanActivate {
       request,
       'X-RateLimit-Reset',
       String(Math.ceil(resetAt / 1000)),
+    );
+
+    // Ops-safe: the tier, the limit, and the correlation id. The subject key is
+    // never logged, so an API-key id or a client address cannot leak here, and
+    // the correlation id ties the refusal back to the access log line (#927).
+    this.logger.warn(
+      `rate limit refused tier=${policy.tier} limit=${policy.limit} ` +
+        `retryAfterSeconds=${retryAfterSeconds} ` +
+        `requestId=${getRequestId(request)}`,
     );
 
     throw new HttpException(

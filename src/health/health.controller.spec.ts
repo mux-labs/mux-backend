@@ -38,6 +38,7 @@ function makeController(overrides: { checkImpl?: jest.Mock; gitSha?: string }) {
     controller,
     mockHealthCheckService,
     mockPrismaIndicator,
+    mockPrisma,
     mockConfigService,
   };
 }
@@ -105,14 +106,68 @@ describe('HealthController', () => {
       expect(result).toMatchObject({ build: { gitSha: 'unknown' } });
     });
 
-    it('actually runs the database indicator', async () => {
-      const { controller, mockPrismaIndicator } = makeController({});
+    it('actually runs the database indicator against the real Prisma client', async () => {
+      const { controller, mockPrismaIndicator, mockPrisma } = makeController(
+        {},
+      );
 
       await controller.check();
 
-      expect(mockPrismaIndicator.pingCheck).toHaveBeenCalledWith('database', {
-        timeout: 3000,
-      });
+      // Regression guard: `pingCheck(key, prismaClient, options)`. Passing
+      // `{ timeout }` in the client position makes Terminus call
+      // `$runCommandRaw` on a plain object, so the indicator always reports
+      // `down` and the pod never becomes ready.
+      expect(mockPrismaIndicator.pingCheck).toHaveBeenCalledWith(
+        'database',
+        mockPrisma,
+        { timeout: 3000 },
+      );
+    });
+
+    it('reports ready when the real Terminus pingCheck contract is honoured', async () => {
+      // Reproduces `PrismaHealthIndicator.pingCheck` faithfully: it calls
+      // `$runCommandRaw` on whatever it was handed as the *client*. If the
+      // controller passes the options object there instead of the Prisma
+      // client, that call throws, the indicator goes `down`, and readiness
+      // never turns green — the pod is pulled from the load balancer forever.
+      const prisma = {
+        $runCommandRaw: jest.fn().mockResolvedValue({ ok: 1 }),
+      };
+      const realishIndicator = {
+        pingCheck: jest.fn(
+          async (
+            key: string,
+            client: typeof prisma,
+            options?: { timeout?: number },
+          ) => {
+            expect(options?.timeout).toBe(3000);
+            await client.$runCommandRaw({ ping: 1 });
+            return { [key]: { status: 'up' } };
+          },
+        ),
+      };
+
+      const controller = new HealthController(
+        {
+          check: jest.fn(
+            async (indicators: Array<() => Promise<unknown>> = []) => {
+              const info: Record<string, unknown> = {};
+              for (const indicator of indicators) {
+                Object.assign(info, await indicator());
+              }
+              return { status: 'ok', info, error: {}, details: info };
+            },
+          ),
+        } as never,
+        realishIndicator as never,
+        prisma as never,
+        { get: jest.fn((_k: string, d: string) => d) } as never,
+      );
+
+      const result = await controller.check();
+
+      expect(result.status).toBe('ok');
+      expect(result.details).toEqual({ database: { status: 'up' } });
     });
   });
 

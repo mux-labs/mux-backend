@@ -3,9 +3,11 @@ import {
   ExecutionContext,
   Injectable,
   Logger,
+  Optional,
   UnauthorizedException,
 } from '@nestjs/common';
 import { Request } from 'express';
+import { MetricsService } from '../common/metrics/metrics.service';
 import {
   MAINTENANCE_SECRET_RESULT,
   MAINTENANCE_UNAUTHORIZED_ERROR_CODE,
@@ -36,12 +38,25 @@ import {
  * 5. **An unfinished rotation is alertable.** A caller authorized by the
  *    *previous* secret is logged at `warn`, so an operator can see that
  *    machines are still holding the old value before the window closes.
+ * 6. **Every outcome is counted.** Each verification increments a counter
+ *    keyed by the stable reason code, so `maintenanceSecretVerify_OK_PREVIOUS`
+ *    and `maintenanceSecretVerify_MISMATCH` are alertable without reading logs.
+ *    The label is a fixed enum value — never a secret or a presented value.
  */
 @Injectable()
 export class MaintenanceAdminGuard implements CanActivate {
   private readonly logger = new Logger(MaintenanceAdminGuard.name);
 
-  constructor(private readonly secrets: MaintenanceSecretService) {}
+  constructor(
+    private readonly secrets: MaintenanceSecretService,
+    /**
+     * Optional so the guard can be constructed in isolation (unit tests) and
+     * so the maintenance module does not hard-depend on the metrics module.
+     * Counters are additive: their absence never changes an authorization
+     * decision, only what an operator can see.
+     */
+    @Optional() private readonly metrics?: MetricsService,
+  ) {}
 
   canActivate(context: ExecutionContext): boolean {
     const request = context
@@ -50,6 +65,11 @@ export class MaintenanceAdminGuard implements CanActivate {
 
     const outcome = this.secrets.verify(request);
     const correlationId = request?.requestId ?? 'unknown';
+
+    // The outcome is a stable, non-leaking code, so it is safe as a metric
+    // label: a sustained `OK_PREVIOUS` is the signal for an unfinished
+    // rotation, and a rising `MISMATCH` is the signal for a probe.
+    this.metrics?.incrementCounter(`maintenanceSecretVerify_${outcome.result}`);
 
     if (outcome.authorized) {
       if (outcome.usedPreviousSecret) {

@@ -95,8 +95,64 @@ lost, all encrypted wallet secrets become unrecoverable.
 
 1. Retrieve the key from the secret manager (e.g. AWS Secrets Manager, Doppler).
 2. Set it in the environment before starting the application.
-3. Rotate only via the documented key-rotation flow (see
-   `docs/key-management-consolidation.md`) to avoid breaking existing wallets.
+3. Rotate only via the documented key-rotation flow to avoid breaking existing
+   wallets: the same predecessor-key mechanism is used for wallet secrets
+   (`WALLET_ENCRYPTION_KEY_PREVIOUS`, see
+   [`docs/KEY-MANAGEMENT-SUMMARY.md`](./KEY-MANAGEMENT-SUMMARY.md)) and for
+   backup artifacts (below).
+
+### 4.4 Backup Encryption Key Rotation
+
+Backup dumps are encrypted at rest with `BACKUP_ENCRYPTION_KEY`
+(`src/backup/backup-encryption.service.ts`). The key never leaves the secret
+manager: the API can probe a rotation, but it can never accept, return, or
+change key material.
+
+**Env vars**
+
+| Var | Purpose | Default |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY` | Active key. Must be >= 32 characters and not a documented placeholder; the process **refuses to start** otherwise. | — (required) |
+| `BACKUP_ENCRYPTION_KEY_PREVIOUS` | Predecessor key, set only while a rotation is in flight. Must differ from the active key. | unset |
+
+**Procedure (zero downtime)**
+
+1. Generate a new key in the secret manager (e.g. `openssl rand -hex 32`).
+2. Set `BACKUP_ENCRYPTION_KEY=<new>` **and**
+   `BACKUP_ENCRYPTION_KEY_PREVIOUS=<old>`, then roll the deployment. The new
+   process now writes envelopes under the new key and still reads envelopes
+   written under the old one.
+3. Probe the rotation:
+   `POST /v1/backup/encryption/rotate-key` with `X-Cron-Secret`. It must report
+   `activeKeyWorks: true` and `previousKeyWorks: true`; anything else returns
+   `BACKUP_DEPENDENCY_UNAVAILABLE` and the rotation is refused.
+4. Re-encrypt stored artifacts: `BackupEncryptionService.reencrypt()` moves an
+   envelope from the predecessor key to the active key. Do this for every
+   retained artifact.
+5. Re-run the probe, then remove `BACKUP_ENCRYPTION_KEY_PREVIOUS` from the
+   secret manager. Envelopes written under the retired key are then refused
+   with `BACKUP_KEY_VERSION_UNSUPPORTED` — that is expected; re-create any
+   artifact you still need instead of restoring a retired key into production.
+
+**Rollback:** set `BACKUP_ENCRYPTION_KEY` back to the old key and
+`BACKUP_ENCRYPTION_KEY_PREVIOUS` to the new one, then roll. Steps 3-5 are
+symmetric, so no artifact is lost. Never delete a key while an envelope that
+only it can open still exists.
+
+**Invariants**
+
+- Envelopes are versioned and self-describing:
+  `v1:<keyId>:<iv>:<tag>:<ciphertext>`, where `keyId` is a truncated hash of the
+  key. Key ids are safe to log; keys are never logged or returned.
+- AES-256-GCM with a fresh IV per encryption and a fixed AAD binding the
+  artifact context, so a tampered dump fails authentication instead of being
+  restored.
+- Decryption is fail-closed: wrong key, tampered payload, or unknown version all
+  return a typed error (`BACKUP_DECRYPT_FAILED`,
+  `BACKUP_KEY_VERSION_UNSUPPORTED`) rather than partial plaintext.
+
+Tests: `src/backup/backup-encryption.service.spec.ts`,
+`src/backup/backup.service.spec.ts`.
 
 ---
 
@@ -168,9 +224,9 @@ Run this drill quarterly on a staging environment. Record outcomes below.
 
 ## 6. Fail-Closed Invariants
 
-- If `WALLET_ENCRYPTION_KEY` is missing at boot the application **fails to start** (validated in `src/app.service.ts`).
+- If `WALLET_ENCRYPTION_KEY` is missing at boot the application **fails to start** (validated in `src/encryption/encryption.service.ts`).
 - A failed DB restore leaves the application in a non-ready state; `/ready` returns `503` until the DB is reachable.
-- Backup files must be encrypted at rest. Never store plaintext dumps in shared storage.
+- Backup files must be encrypted at rest with `BACKUP_ENCRYPTION_KEY`; a missing, short, or placeholder key refuses startup. Never store plaintext dumps in shared storage.
 - Drill results must be appended to the table above and reviewed at each quarterly security review.
 
 ---
@@ -310,6 +366,39 @@ curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
 }
 ```
 
+### Restore Intent
+
+**Endpoint:** `POST /backup/restore`
+
+Validates and records a restore request. It is **non-destructive**: the data
+movement itself is an operator runbook step (§4), so no API caller can make the
+server rewrite a database. Replayed requests with the same `Idempotency-Key`
+return the original receipt; the same key with a different `backupId` or
+`targetEnvironment` is `BACKUP_IDEMPOTENCY_CONFLICT` (409).
+
+```bash
+curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+  -H "Idempotency-Key: restore-2026-01-01" \
+  -H "Content-Type: application/json" \
+  -d '{"backupId":"backup_1704067200000_abc","targetEnvironment":"testnet"}' \
+  https://api.example.com/backup/restore
+```
+
+### Backup Encryption Key Rotation
+
+**Endpoint:** `POST /backup/encryption/rotate-key`
+
+Runs the rotation canary probe described in §4.4. The response reports
+`activeKeyId`/`previousKeyId` (truncated hashes) and the two probe booleans;
+it never contains key material. The endpoint performs no key change itself and
+is safe to replay.
+
+```bash
+curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+  -H "Idempotency-Key: rotate-2026-01-01" \
+  https://api.example.com/backup/encryption/rotate-key
+```
+
 ### Backup Procedures
 
 **Endpoint:** `GET /backup/procedures`
@@ -383,12 +472,15 @@ curl -H "X-Cron-Secret: ${CRON_SECRET}" \
 
 ## 11. Cross-References
 
-- [Key Management Consolidation](./key-management-consolidation.md)
+- [Key Management Summary](./KEY-MANAGEMENT-SUMMARY.md)
 - [Custody Security Model](./custody-security-model.md)
-- [Key Rotation Audit](../src/key-management/key-rotation-audit.service.ts)
 - [Migration Guide](./MIGRATION-KEY-MANAGEMENT.md)
 - [Database Schema](../prisma/schema.prisma)
-- [Disaster Recovery Runbook](./DISASTER_RECOVERY.md)
 - [Security Policy](../SECURITY.md)
+- [Cron Schedules](./CRON-SCHEDULES.md)
 - [Backup Module E2E Tests](../test/backup-module-registered.e2e-spec.ts)
-- `WALLET_ENCRYPTION_KEY` validation: `src/app.service.ts`
+- `WALLET_ENCRYPTION_KEY` validation: `src/encryption/encryption.service.ts`
+- `BACKUP_ENCRYPTION_KEY` validation: `src/backup/backup-encryption.service.ts`
+- Backup surface: `src/backup/backup.service.ts`,
+  `src/backup/backup.controller.ts`, `src/backup/backup.module.ts`
+- Cron/internal authz: `src/common/cron/cron-secret.guard.ts`
