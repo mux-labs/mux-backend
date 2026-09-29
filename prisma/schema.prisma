@@ -379,10 +379,6 @@ model ApiKey {
   /// Last 4 characters of the key for identification
   lastFour        String
 
-  /// Network scope derived from key prefix: MAINNET for mux_live_ keys,
-  /// TESTNET for mux_test_ keys.  Used for network-mismatch enforcement (#977).
-  network         String?
-
   /// Project reference
   projectId       String
   project         Project      @relation(fields: [projectId], references: [id], onDelete: Cascade)
