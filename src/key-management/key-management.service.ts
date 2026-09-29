@@ -1,6 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'crypto';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Keypair } from 'stellar-sdk';
 import { StrKeyHelper, StrKeyType } from './utils/strkey.helper';
 
 /**

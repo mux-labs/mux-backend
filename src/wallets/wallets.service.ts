@@ -1,12 +1,18 @@
 import {
+  BadRequestException,
   ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
   OnModuleDestroy,
   Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import {
+  resolveNicknameToStore,
+  WalletNicknameErrorCode,
+} from './wallet-nickname-safety';
 import { PrismaClient } from '../generated/prisma/client';
 import {
   Wallet,
@@ -681,21 +687,35 @@ export class WalletsService implements OnModuleDestroy {
     requestId?: string,
   ): Promise<PublicWallet> {
     const startedAt = Date.now();
+
+    // #958: bound the raw input and resolve it to a storable value *before*
+    // any store read/write. This keeps an oversized or non-string nickname
+    // from reaching Prisma at all.
+    const resolved = resolveNicknameToStore(nickname);
+    if (!resolved.ok) {
+      this.logger.warnWithContext('Rejected wallet nickname input', {
+        operation: 'update_nickname',
+        entityType: 'wallet',
+        entityId: walletId,
+        requestId,
+        outcome: 'rejected',
+        code: resolved.code,
+      });
+      // Network is not known yet (the wallet has not been read), so the
+      // rejection is logged but not counted against a network label.
+      throw new BadRequestException({
+        code: resolved.code,
+        message: resolved.message,
+      });
+    }
+    const nextNickname = resolved.value;
+
     const existing = await this.prisma.wallet.findUnique({
       where: { id: walletId },
     });
     if (!existing) {
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     }
-
-    // Normalize before checking uniqueness so the stored value is exactly what
-    // is verified. An empty/null/whitespace-after-sanitize input clears.
-    const sanitized =
-      nickname === null || nickname === undefined
-        ? null
-        : this.sanitizeNickname(nickname);
-    const nextNickname =
-      sanitized !== null && sanitized.length > 0 ? sanitized : null;
 
     // Per-owner uniqueness: the label must be unique across the non-archived
     // wallets the same user owns (excluding this wallet). Comparison is
@@ -730,13 +750,32 @@ export class WalletsService implements OnModuleDestroy {
       }
     }
 
-    const updated = await this.prisma.wallet.update({
-      where: { id: walletId },
-      data: {
-        nickname: nextNickname,
-        updatedAt: new Date(),
-      },
-    });
+    let updated;
+    try {
+      updated = await this.prisma.wallet.update({
+        where: { id: walletId },
+        data: {
+          nickname: nextNickname,
+          updatedAt: new Date(),
+        },
+      });
+    } catch (err) {
+      // #958 fail-closed: a raw Prisma/driver error can carry connection
+      // strings, table names, or other internals. The caller gets a retryable
+      // 503 with a stable code and no DB detail.
+      this.logger.errorWithContext?.('Wallet nickname store unavailable', {
+        operation: 'update_nickname',
+        entityType: 'wallet',
+        entityId: walletId,
+        requestId,
+        outcome: 'dependency_unavailable',
+        code: WalletNicknameErrorCode.DEPENDENCY_UNAVAILABLE,
+      });
+      throw new ServiceUnavailableException({
+        code: WalletNicknameErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Wallet nickname store is temporarily unavailable',
+      });
+    }
 
     this.logger.logWithContext('Updated wallet nickname', {
       operation: 'update_nickname',
