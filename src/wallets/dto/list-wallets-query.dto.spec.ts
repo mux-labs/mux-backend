@@ -6,11 +6,9 @@ import {
   DEFAULT_WALLET_LIST_LIMIT,
   ListWalletsQueryDto,
   MAX_WALLET_LIST_LIMIT,
-} from './list-wallets-query.dto';
-import {
   clampWalletListLimit,
   clampWalletListOffset,
-} from '../wallets.service';
+} from './list-wallets-query.dto';
 
 /**
  * Runs the DTO through the same transform + validate path as `main.ts`:
