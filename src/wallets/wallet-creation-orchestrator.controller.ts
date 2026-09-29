@@ -1,17 +1,16 @@
 import {
   BadRequestException,
   Body,
-  ConflictException,
   Controller,
   Get,
   Headers,
   HttpCode,
+  HttpException,
   HttpStatus,
   InternalServerErrorException,
   NotFoundException,
   Param,
   Post,
-  ServiceUnavailableException,
   UseGuards,
 } from '@nestjs/common';
 import {
@@ -105,17 +104,11 @@ export class WalletCreationOrchestratorController {
       return await this.walletCreationOrchestrator.createWallet(body);
     } catch (err) {
       // Pass typed client-facing errors through unchanged so the caller keeps
-      // the stable 4xx code rather than receiving an opaque 500.
-      // Pass typed client-facing errors through unchanged so the caller keeps
-      // the stable status/code. This includes 503: a dependency outage is
+      // the stable status/code. That covers 4xx policy refusals — notably the
+      // 429 sponsorship limits (#957) — as well as 503: a dependency outage is
       // retryable, and masking it as a 500 would make the orchestrator give up
       // on a request that would succeed on retry.
-      if (
-        err instanceof NotFoundException ||
-        err instanceof ConflictException ||
-        err instanceof BadRequestException ||
-        err instanceof ServiceUnavailableException
-      ) {
+      if (err instanceof HttpException) {
         throw err;
       }
       if (err instanceof WalletOrchestrationError) {

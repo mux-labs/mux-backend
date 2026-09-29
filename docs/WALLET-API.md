@@ -35,15 +35,15 @@ Related docs:
 The migration `20260828000000_add_payment_wallet_identity` introduces the
 linkage record. Conceptually:
 
-| Field          | Type     | Notes                                              |
-| -------------- | -------- | -------------------------------------------------- |
-| `id`           | uuid     | Primary key.                                       |
-| `identityId`   | uuid     | Owning identity (developer user / account).        |
-| `walletAddress`| string   | Stellar/Soroban address.                           |
-| `chain`        | string   | Chain discriminator (e.g. `stellar`).              |
-| `status`       | enum     | `pending` \| `active` \| `revoked`.                |
-| `createdAt`    | datetime | Creation timestamp.                                |
-| `updatedAt`    | datetime | Last mutation timestamp.                           |
+| Field           | Type     | Notes                                       |
+| --------------- | -------- | ------------------------------------------- |
+| `id`            | uuid     | Primary key.                                |
+| `identityId`    | uuid     | Owning identity (developer user / account). |
+| `walletAddress` | string   | Stellar/Soroban address.                    |
+| `chain`         | string   | Chain discriminator (e.g. `stellar`).       |
+| `status`        | enum     | `pending` \| `active` \| `revoked`.         |
+| `createdAt`     | datetime | Creation timestamp.                         |
+| `updatedAt`     | datetime | Last mutation timestamp.                    |
 
 Uniqueness is enforced on `(identityId, walletAddress, chain)` so that
 concurrent link requests cannot create duplicates.
@@ -55,9 +55,9 @@ the `Payment` model. It is the canonical, server-validated identifier of the
 asset a payment settles in, and it is the source of truth for AA/wallet/payment
 behavior. Clients never choose an unvalidated asset code.
 
-| Field       | Type   | Notes                                                       |
-| ----------- | ------ | ----------------------------------------------------------- |
-| `assetCode` | string | Non-null. Defaults to `XLM` for legacy rows.                |
+| Field       | Type   | Notes                                        |
+| ----------- | ------ | -------------------------------------------- |
+| `assetCode` | string | Non-null. Defaults to `XLM` for legacy rows. |
 
 Rules:
 
@@ -77,24 +77,24 @@ Rules:
 
 ### Asset code error codes
 
-| Code                            | HTTP | Meaning                                        |
-| ------------------------------- | ---- | ---------------------------------------------- |
-| `PAYMENT_ASSET_CODE_INVALID`    | 400  | Missing, malformed, or non-allowlisted code.   |
-| `PAYMENT_ASSET_CODE_IMMUTABLE`  | 409  | Attempt to change `assetCode` after creation.  |
-| `PAYMENT_ASSET_CODE_UNAVAILABLE`| 503  | Asset metadata dependency unavailable.         |
+| Code                             | HTTP | Meaning                                       |
+| -------------------------------- | ---- | --------------------------------------------- |
+| `PAYMENT_ASSET_CODE_INVALID`     | 400  | Missing, malformed, or non-allowlisted code.  |
+| `PAYMENT_ASSET_CODE_IMMUTABLE`   | 409  | Attempt to change `assetCode` after creation. |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE` | 503  | Asset metadata dependency unavailable.        |
 
 ## Authorization model
 
 Payment wallet identity operations are authorized against the following roles.
 All checks are deny-by-default.
 
-| Role       | Can link | Can unlink | Can grant delegate | Can revoke delegate |
-| ---------- | -------- | ---------- | ------------------ | ------------------- |
-| `owner`    | yes      | yes        | yes                | yes                 |
-| `delegate` | no       | no         | no                 | no                  |
-| `guardian` | no       | yes        | no                 | yes                 |
-| API key    | per scope| per scope  | no                 | no                  |
-| JWT        | per role | per role   | per role           | per role            |
+| Role       | Can link  | Can unlink | Can grant delegate | Can revoke delegate |
+| ---------- | --------- | ---------- | ------------------ | ------------------- |
+| `owner`    | yes       | yes        | yes                | yes                 |
+| `delegate` | no        | no         | no                 | no                  |
+| `guardian` | no        | yes        | no                 | yes                 |
+| API key    | per scope | per scope  | no                 | no                  |
+| JWT        | per role  | per role   | per role           | per role            |
 
 Rules:
 
@@ -130,15 +130,15 @@ for tracing. Errors use the stable codes below.
 }
 ```
 
-| Query param | Type | Default | Notes |
-| ----------- | ---- | ------- | ----- |
-| `userId`    | string | — | Restrict to one owner. |
-| `network`   | `TESTNET` \| `MAINNET` | — | Closed enum; see invariant 4. |
-| `status`    | wallet status enum | — | Closed enum. |
-| `includeArchived` | `true` \| `false` | `false` | Archived wallets excluded by default. |
-| `limit`     | integer `1`–`100` | `20` | Hard ceiling. |
-| `offset`    | integer `>= 0` | `0` | |
-| `loadTestMode` | `true` \| `false` | `false` | Synthetic data; `403` in production. |
+| Query param       | Type                   | Default | Notes                                 |
+| ----------------- | ---------------------- | ------- | ------------------------------------- |
+| `userId`          | string                 | —       | Restrict to one owner.                |
+| `network`         | `TESTNET` \| `MAINNET` | —       | Closed enum; see invariant 4.         |
+| `status`          | wallet status enum     | —       | Closed enum.                          |
+| `includeArchived` | `true` \| `false`      | `false` | Archived wallets excluded by default. |
+| `limit`           | integer `1`–`100`      | `20`    | Hard ceiling.                         |
+| `offset`          | integer `>= 0`         | `0`     |                                       |
+| `loadTestMode`    | `true` \| `false`      | `false` | Synthetic data; `403` in production.  |
 
 ### Listing invariants
 
@@ -194,7 +194,6 @@ Behavior:
 
 - Requires `owner` or `guardian` role.
 - Idempotent: unlinking an already-revoked linkage returns `200`.
-
 
 Request:
 
@@ -279,20 +278,91 @@ Behavior:
 
 ## Error codes
 
-| Code                          | HTTP | Meaning                                          |
-| ----------------------------- | ---- | ------------------------------------------------ |
-| `WALLET_IDENTITY_INVALID`     | 400  | Malformed identity or wallet address.            |
-| `WALLET_IDENTITY_UNAUTHORIZED`| 401  | Missing or expired auth.                         |
-| `WALLET_IDENTITY_FORBIDDEN`   | 403  | Wrong role or revoked delegate.                  |
-| `WALLET_IDENTITY_CONFLICT`    | 409  | Linkage exists with conflicting state.           |
-| `WALLET_IDENTITY_UNAVAILABLE` | 503  | Dependency (DB/RPC/Horizon) unavailable.         |
-| `WALLET_IDENTITY_RATE_LIMITED`| 429  | Rate limit exceeded.                             |
-| `PAYMENT_ASSET_CODE_INVALID`  | 400  | Missing, malformed, or non-allowlisted code.     |
-| `PAYMENT_ASSET_CODE_IMMUTABLE`| 409  | Attempt to change `assetCode` after creation.    |
-| `PAYMENT_ASSET_CODE_UNAVAILABLE`| 503 | Asset metadata dependency unavailable.          |
+| Code                                        | HTTP | Meaning                                                               |
+| ------------------------------------------- | ---- | --------------------------------------------------------------------- |
+| `WALLET_IDENTITY_INVALID`                   | 400  | Malformed identity or wallet address.                                 |
+| `WALLET_IDENTITY_UNAUTHORIZED`              | 401  | Missing or expired auth.                                              |
+| `WALLET_IDENTITY_FORBIDDEN`                 | 403  | Wrong role or revoked delegate.                                       |
+| `WALLET_IDENTITY_CONFLICT`                  | 409  | Linkage exists with conflicting state.                                |
+| `WALLET_IDENTITY_UNAVAILABLE`               | 503  | Dependency (DB/RPC/Horizon) unavailable.                              |
+| `WALLET_IDENTITY_RATE_LIMITED`              | 429  | Rate limit exceeded.                                                  |
+| `PAYMENT_ASSET_CODE_INVALID`                | 400  | Missing, malformed, or non-allowlisted code.                          |
+| `PAYMENT_ASSET_CODE_IMMUTABLE`              | 409  | Attempt to change `assetCode` after creation.                         |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE`            | 503  | Asset metadata dependency unavailable.                                |
+| `WALLET_SPONSORSHIP_PER_USER_LIMIT_REACHED` | 429  | Caller's sponsored-wallet allowance for the window is exhausted.      |
+| `WALLET_SPONSORSHIP_GLOBAL_LIMIT_REACHED`   | 429  | Deployment-wide sponsored-wallet allowance exhausted.                 |
+| `WALLET_SPONSORSHIP_DISABLED`               | 429  | Sponsored creation switched off (`WALLET_SPONSORSHIP_ENABLED=false`). |
+| `WALLET_SPONSORSHIP_DEPENDENCY_UNAVAILABLE` | 429  | Usage could not be attributed to a user, so the request is refused.   |
 
 All error responses include `correlationId` and never include secrets or raw
 key material.
+
+## Sponsored wallet creation limits (#957)
+
+Wallet creation spends sponsor resources: the base-reserve XLM the sponsor
+fronts, plus the transaction fee. Without a cap, one caller can loop create
+requests and drain the sponsor account — a money-path availability incident,
+not a nuisance error.
+
+`WalletCreationOrchestrator.createWallet` calls
+`WalletSponsorshipLimiter.assertWithinLimits(userId)` before generating key
+material or persisting anything, so a refused request spends nothing.
+
+### Ordering guarantees
+
+The cap is checked **after** the idempotency-replay and existing-wallet
+checks, and **before** any persistence. This ordering is load-bearing:
+
+- A replayed idempotency key, or a get-or-create that returns the user's
+  existing wallet, does **not** consume an allowance slot. If it did, a retried
+  request would exhaust a user's quota without creating anything.
+- A refused request mints nothing, so the allowance and the wallet set stay
+  consistent.
+- Reads never spend. `getWalletByUser` and `validateUserCanCreateWallet` do not
+  touch the limiter at all.
+
+`assertWithinLimits` checks and consumes in one step, so two concurrent callers
+cannot both observe "one slot left" and both take it.
+
+### Configuration
+
+| Variable                                | Default          | Meaning                                                                 |
+| --------------------------------------- | ---------------- | ----------------------------------------------------------------------- |
+| `WALLET_SPONSORSHIP_ENABLED`            | `true`           | Kill-switch. `false`/`0`/`off`/`no` refuses **all** sponsored creation. |
+| `WALLET_MAX_SPONSORED_WALLETS_PER_USER` | `5`              | Sponsored creations per user per window.                                |
+| `WALLET_MAX_SPONSORED_WALLETS_GLOBAL`   | `1000`           | Deployment-wide cap per window.                                         |
+| `WALLET_SPONSORSHIP_WINDOW_MS`          | `86400000` (24h) | Accounting window.                                                      |
+
+Every cap is **fail-closed on bad input**: an unparsable, zero, or negative
+value falls back to the default rather than widening the allowance, and
+unset means "default caps", never "no caps". There is no value of the
+kill-switch that removes the caps while continuing to sponsor.
+
+### Operator notes
+
+- **Refusals are 429, not 500.** A refused cap is a policy decision with a
+  stable code; clients should back off until the window rolls rather than
+  retry immediately. The controller passes the orchestrator's `HttpException`
+  through unchanged, so the client sees the 429 and never a masked 500.
+- **Counting is per replica.** Usage is held in memory, so a multi-replica
+  deployment enforces the cap per replica rather than fleet-wide. A durable,
+  exactly-once counter needs a shared store and is deliberately out of scope;
+  this is documented rather than papered over.
+- **The window rolls forward.** After the window elapses, usage resets, so a
+  long outage does not permanently block wallet creation.
+
+### Test coverage
+
+| Spec                                            | Covers                                                                                                                                    |
+| ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `wallet-sponsorship-limits.spec.ts`             | Limiter arithmetic in isolation (defaults, windowing, bad input).                                                                         |
+| `wallet-sponsorship-limits.enforcement.spec.ts` | That `createWallet` actually calls the limiter: cap reached, stable code, 429 status, kill-switch, and that a replay spends no allowance. |
+| `test/wallet-orchestration.e2e-spec.ts`         | That the 429 reaches the client with its stable code instead of being masked as a 500.                                                    |
+
+Both unit specs are required in CI. The limiter unit spec passes even when
+nothing calls the limiter, which is precisely how this control was silently
+disabled once already — see the history of
+`wallet-creation-orchestrator.service.ts`.
 
 ## Idempotency and concurrency
 
@@ -301,7 +371,7 @@ key material.
 - **Wallet creation is retry-safe.** `POST /v1/wallets/orchestration/create`
   never mints a second custody key for the same user, because two keys means
   funds stranded on an orphaned address. Three independent guards enforce this:
-  1. **Key replay** — a completed `idempotencyKey` returns the *original*
+  1. **Key replay** — a completed `idempotencyKey` returns the _original_
      result verbatim (same wallet id, same `isNewWallet`, same `createdAt`),
      so a retry after a dropped response is a no-op. Reusing a key for a
      different `userId`/`network` is a `409`
@@ -333,16 +403,16 @@ key material.
 
 ## Failure modes
 
-| Failure                     | Behavior                                              |
-| --------------------------- | ----------------------------------------------------- |
-| DB outage                   | Writes fail `503 WALLET_IDENTITY_UNAVAILABLE`.        |
-| RPC/Horizon outage          | Writes fail closed; no partial linkage.               |
-| Asset metadata outage       | Writes fail `503 PAYMENT_ASSET_CODE_UNAVAILABLE`.     |
-| Auth expiry                 | `401 WALLET_IDENTITY_UNAUTHORIZED`.                   |
-| Wrong role / revoked delegate| `403 WALLET_IDENTITY_FORBIDDEN`.                     |
-| Oversized batch             | Rejected `400`; batch size capped.                    |
-| Spoofed webhook             | Rejected; signature verified before processing.       |
-| Testnet vs mainnet misconfig| Rejected; chain and network must match configuration. |
+| Failure                       | Behavior                                              |
+| ----------------------------- | ----------------------------------------------------- |
+| DB outage                     | Writes fail `503 WALLET_IDENTITY_UNAVAILABLE`.        |
+| RPC/Horizon outage            | Writes fail closed; no partial linkage.               |
+| Asset metadata outage         | Writes fail `503 PAYMENT_ASSET_CODE_UNAVAILABLE`.     |
+| Auth expiry                   | `401 WALLET_IDENTITY_UNAUTHORIZED`.                   |
+| Wrong role / revoked delegate | `403 WALLET_IDENTITY_FORBIDDEN`.                      |
+| Oversized batch               | Rejected `400`; batch size capped.                    |
+| Spoofed webhook               | Rejected; signature verified before processing.       |
+| Testnet vs mainnet misconfig  | Rejected; chain and network must match configuration. |
 
 ## Observability
 
@@ -375,7 +445,7 @@ wallet's behalf.
 ### Invariants
 
 1. **The backend orchestrates; the client requests.** A client supplies an
-   intent — an allowlisted contract *name*, a function, and arguments. The
+   intent — an allowlisted contract _name_, a function, and arguments. The
    server resolves the contract id, bounds-checks the arguments, simulates, and
    signs with the custody key. A client can never supply a contract id or a
    pre-signed transaction.
@@ -407,39 +477,39 @@ wallet's behalf.
 All routes require an API key (`ApiKeyGuard`, deny-by-default). Invoking
 additionally requires `SOROBAN_INVOKE_ENABLED=true`.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET`  | `/v1/soroban/contracts?network=…` | Allowlisted functions usable on a network. |
-| `POST` | `/v1/soroban/invoke` | Orchestrate a contract call. Body: `{ contract, functionName, args, network, simulateOnly?, maxFee? }`. |
+| Method | Path                              | Description                                                                                             |
+| ------ | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/soroban/contracts?network=…` | Allowlisted functions usable on a network.                                                              |
+| `POST` | `/v1/soroban/invoke`              | Orchestrate a contract call. Body: `{ contract, functionName, args, network, simulateOnly?, maxFee? }`. |
 
 ### Error codes
 
-| Code | Status | Meaning |
-|------|--------|---------|
-| `SOROBAN_INVOKE_INVALID_INPUT` | 400 | Malformed contract, function, args, or fee. |
-| `SOROBAN_ARGUMENT_MISMATCH` | 400 | Arity or per-argument type does not match the signature. |
-| `SOROBAN_FEE_TOO_LOW` | 400 | `maxFee` is below the server floor. |
-| `SOROBAN_CONTRACT_NOT_ALLOWED` | 403 | Contract is not in the allowlist. |
-| `SOROBAN_FUNCTION_NOT_ALLOWED` | 403 | Function is not allowlisted on that contract. |
-| `SOROBAN_FUNCTION_NOT_ENABLED` | 403 | Function is not enabled on the requested network. |
-| `SOROBAN_INSUFFICIENT_ROLE` | 403 | Role may not invoke contracts. |
-| `SOROBAN_REQUEST_TOO_LARGE` | 413 | Too many arguments, or the payload exceeds the size budget. |
-| `SOROBAN_INVOKE_DISABLED` | 503 | `SOROBAN_INVOKE_ENABLED` is not `true`. |
-| `SOROBAN_RPC_UNAVAILABLE` | 503 | Soroban RPC or contract registry unavailable; the invoke is refused. |
+| Code                           | Status | Meaning                                                              |
+| ------------------------------ | ------ | -------------------------------------------------------------------- |
+| `SOROBAN_INVOKE_INVALID_INPUT` | 400    | Malformed contract, function, args, or fee.                          |
+| `SOROBAN_ARGUMENT_MISMATCH`    | 400    | Arity or per-argument type does not match the signature.             |
+| `SOROBAN_FEE_TOO_LOW`          | 400    | `maxFee` is below the server floor.                                  |
+| `SOROBAN_CONTRACT_NOT_ALLOWED` | 403    | Contract is not in the allowlist.                                    |
+| `SOROBAN_FUNCTION_NOT_ALLOWED` | 403    | Function is not allowlisted on that contract.                        |
+| `SOROBAN_FUNCTION_NOT_ENABLED` | 403    | Function is not enabled on the requested network.                    |
+| `SOROBAN_INSUFFICIENT_ROLE`    | 403    | Role may not invoke contracts.                                       |
+| `SOROBAN_REQUEST_TOO_LARGE`    | 413    | Too many arguments, or the payload exceeds the size budget.          |
+| `SOROBAN_INVOKE_DISABLED`      | 503    | `SOROBAN_INVOKE_ENABLED` is not `true`.                              |
+| `SOROBAN_RPC_UNAVAILABLE`      | 503    | Soroban RPC or contract registry unavailable; the invoke is refused. |
 
 A simulated revert is **not** an HTTP error: it returns `status: "FAILED"` with
 `errorCode: "SOROBAN_SIMULATION_REVERTED"` and `200`, because the request was
-well-formed and the *simulation* reported the failure.
+well-formed and the _simulation_ reported the failure.
 
 ### Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SOROBAN_INVOKE_ENABLED` | `false` | Kill-switch for all invokes. Only `true`/`1` enables. |
-| `MAX_INVOKE_ARGS` | `16` | Maximum arguments per invoke. |
-| `MAX_INVOKE_ARG_BYTES` | `8192` | Maximum serialized argument size. |
-| `MIN_INVOKE_FEE_STROOPS` | `100` | Server fee floor. |
-| `MAX_INVOKE_FEE_STROOPS` | `1000000` | Server fee ceiling. |
+| Variable                 | Default   | Description                                           |
+| ------------------------ | --------- | ----------------------------------------------------- |
+| `SOROBAN_INVOKE_ENABLED` | `false`   | Kill-switch for all invokes. Only `true`/`1` enables. |
+| `MAX_INVOKE_ARGS`        | `16`      | Maximum arguments per invoke.                         |
+| `MAX_INVOKE_ARG_BYTES`   | `8192`    | Maximum serialized argument size.                     |
+| `MIN_INVOKE_FEE_STROOPS` | `100`     | Server fee floor.                                     |
+| `MAX_INVOKE_FEE_STROOPS` | `1000000` | Server fee ceiling.                                   |
 
 ### Port bindings
 
@@ -501,7 +571,7 @@ this document.
    different amount than the user asked for.
 6. **Fail-closed on the flag.** Credit-asset writes require
    `MULTI_ASSET_PAYMENTS_ENABLED`. Native XLM is unaffected: the flag gates
-   *new* asset exposure and must not break the existing money path.
+   _new_ asset exposure and must not break the existing money path.
 7. **Code length fits the type.** `CREDIT_ALPHANUM4` takes 1-4 characters and
    `CREDIT_ALPHANUM12` takes 5-12; a mismatch is
    `PAYMENT_ASSET_CODE_LENGTH_INVALID`, because such a payment could never
@@ -509,16 +579,16 @@ this document.
 
 ### Error codes
 
-| Code | Status | Meaning |
-|------|--------|---------|
-| `PAYMENT_ASSET_INVALID_INPUT` | 400 | Malformed asset code, or an issuer with no code. |
-| `PAYMENT_ASSET_UNKNOWN` | 400 | Asset code is not in the matrix. |
-| `PAYMENT_ASSET_ISSUER_MISMATCH` | 400 | Issuer is absent or not recognised for the code. |
-| `PAYMENT_ASSET_NOT_ENABLED` | 400 | Asset is not enabled on the requested network. |
-| `PAYMENT_ASSET_CODE_LENGTH_INVALID` | 400 | Code length does not fit the declared asset type. |
-| `PAYMENT_AMOUNT_INVALID` | 400 | Amount is non-positive, non-numeric, or over-precise. |
-| `PAYMENT_MULTI_ASSET_DISABLED` | 503 | `MULTI_ASSET_PAYMENTS_ENABLED` is not `true`. |
-| `PAYMENT_ASSET_CODE_UNAVAILABLE` | 503 | Asset metadata unavailable; the write is refused. |
+| Code                                | Status | Meaning                                               |
+| ----------------------------------- | ------ | ----------------------------------------------------- |
+| `PAYMENT_ASSET_INVALID_INPUT`       | 400    | Malformed asset code, or an issuer with no code.      |
+| `PAYMENT_ASSET_UNKNOWN`             | 400    | Asset code is not in the matrix.                      |
+| `PAYMENT_ASSET_ISSUER_MISMATCH`     | 400    | Issuer is absent or not recognised for the code.      |
+| `PAYMENT_ASSET_NOT_ENABLED`         | 400    | Asset is not enabled on the requested network.        |
+| `PAYMENT_ASSET_CODE_LENGTH_INVALID` | 400    | Code length does not fit the declared asset type.     |
+| `PAYMENT_AMOUNT_INVALID`            | 400    | Amount is non-positive, non-numeric, or over-precise. |
+| `PAYMENT_MULTI_ASSET_DISABLED`      | 503    | `MULTI_ASSET_PAYMENTS_ENABLED` is not `true`.         |
+| `PAYMENT_ASSET_CODE_UNAVAILABLE`    | 503    | Asset metadata unavailable; the write is refused.     |
 
 ### Adding an asset
 
@@ -551,10 +621,10 @@ flags any disagreement between the indexed value and the on-chain value.
 ### Invariants
 
 1. **Horizon is the source of truth for on-chain balances.** The index is a
-   cache. Reconciliation *records* a discrepancy (`syncStatus = MISMATCH`,
+   cache. Reconciliation _records_ a discrepancy (`syncStatus = MISMATCH`,
    `onChainBalance`); it never overwrites the indexed balance. An operator
    decides which side is correct.
-2. **Fail-closed on dependency outage.** If Horizon or the balance 
+2. **Fail-closed on dependency outage.** If Horizon or the balance
 
 `BalanceIndexerService` keeps the `WalletBalance` index in sync with Horizon and
 flags any disagreement between the indexed value and the on-chain value.
@@ -562,7 +632,7 @@ flags any disagreement between the indexed value and the on-chain value.
 ### Invariants
 
 1. **Horizon is the source of truth for on-chain balances.** The index is a
-   cache. Reconciliation *records* a discrepancy (`syncStatus = MISMATCH`,
+   cache. Reconciliation _records_ a discrepancy (`syncStatus = MISMATCH`,
    `onChainBalance`); it never overwrites the indexed balance. An operator
    decides which side is correct.
 2. **Fail-closed on dependency outage.** If Horizon or the balance store is
@@ -585,7 +655,7 @@ flags any disagreement between the indexed value and the on-chain value.
 6. **Bounded sweeps.** `sync-all` / `reconcile-all` refuse to run over more than
    `MAX_SWEEP_WALLETS` (500) wallets, returning
    `413 BALANCE_BATCH_TOO_LARGE` rather than silently truncating.
-7. **Server-side wallet resolution.** Callers supply a wallet *id*; the on-chain
+7. **Server-side wallet resolution.** Callers supply a wallet _id_; the on-chain
    account is always read from the stored `publicKey`, so a caller cannot point
    the indexer at an account of their choosing.
 
@@ -594,35 +664,35 @@ flags any disagreement between the indexed value and the on-chain value.
 All routes require an API key (`ApiKeyGuard`, deny-by-default). Mutating routes
 additionally require `BALANCE_SYNC_ENABLED=true`.
 
-| Method | Path | Description |
-|--------|------|-------------|
-| `GET`  | `/v1/balances/wallet/:walletId` | Cached balances. Scope with `?assetType=NATIVE&assetCode=…&assetIssuer=…`. |
-| `GET`  | `/v1/balances/wallet/:walletId/stale` | Balances not refreshed within the staleness budget. |
-| `POST` | `/v1/balances/wallet/:walletId/sync` | Refresh one wallet. Body: `{ forceRefresh?: boolean }`. |
+| Method | Path                                            | Description                                                                                             |
+| ------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `GET`  | `/v1/balances/wallet/:walletId`                 | Cached balances. Scope with `?assetType=NATIVE&assetCode=…&assetIssuer=…`.                              |
+| `GET`  | `/v1/balances/wallet/:walletId/stale`           | Balances not refreshed within the staleness budget.                                                     |
+| `POST` | `/v1/balances/wallet/:walletId/sync`            | Refresh one wallet. Body: `{ forceRefresh?: boolean }`.                                                 |
 | `POST` | `/v1/balances/wallet/:walletId/sync-with-retry` | As `sync`, with bounded backoff on transient failures. Body: `{ forceRefresh?, maxAttempts? }` (max 5). |
-| `POST` | `/v1/balances/wallet/:walletId/reconcile` | Reconcile one asset. Body: `{ assetType, assetCode?, assetIssuer? }`. |
-| `POST` | `/v1/balances/sync-all` | Refresh every active wallet. |
-| `POST` | `/v1/balances/reconcile-all` | Reconcile every active wallet. |
-| `POST` | `/v1/balances/scheduled-sync` | Manually trigger the scheduled sweep. |
+| `POST` | `/v1/balances/wallet/:walletId/reconcile`       | Reconcile one asset. Body: `{ assetType, assetCode?, assetIssuer? }`.                                   |
+| `POST` | `/v1/balances/sync-all`                         | Refresh every active wallet.                                                                            |
+| `POST` | `/v1/balances/reconcile-all`                    | Reconcile every active wallet.                                                                          |
+| `POST` | `/v1/balances/scheduled-sync`                   | Manually trigger the scheduled sweep.                                                                   |
 
 ### Error codes
 
-| Code | Status | Meaning |
-|------|--------|---------|
-| `BALANCE_INVALID_INPUT` | 400 | `walletId` failed validation (length/character set). |
-| `BALANCE_WALLET_NOT_FOUND` | 404 | No wallet with that id. |
-| `BALANCE_DEPENDENCY_UNAVAILABLE` | 503 | Horizon or the balance store is unavailable; **no write applied**. |
-| `BALANCE_FEATURE_FLAG_DISABLED` | 503 | `BALANCE_SYNC_ENABLED` is not `true`. |
-| `BALANCE_BATCH_TOO_LARGE` | 413 | Sweep exceeds `MAX_SWEEP_WALLETS`. |
+| Code                             | Status | Meaning                                                            |
+| -------------------------------- | ------ | ------------------------------------------------------------------ |
+| `BALANCE_INVALID_INPUT`          | 400    | `walletId` failed validation (length/character set).               |
+| `BALANCE_WALLET_NOT_FOUND`       | 404    | No wallet with that id.                                            |
+| `BALANCE_DEPENDENCY_UNAVAILABLE` | 503    | Horizon or the balance store is unavailable; **no write applied**. |
+| `BALANCE_FEATURE_FLAG_DISABLED`  | 503    | `BALANCE_SYNC_ENABLED` is not `true`.                              |
+| `BALANCE_BATCH_TOO_LARGE`        | 413    | Sweep exceeds `MAX_SWEEP_WALLETS`.                                 |
 
 ### Configuration
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `BALANCE_SYNC_ENABLED` | `false` | Kill-switch for all balance writes. Only `true`/`1` enables. |
-| `BALANCE_STALE_THRESHOLD_MS` | `300000` | How long a balance may go unrefreshed before it is reported stale. |
-| `STELLAR_HORIZON_TESTNET_URL` | Horizon testnet | Base URL for testnet reads. |
-| `STELLAR_HORIZON_MAINNET_URL` | — | Required when `STELLAR_NETWORK=mainnet`; the client throws rather than falling back. |
+| Variable                      | Default         | Description                                                                          |
+| ----------------------------- | --------------- | ------------------------------------------------------------------------------------ |
+| `BALANCE_SYNC_ENABLED`        | `false`         | Kill-switch for all balance writes. Only `true`/`1` enables.                         |
+| `BALANCE_STALE_THRESHOLD_MS`  | `300000`        | How long a balance may go unrefreshed before it is reported stale.                   |
+| `STELLAR_HORIZON_TESTNET_URL` | Horizon testnet | Base URL for testnet reads.                                                          |
+| `STELLAR_HORIZON_MAINNET_URL` | —               | Required when `STELLAR_NETWORK=mainnet`; the client throws rather than falling back. |
 
 An unknown `STELLAR_NETWORK` makes the Horizon client throw, so a misconfigured
 deploy cannot reconcile against the wrong chain.
@@ -658,6 +728,7 @@ rejecting a `BalanceStore` method; both must surface
 `BALANCE_DEPENDENCY_UNAVAILABLE` with no write applied.
 
 ## Contributor checklist (Stellar Wave)
+
 - [ ] Read this document and the custody security model before changing
       linkage or asset code code.
 - [ ] Add unit tests for invariants and auth negatives, including asset code
