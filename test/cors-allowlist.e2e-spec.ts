@@ -104,6 +104,34 @@ describe('CORS allowlist over HTTP (e2e, #934)', () => {
     expect(res.headers['access-control-allow-origin']).toBeUndefined();
   });
 
+  it('does not turn a refused origin into a 5xx', async () => {
+    // A disallowed browser origin is an expected policy outcome, not a server
+    // fault. Refusing via the origin callback's `Error` argument made `cors`
+    // short-circuit into a 500, which burns error budget and pages an operator
+    // for traffic the allowlist is supposed to turn away. The request is served
+    // normally and the denial stays in the CORS layer (no ACAO header).
+    const res = await request(app.getHttpServer())
+      .get('/probe/ok')
+      .set('Origin', 'https://evil.com')
+      .expect(200);
+
+    expect(res.status).toBeLessThan(500);
+    expect(res.body).toEqual({ ok: true });
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
+  it('does not turn a refused preflight into a 5xx', async () => {
+    // Same guarantee on the preflight path, which is where a browser actually
+    // discovers the refusal.
+    const res = await request(app.getHttpServer())
+      .options('/probe/ok')
+      .set('Origin', 'https://evil.com')
+      .set('Access-Control-Request-Method', 'POST');
+
+    expect(res.status).toBeLessThan(500);
+    expect(res.headers['access-control-allow-origin']).toBeUndefined();
+  });
+
   it('refuses a subdomain lookalike of an allowlisted origin', async () => {
     const res = await request(app.getHttpServer())
       .get('/probe/ok')

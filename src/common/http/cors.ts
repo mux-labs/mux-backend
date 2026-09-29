@@ -144,9 +144,22 @@ export function buildCorsOptions(rawAllowlist: readonly string[]): CorsOptions {
   const allowlist = allowed.map(normalizeOrigin);
 
   return {
-    // Exact-match only. A disallowed origin is refused with an error, which
-    // Nest/cors turns into a 500 with no CORS headers — the browser then blocks
-    // the response. We never echo a partial or wildcard origin back.
+    // Exact-match only. A disallowed origin is refused by calling back with
+    // `(null, false)`: the `cors` package then omits `Access-Control-Allow-Origin`
+    // entirely, so the browser blocks the response, and the request itself is
+    // served normally.
+    //
+    // Passing an `Error` to the callback instead would make `cors` short-circuit
+    // into `next(err)`, which Nest surfaces as a **500**. That is wrong here:
+    // a browser preflight from an un-allowlisted origin is an ordinary, expected
+    // event, not a server fault. Reporting it as a 5xx pollutes error budgets
+    // and page an operator for traffic the policy is *supposed* to refuse. It
+    // also fails the request before the handler runs, so a non-browser client
+    // that happens to send a disallowed `Origin` would lose a working call over
+    // a response header. Refusing without error keeps the denial purely in the
+    // CORS layer, where it belongs.
+    //
+    // We never echo a partial or wildcard origin back.
     origin: (
       origin: string | undefined,
       callback: (err: Error | null, allow?: boolean) => void,
@@ -155,7 +168,7 @@ export function buildCorsOptions(rawAllowlist: readonly string[]): CorsOptions {
         callback(null, true);
         return;
       }
-      callback(new Error('Origin not allowed by CORS policy'), false);
+      callback(null, false);
     },
     credentials: true,
     methods: [...CORS_METHODS],

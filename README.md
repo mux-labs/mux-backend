@@ -729,6 +729,12 @@ Browser clients must be allowlisted via the `CORS_ORIGINS` environment variable
 - **Scheme and port are part of the identity.** `http://app.mux.finance` and
   `https://app.mux.finance:8443` are different origins and are not admitted by
   an `https://app.mux.finance` entry.
+- **A refusal is not an error.** A request from a non-allowlisted origin is
+  served normally but carries **no** `Access-Control-Allow-Origin` header, so
+  the browser blocks it. The response is not a `5xx`: a blocked preflight is an
+  expected policy outcome, and reporting it as a server fault would burn error
+  budget and page an operator for traffic the allowlist is meant to turn away.
+  Authentication is unaffected — it is enforced by `ApiKeyGuard`, not by CORS.
 
 #### `GET /internal/cors-allowlist`
 

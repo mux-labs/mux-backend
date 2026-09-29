@@ -13,7 +13,6 @@ import {
   ServiceUnavailableException,
   ValidationPipe,
 } from '@nestjs/common';
-import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import request from 'supertest';
 import { HealthCheckService, PrismaHealthIndicator } from '@nestjs/terminus';
