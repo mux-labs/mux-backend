@@ -109,6 +109,30 @@ of a guess was correct.
 
 ---
 
+## Observability
+
+Every verification of the admin secret increments a counter keyed by the stable
+reason code, so an unfinished rotation or a credential probe is visible without
+reading logs:
+
+| Counter                                | Meaning                                              |
+|----------------------------------------|------------------------------------------------------|
+| `maintenanceSecretVerify_OK`            | Authorized with the current secret                    |
+| `maintenanceSecretVerify_OK_PREVIOUS`   | Authorized with the previous secret — **rotation still in progress**; complete it |
+| `maintenanceSecretVerify_MISMATCH`      | A value was presented and matched nothing — a probe or a stale operator |
+| `maintenanceSecretVerify_MISSING`       | No `X-Maintenance-Secret` header was presented        |
+| `maintenanceSecretVerify_NOT_CONFIGURED`| No secret is configured — deny-by-default             |
+
+The label is always one of these fixed values, so a counter can never carry
+secret material. Alert on a sustained `MISMATCH` rate (someone is guessing) and
+on any `OK_PREVIOUS` that outlives the intended window (the rotation was not
+finished).
+
+The metrics service is an optional dependency of the guard: if it is not
+wired, authorization decisions are unchanged — only the counters are absent.
+
+---
+
 ## Failure modes
 
 | Situation                                  | Behavior                                            | Operator action                                                  |

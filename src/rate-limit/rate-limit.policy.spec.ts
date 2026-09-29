@@ -1,4 +1,5 @@
 import {
+  MAX_DEFAULT_RATE_LIMIT_RPM,
   RATE_LIMIT_TIER_DEFAULTS,
   RATE_LIMIT_TIERS,
   RATE_LIMITED_ERROR_CODE,
@@ -145,6 +146,75 @@ describe('rate-limit policy (#926)', () => {
       });
 
       expect(policy.limit).toBe(42);
+    });
+
+    it('does not let a payments override move the default tier', () => {
+      // Regression: `default` used to read PAYMENT_RATE_LIMIT_*, so loosening
+      // the money path silently loosened every other route on the API.
+      const raised = resolveRateLimitPolicy('default', {
+        PAYMENT_RATE_LIMIT_MAX: '100000',
+      });
+      const auth = resolveRateLimitPolicy('auth', {
+        PAYMENT_RATE_LIMIT_MAX: '100000',
+      });
+      const payments = resolveRateLimitPolicy('payments', {
+        PAYMENT_RATE_LIMIT_MAX: '100000',
+      });
+
+      expect(raised.limit).toBe(RATE_LIMIT_TIER_DEFAULTS.default.limit);
+      // The strict tiers keep their own (tighter) ceilings: a payments override
+      // may not lift `auth` to 600, nor may it lift `payments` past the
+      // default ceiling.
+      expect(auth.limit).toBe(RATE_LIMIT_TIER_DEFAULTS.auth.limit);
+      expect(payments.limit).toBe(RATE_LIMIT_TIER_DEFAULTS.default.limit);
+    });
+
+    it('does not let an auth override move the default tier', () => {
+      const policy = resolveRateLimitPolicy('default', {
+        AUTH_RATE_LIMIT_MAX: '99999',
+      });
+      expect(policy.limit).toBe(RATE_LIMIT_TIER_DEFAULTS.default.limit);
+    });
+
+    it('honours an explicit default override within the hard ceiling', () => {
+      const policy = resolveRateLimitPolicy('default', {
+        DEFAULT_RATE_LIMIT_MAX: '1200',
+        DEFAULT_RATE_LIMIT_WINDOW_MS: '30000',
+      });
+
+      expect(policy.limit).toBe(1200);
+      expect(policy.windowMs).toBe(30_000);
+    });
+
+    it('clamps the default override so it can never express "unlimited"', () => {
+      const policy = resolveRateLimitPolicy('default', {
+        DEFAULT_RATE_LIMIT_MAX: '1000000',
+      });
+      expect(policy.limit).toBe(MAX_DEFAULT_RATE_LIMIT_RPM);
+    });
+
+    it('clamps strict tiers to the *resolved* default ceiling, not the built-in', () => {
+      // Lowering the ceiling must lower the tiers measured against it, and
+      // raising it (within the hard ceiling) must let them follow it up.
+      const tightened = resolveRateLimitPolicy('payments', {
+        DEFAULT_RATE_LIMIT_MAX: '20',
+        PAYMENT_RATE_LIMIT_MAX: '1000',
+      });
+      expect(tightened.limit).toBe(20);
+
+      const raised = resolveRateLimitPolicy('payments', {
+        DEFAULT_RATE_LIMIT_MAX: '900',
+        PAYMENT_RATE_LIMIT_MAX: '1000',
+      });
+      expect(raised.limit).toBe(900);
+    });
+
+    it('never lets a strict tier exceed the hard default ceiling', () => {
+      const policy = resolveRateLimitPolicy('auth', {
+        DEFAULT_RATE_LIMIT_MAX: '1000000',
+        AUTH_RATE_LIMIT_MAX: '1000000',
+      });
+      expect(policy.limit).toBe(MAX_DEFAULT_RATE_LIMIT_RPM);
     });
   });
 

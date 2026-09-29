@@ -91,6 +91,9 @@ export class SeedNotAllowedError extends Error {
  * Strict boolean parse. Unlike the permissive `parseBoolean` used for feature
  * flags, an unrecognized value here is an **error** — a typo in
  * `PRISMA_SEED_ALLOW_NON_LOCAL=treu` must not silently disable the gate.
+ * Returns `false` for an absent flag (meaning "off") and throws
+ * {@link SeedNotAllowedError} with {@link SEED_BLOCK_CODES.INVALID_FLAG} for a
+ * value that is present but not a recognized boolean.
  */
 function readStrictBoolean(env: NodeJS.ProcessEnv, key: string): boolean {
   const raw = env[key];
@@ -158,25 +161,54 @@ export function isLocalDatabaseHost(host: string | undefined): boolean {
 /**
  * Pure preflight evaluation. Exported separately from {@link assertSeedAllowed}
  * so it can be unit-tested and reused by CI checks without side effects.
+ *
+ * Order matters, and it is deliberate:
+ *
+ * 1. **The non-overridable blocks are evaluated first.** `NODE_ENV=production`
+ *    and a mainnet `STELLAR_NETWORK` are reported by their own stable codes
+ *    regardless of any flag. A flag typo therefore cannot mask the single most
+ *    important refusal an operator needs to see.
+ * 2. **Then the flags are parsed strictly.** A malformed `PRISMA_SEED_*` value
+ *    is returned as {@link SEED_BLOCK_CODES.INVALID_FLAG} rather than thrown,
+ *    so every refusal path — including a typo — is reported through the same
+ *    `SeedPreflight.code` channel. The seed's error handler only knows how to
+ *    print a code, so a refusal it cannot describe is a refusal an operator
+ *    cannot act on.
  */
 export function evaluateSeedPreflight(
   env: NodeJS.ProcessEnv = process.env,
 ): SeedPreflight {
-  const includeMainnet = readStrictBoolean(env, SEED_INCLUDE_MAINNET_ENV);
-  const allowNonLocal = readStrictBoolean(env, SEED_ALLOW_NON_LOCAL_ENV);
-
+  // (1) Blocks that have no override, checked before anything that can throw.
   const nodeEnv = (env.NODE_ENV ?? '').trim().toLowerCase();
   if (nodeEnv === 'production') {
     return {
       allowed: false,
       code: SEED_BLOCK_CODES.PRODUCTION,
-      includeMainnet,
+      includeMainnet: false,
     };
   }
 
   const network = (env.STELLAR_NETWORK ?? '').trim().toUpperCase();
   if (MAINNET_NETWORKS.has(network)) {
-    return { allowed: false, code: SEED_BLOCK_CODES.MAINNET, includeMainnet };
+    return {
+      allowed: false,
+      code: SEED_BLOCK_CODES.MAINNET,
+      includeMainnet: false,
+    };
+  }
+
+  // (2) Strict flag parsing, reported as a code instead of an exception.
+  let includeMainnet = false;
+  let allowNonLocal = false;
+  try {
+    includeMainnet = readStrictBoolean(env, SEED_INCLUDE_MAINNET_ENV);
+    allowNonLocal = readStrictBoolean(env, SEED_ALLOW_NON_LOCAL_ENV);
+  } catch {
+    return {
+      allowed: false,
+      code: SEED_BLOCK_CODES.INVALID_FLAG,
+      includeMainnet: false,
+    };
   }
 
   const host = extractDatabaseHost(env.DATABASE_URL);
