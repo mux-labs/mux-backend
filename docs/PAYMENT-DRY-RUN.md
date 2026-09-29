@@ -20,6 +20,11 @@ payment and only differs at the final commit step.
 
 1. **No side effects**: a dry-run never writes a payment, never debits a wallet,
    and never submits to Stellar/Horizon. It is safe to call repeatedly.
+   Enforced by `PaymentMoneyPathService.execute` in
+   `src/payments/payment-money-path.service.ts`: the submission port
+   (`PAYMENT_SUBMISSION_PORT`) is never referenced on the dry-run path, so a
+   dry-run cannot reach Horizon even when every money-path flag is on. Covered
+   by `src/payments/payment-money-path.service.spec.ts`.
 2. **Same policy as live**: authz (owner/delegate/guardian/API-key/JWT) and
    payload validation are evaluated identically to a live payment. A dry-run
    cannot be used to probe or bypass payment policy.
@@ -32,11 +37,32 @@ payment and only differs at the final commit step.
 
 ### Request contract
 
-- Clients request a dry-run by setting `dry_run: true` on the payment request
-  (or the equivalent `X-Dry-Run: true` header).
+- Clients request a dry-run on `POST /v1/payments` by setting `dry_run: true`
+  in the body, or the equivalent `X-Dry-Run: true` header
+  (`src/payments/payments.controller.ts`). Both spellings are honoured and
+  neither can be turned off once requested.
 - Dry-run requests MUST still carry a valid `Idempotency-Key`; the same key
   rules apply so that a dry-run cannot be replayed as a live write.
+- Keys are scoped to the authenticated principal and the key is **reserved
+  before** any submission, so two concurrent requests can never both submit and
+  a replay returns the original result. The key is stored hashed, and the
+  request body is stored as a sha256 fingerprint.
 - Missing or malformed keys are rejected with a stable typed error code.
+
+### Error codes
+
+Codes are stable and live in the shared envelope
+(`src/common/dto/error-envelope.dto.ts`).
+
+| Code | HTTP | Meaning |
+| --- | --- | --- |
+| `DRY_RUN_DISABLED` | 403 | Alias documented below; the emitted code is `PAYMENT_DRY_RUN_DISABLED`. |
+| `PAYMENT_DRY_RUN_DISABLED` | 403 | `PAYMENT_DRY_RUN_ENABLED` is off (deny-by-default). |
+| `PAYMENT_KILL_SWITCH_ENGAGED` | 403 | `PAYMENT_KILL_SWITCH=true`; no writes at all. |
+| `VALIDATION_FAILED` | 400 | Same validation as a live payment. |
+| `IDEMPOTENCY_KEY_REQUIRED` | 400 | Missing or malformed idempotency key. |
+| `IDEMPOTENCY_CONFLICT` | 409 | Same key, different payload, or key still in flight. |
+| `DEPENDENCY_UNAVAILABLE` | 503 | The idempotency store or RPC/Horizon is down; fail-closed. |
 
 ### Response contract
 
@@ -45,7 +71,7 @@ payment and only differs at the final commit step.
 | Dry-run success | 200 | — | Simulated result; nothing persisted. |
 | Dry-run, invalid payload | 400 | `VALIDATION_FAILED` | Same validation as live. |
 | Dry-run, unauthorized | 401/403 | `AUTH_*` | Policy not bypassable via dry-run. |
-| Dry-run disabled | 403 | `DRY_RUN_DISABLED` | Deny-by-default; flag off. |
+| Dry-run disabled | 403 | `PAYMENT_DRY_RUN_DISABLED` | Deny-by-default; `PAYMENT_DRY_RUN_ENABLED` off. |
 | Dependency unavailable | 503 | `DEPENDENCY_UNAVAILABLE` | Fail-closed; safe to retry. |
 
 All responses include a `correlation_id` for tracing. Correlation ids are
@@ -62,9 +88,14 @@ deny-by-default.
 
 Ops-safe metrics are emitted on the dry-run path:
 
-- `payment_dry_run_total` — dry-run requests by outcome.
-- `payment_dry_run_denied_total` — dry-run rejected by authz or flag.
+- `payments_dry_run_total` — dry-run requests that were simulated.
+- `payment_dry_run_denied_total` — dry-run rejected because the flag is off.
+- `payments_rejected_total` — every refusal on the money path.
+- `payment_idempotency_hit_total` / `payment_idempotency_miss_total` /
+  `payment_idempotency_conflict_total` — idempotency outcomes.
 - `payment_write_failclosed_total` — write rejected due to dependency outage.
+- `payment_idempotency_store_write_failed_total` — a payment was submitted but
+  its idempotency record could not be written (reconcile, never retry blindly).
 
 Logs include `correlation_id`, outcome, and coarse reason only. Keys, JWTs, and
 webhook secrets are redacted.
@@ -150,5 +181,10 @@ duplicate-payment risk.
 
 ## References
 
+- `src/payments/payment-money-path.service.ts` — the gate that enforces every
+  invariant above.
+- `src/payments/payment-money-path.policy.ts` — flag resolution (deny-by-default).
+- `src/payments/prisma-payment-idempotency.store.ts` — reserve/complete/release.
 - `prisma/migrations/20260724010000_add_payment_idempotency_key/`
+- `docs/MAINNET-PAYMENT-FEATURE-FLAG.md` — the flag table and kill-switch.
 - `SECURITY.md` — secret handling and redaction policy.
