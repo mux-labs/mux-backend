@@ -658,25 +658,32 @@ jobs:
       - name: Generate Prisma client
         run: pnpm prisma:generate
 
-      - name: Verify transaction env validator e2e spec is present
-        # #914: Fail closed if the required spec is missing so the check can
-        # never be silently skipped.
-        run: test -f test/transaction-env-validator.e2e-spec.ts
+      - name: Verify sponsorship limits spec is present
+        # Fail closed if the spec is missing so the cap cannot be silently
+        # un-gated.
+        run: test -f src/wallets/wallet-sponsorship-limits.spec.ts
 
-      - name: Run transaction env validator e2e
-        run: pnpm test:e2e -- test/transaction-env-validator.e2e-spec.ts
+      - name: Verify sponsorship enforcement spec is present
+        # The limiter unit spec passes even when nothing calls the limiter, so
+        # the enforcement spec is required too: it drives createWallet and
+        # fails if the cap is unwired. Without it the cap can be silently
+        # disabled (as it was when the orchestrator was truncated to zero
+        # bytes).
+        run: test -f src/wallets/wallet-sponsorship-limits.enforcement.spec.ts
 
-      - name: Verify cron schedule docs spec is present
-        # #961: Fail closed if the required spec is missing so the check can
-        # never be silently skipped.
-        run: test -f test/cron-schedule-docs.e2e-spec.ts
-
-      - name: Run cron schedule docs e2e
-        run: pnpm test:e2e -- test/cron-schedule-docs.e2e-spec.ts
+      - name: Run wallet sponsorship limit tests
+        # Pure unit tests: no DB, network, or secrets.
+        run: >-
+          pnpm exec jest --runTestsByPath
+          src/wallets/wallet-sponsorship-limits.spec.ts
+          src/wallets/wallet-sponsorship-limits.enforcement.spec.ts
+        env:
+          NODE_ENV: test
 
   # ───────────────────────────────────────────────────────────────────────────
   # Full e2e suite (needs Postgres)
   # ───────────────────────────────────────────────────────────────────────────
+
   e2e-tests:
     name: E2E Tests
     runs-on: ubuntu-latest

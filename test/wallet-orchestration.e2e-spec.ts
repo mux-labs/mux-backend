@@ -13,6 +13,7 @@ import { Test } from '@nestjs/testing';
 import {
   ConflictException,
   ForbiddenException,
+  HttpException,
   INestApplication,
   HttpStatus,
   NotFoundException,
@@ -22,7 +23,10 @@ import {
 import request from 'supertest';
 import { WalletCreationOrchestratorModule } from '../src/wallets/wallet-creation-orchestrator.module';
 import { WalletCreationOrchestrator } from '../src/wallets/wallet-creation-orchestrator.service';
-import { WalletNetwork, WalletStatus } from '../src/wallets/domain/wallet.model';
+import {
+  WalletNetwork,
+  WalletStatus,
+} from '../src/wallets/domain/wallet.model';
 import { ApiKeyGuard } from '../src/api-keys/api-key.guard';
 import { ApiKeyService } from '../src/api-keys/api-key.service';
 import { Reflector } from '@nestjs/core';
@@ -110,7 +114,11 @@ async function buildApp(
   // addressed as /v1/...
   app.setGlobalPrefix('v1');
   app.useGlobalPipes(
-    new ValidationPipe({ whitelist: true, transform: true, forbidNonWhitelisted: true }),
+    new ValidationPipe({
+      whitelist: true,
+      transform: true,
+      forbidNonWhitelisted: true,
+    }),
   );
   // Apply API key guard with a mock service that always passes
   // Echo the correlation id back so callers can correlate retries — critical
@@ -161,7 +169,11 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
         .expect(HttpStatus.OK);
 
       expect(res.body).toMatchObject({
-        wallet: { id: 'wallet-e2e-1', userId: 'user-e2e-1', network: 'TESTNET' },
+        wallet: {
+          id: 'wallet-e2e-1',
+          userId: 'user-e2e-1',
+          network: 'TESTNET',
+        },
         isNewWallet: true,
         privateKey: 'secret-private-key',
       });
@@ -222,7 +234,11 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
       await request(localApp.getHttpServer())
         .post('/v1/wallets/orchestration/create')
         .set('Authorization', `Bearer ${VALID_API_KEY}`)
-        .send({ userId: 'user-e2e-1', network: 'TESTNET', idempotencyKey: 'conflict-key' })
+        .send({
+          userId: 'user-e2e-1',
+          network: 'TESTNET',
+          idempotencyKey: 'conflict-key',
+        })
         .expect(HttpStatus.CONFLICT);
 
       await localApp.close();
@@ -265,6 +281,36 @@ describe('Wallet Orchestration Endpoints (e2e)', () => {
         .set('Authorization', `Bearer ${VALID_API_KEY}`)
         .send({ userId: 'user-e2e-1', network: 'TESTNET' })
         .expect(HttpStatus.SERVICE_UNAVAILABLE);
+
+      await localApp.close();
+    });
+
+    it('returns 429 with the stable sponsorship code when the cap refuses (#957)', async () => {
+      // A refused sponsorship request is a policy decision that clears when the
+      // accounting window rolls. It must reach the caller as a 429 carrying its
+      // stable code: masking it as a 500 would tell a client to retry
+      // immediately instead of backing off.
+      const localApp = await buildApp({
+        createWallet: jest.fn(async () => {
+          throw new HttpException(
+            {
+              code: 'WALLET_SPONSORSHIP_PER_USER_LIMIT_REACHED',
+              message: 'Sponsored wallet limit reached for this user',
+            },
+            HttpStatus.TOO_MANY_REQUESTS,
+          );
+        }),
+      });
+
+      const res = await request(localApp.getHttpServer())
+        .post('/v1/wallets/orchestration/create')
+        .set('Authorization', `Bearer ${VALID_API_KEY}`)
+        .send({ userId: 'user-e2e-1', network: 'TESTNET' })
+        .expect(HttpStatus.TOO_MANY_REQUESTS);
+
+      expect(res.body).toMatchObject({
+        code: 'WALLET_SPONSORSHIP_PER_USER_LIMIT_REACHED',
+      });
 
       await localApp.close();
     });
