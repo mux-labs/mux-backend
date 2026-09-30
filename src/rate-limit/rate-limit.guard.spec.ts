@@ -1,5 +1,6 @@
-import { ExecutionContext, HttpException } from '@nestjs/common';
+import { ExecutionContext, HttpException, Logger } from '@nestjs/common';
 import { MAX_TRACKED_SUBJECTS, RateLimitGuard } from './rate-limit.guard';
+import { MetricsService } from '../common/metrics/metrics.service';
 import {
   RATE_LIMITED_ERROR_CODE,
   resolveRateLimitPolicy,
@@ -328,6 +329,90 @@ describe('RateLimitGuard (#926)', () => {
         guard as unknown as { windows: Map<string, Map<string, unknown>> }
       ).windows.get('auth');
       expect(tracked!.size).toBeLessThanOrEqual(MAX_TRACKED_SUBJECTS);
+    });
+  });
+
+  describe('observability (#926)', () => {
+    it('counts allowed and refused decisions per tier', () => {
+      const incrementCounter = jest.fn<string, [string]>();
+      const guard = new RateLimitGuard({
+        incrementCounter,
+      } as unknown as MetricsService);
+
+      // Exactly `authLimit` requests are allowed; the next one is refused.
+      for (let i = 0; i < authLimit; i++) {
+        guard.canActivate(
+          contextFor(
+            request({ originalUrl: '/v1/auth/login', set: () => undefined }),
+          ),
+        );
+      }
+      expect(() =>
+        guard.canActivate(
+          contextFor(
+            request({ originalUrl: '/v1/auth/login', set: () => undefined }),
+          ),
+        ),
+      ).toThrow(HttpException);
+
+      const counters = incrementCounter.mock.calls.map((call) => call[0]);
+      expect(counters).toContain('rateLimitTier_auth_allowed');
+      expect(counters).toContain('rateLimitTier_auth_refused');
+    });
+
+    it('keeps credentials and subject keys out of the refusal log', () => {
+      const incrementCounter = jest.fn<string, [string]>();
+      const guard = new RateLimitGuard({
+        incrementCounter,
+      } as unknown as MetricsService);
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+
+      try {
+        const apiKey = 'key_live_supersecretvalue';
+        const req = request({
+          originalUrl: '/v1/payments',
+          apiKey: { id: 'key-123' },
+          ip: '203.0.113.9',
+          set: () => undefined,
+        });
+        // The raw header must never become the metric or log content.
+        req.headers = {
+          authorization: `Bearer ${apiKey}`,
+        };
+
+        exhaust(guard, req, paymentsLimit + 1);
+
+        const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
+        const counted = incrementCounter.mock.calls
+          .map((call) => String(call[0]))
+          .join('\n');
+        expect(logged).toContain('tier=payments');
+        expect(logged).toContain('requestId=');
+        expect(logged).not.toContain(apiKey);
+        expect(logged).not.toContain('key-123');
+        expect(logged).not.toContain('203.0.113.9');
+        expect(counted).not.toContain(apiKey);
+        expect(counted).not.toContain('key-123');
+      } finally {
+        warn.mockRestore();
+      }
+    });
+
+    it('enforces limits even when no metrics service is wired', () => {
+      // Observability is additive: its absence must never turn a refusal into
+      // an allow.
+      // A fresh subject on a guard with no metrics wiring is still refused:
+      // observability is additive and must never gate the decision.
+      const guard = new RateLimitGuard();
+      const req = request({
+        originalUrl: '/v1/auth/login',
+        ip: '10.9.9.9',
+        set: () => undefined,
+      });
+
+      expect(exhaust(guard, req, authLimit + 1)).toBeInstanceOf(HttpException);
     });
   });
 });

@@ -6,6 +6,7 @@ import {
   WEBHOOK_REQUEST_ID_HEADER,
   withWebhookCorrelation,
 } from './correlation';
+import * as interceptorsBarrel from '../interceptors';
 import {
   MAX_REQUEST_ID_LENGTH,
   resolveRequestId,
@@ -168,5 +169,20 @@ describe('correlation (#927)', () => {
     // Guards the refactor: the middleware no longer re-implements the rules.
     expect(resolveRequestId('req-1')).toBe('req-1');
     expect(resolveRequestId('has space')).toMatch(UUID_RE);
+  });
+
+  describe('interceptors barrel', () => {
+    it('exports the correlation surface, not just the interceptor classes', () => {
+      // Regression: the barrel re-exported only `IsoUtcTimestampInterceptor`,
+      // so `import { resolveRequestId } from '../interceptors'` resolved to
+      // `undefined` at runtime and the caller would have crashed on first use.
+      expect(interceptorsBarrel.resolveRequestId).toBe(resolveRequestId);
+      expect(interceptorsBarrel.REQUEST_ID_HEADER).toBe('x-request-id');
+      expect(interceptorsBarrel.MAX_REQUEST_ID_LENGTH).toBe(
+        MAX_REQUEST_ID_LENGTH,
+      );
+      expect(interceptorsBarrel.IsoUtcTimestampInterceptor).toBeDefined();
+      expect(interceptorsBarrel.RequestIdInterceptor).toBeDefined();
+    });
   });
 });

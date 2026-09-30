@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { MaintenanceAdminGuard } from './maintenance-admin.guard';
+import { MetricsService } from '../common/metrics/metrics.service';
 import {
   MAINTENANCE_ADMIN_SECRET_ENV,
   MAINTENANCE_ADMIN_SECRET_PREVIOUS_ENV,
@@ -253,6 +254,91 @@ describe('MaintenanceAdminGuard (#925)', () => {
         expect.stringContaining(MAINTENANCE_SECRET_RESULT.MISMATCH),
       );
       expect(warn).not.toHaveBeenCalledWith(expect.stringContaining(CURRENT));
+    });
+  });
+
+  describe('observability', () => {
+    it('counts an authorization made with the previous secret', () => {
+      // The signal an operator needs to notice an unfinished rotation.
+      // `verify` compares against the current wall clock, so the fake timer must
+      // be installed *before* the guard runs — the window is expressed relative
+      // to `NOW`, not to real time.
+      jest.useFakeTimers().setSystemTime(NOW);
+      const incrementCounter = jest.fn<string, [string]>();
+      const metrics = { incrementCounter } as unknown as MetricsService;
+      const env = {
+        [MAINTENANCE_ADMIN_SECRET_ENV]: CURRENT,
+        [MAINTENANCE_ADMIN_SECRET_PREVIOUS_ENV]: PREVIOUS,
+        [MAINTENANCE_ADMIN_SECRET_PREVIOUS_EXPIRES_AT_ENV]: futureIso(30),
+      };
+      const warn = nestLoggerSpy('warn');
+
+      new MaintenanceAdminGuard(
+        new MaintenanceSecretService(env),
+        metrics,
+      ).canActivate(context({ 'x-maintenance-secret': PREVIOUS }));
+
+      expect(incrementCounter).toHaveBeenCalledWith(
+        `maintenanceSecretVerify_${MAINTENANCE_SECRET_RESULT.OK_PREVIOUS}`,
+      );
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it('counts a refusal by its stable reason code', () => {
+      const incrementCounter = jest.fn<string, [string]>();
+      const metrics = { incrementCounter } as unknown as MetricsService;
+      nestLoggerSpy('warn');
+
+      const guard = new MaintenanceAdminGuard(
+        new MaintenanceSecretService({
+          [MAINTENANCE_ADMIN_SECRET_ENV]: CURRENT,
+        }),
+        metrics,
+      );
+
+      expect(() =>
+        guard.canActivate(context({ 'x-maintenance-secret': 'guessed-value' })),
+      ).toThrow();
+
+      expect(incrementCounter).toHaveBeenCalledWith(
+        `maintenanceSecretVerify_${MAINTENANCE_SECRET_RESULT.MISMATCH}`,
+      );
+    });
+
+    it('never puts a secret in a metric label', () => {
+      const incrementCounter = jest.fn<string, [string]>();
+      const metrics = { incrementCounter } as unknown as MetricsService;
+      nestLoggerSpy('warn');
+
+      const guard = new MaintenanceAdminGuard(
+        new MaintenanceSecretService({
+          [MAINTENANCE_ADMIN_SECRET_ENV]: CURRENT,
+        }),
+        metrics,
+      );
+
+      refuse(guard, { 'x-maintenance-secret': 'super-secret-guess' });
+
+      const labels = incrementCounter.mock.calls
+        .map((call) => String(call[0]))
+        .join('\n');
+      expect(labels).not.toContain('super-secret-guess');
+      expect(labels).not.toContain(CURRENT);
+    });
+
+    it('still authorizes and refuses when no metrics service is wired', () => {
+      // Observability must never be load-bearing for the decision.
+      const env = { [MAINTENANCE_ADMIN_SECRET_ENV]: CURRENT };
+      const guard = new MaintenanceAdminGuard(
+        new MaintenanceSecretService(env),
+      );
+
+      expect(
+        guard.canActivate(context({ 'x-maintenance-secret': CURRENT })),
+      ).toBe(true);
+      expect(refuse(guard, { 'x-maintenance-secret': 'wrong' })).toBeInstanceOf(
+        UnauthorizedException,
+      );
     });
   });
 });

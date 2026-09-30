@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { APP_GUARD, APP_INTERCEPTOR } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { ConfigModule } from './config/config.module';
@@ -35,6 +35,7 @@ import { SloModule } from './common/slo/slo.module';
 import { CorsModule } from './common/http/cors.module';
 import { LatencySloInterceptor } from './common/slo/latency-slo.interceptor';
 import { ResponseSanitizerInterceptor } from './common/interceptors/response-sanitizer.interceptor';
+import { RequestLoggingMiddleware } from './common/middleware/request-logging.middleware';
 
 @Module({
   imports: [
@@ -97,5 +98,17 @@ import { ResponseSanitizerInterceptor } from './common/interceptors/response-san
     },
   ],
 })
-export class AppModule {}
-
+export class AppModule implements NestModule {
+  /**
+   * #927: apply the correlation-id middleware to every route.
+   *
+   * The middleware resolves `X-Request-ID` once, sanitizes it, stamps it on
+   * the request, and echoes it on the response. It is registered here rather
+   * than left to individual bootstrap files because it must run *before* the
+   * global guards and the exception filter — otherwise the first thing a
+   * rejected request has is a correlation id the logs do not yet carry.
+   */
+  configure(consumer: MiddlewareConsumer): void {
+    consumer.apply(RequestLoggingMiddleware).forRoutes('*');
+  }
+}

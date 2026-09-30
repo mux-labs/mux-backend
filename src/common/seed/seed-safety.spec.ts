@@ -133,14 +133,53 @@ describe('seed safety (#928)', () => {
     });
 
     it('rejects a malformed opt-in value instead of silently disabling it', () => {
-      // A typo such as `treu` must not read as "denied" or "allowed".
-      expect(() =>
-        evaluateSeedPreflight({
-          ...LOCAL_ENV,
-          DATABASE_URL: 'postgresql://u:p@remote.example.com:5432/mux',
-          [SEED_ALLOW_NON_LOCAL_ENV]: 'treu',
-        }),
-      ).toThrow(SeedNotAllowedError);
+      // A typo such as `treu` must be reported as its own stable code, never
+      // read as either "denied" or "allowed". It is returned rather than thrown
+      // so every refusal travels through the same `code` channel.
+      const preflight = evaluateSeedPreflight({
+        ...LOCAL_ENV,
+        DATABASE_URL: 'postgresql://u:p@remote.example.com:5432/mux',
+        [SEED_ALLOW_NON_LOCAL_ENV]: 'treu',
+      });
+
+      expect(preflight.allowed).toBe(false);
+      expect(preflight.code).toBe(SEED_BLOCK_CODES.INVALID_FLAG);
+    });
+
+    it('rejects a malformed mainnet opt-in with the same code', () => {
+      const preflight = evaluateSeedPreflight({
+        ...LOCAL_ENV,
+        [SEED_INCLUDE_MAINNET_ENV]: 'yes-please',
+      });
+
+      expect(preflight.allowed).toBe(false);
+      expect(preflight.code).toBe(SEED_BLOCK_CODES.INVALID_FLAG);
+    });
+
+    it('does not let a flag typo mask a production block', () => {
+      // The production refusal is the one an operator must always see, so it
+      // is reported ahead of any flag parsing that could fail.
+      const preflight = evaluateSeedPreflight({
+        NODE_ENV: 'production',
+        STELLAR_NETWORK: 'TESTNET',
+        DATABASE_URL: 'postgresql://u:p@db.prod.example.com:5432/mux',
+        [SEED_ALLOW_NON_LOCAL_ENV]: 'treu',
+      });
+
+      expect(preflight.allowed).toBe(false);
+      expect(preflight.code).toBe(SEED_BLOCK_CODES.PRODUCTION);
+    });
+
+    it('does not let a flag typo mask a mainnet block', () => {
+      const preflight = evaluateSeedPreflight({
+        NODE_ENV: 'development',
+        STELLAR_NETWORK: 'PUBLIC',
+        DATABASE_URL: 'postgresql://u:p@db.prod.example.com:5432/mux',
+        [SEED_INCLUDE_MAINNET_ENV]: 'maybe',
+      });
+
+      expect(preflight.allowed).toBe(false);
+      expect(preflight.code).toBe(SEED_BLOCK_CODES.MAINNET);
     });
   });
 

@@ -22,8 +22,26 @@ spend, and so operators can disable the money path quickly during an incident.
 | Flag | Env var | Default | Effect |
 | --- | --- | --- | --- |
 | Payment dry-run | `PAYMENT_DRY_RUN_ENABLED` | `false` | Enables the dry-run entrypoint. When `false`, dry-run requests are rejected with `PAYMENT_DRY_RUN_DISABLED`. |
-| Mainnet payments | `PAYMENT_MAINNET_ENABLED` | `false` | Master switch for live mainnet submission. When `false`, live writes fail closed with `PAYMENT_MAINNET_DISABLED`. |
+| Mainnet payments | `PAYMENT_MAINNET_ENABLED` | `false` | Master switch for live mainnet submission. When `false`, live mainnet writes fail closed with `PAYMENT_MAINNET_DISABLED` and no Horizon call is made. |
 | Payment kill-switch | `PAYMENT_KILL_SWITCH` | `false` | When `true`, all payment writes (live and dry-run) are rejected immediately with `PAYMENT_KILL_SWITCH_ENGAGED`. |
+
+### Legacy aliases and precedence
+
+`PAYMENT_MAINNET_ENABLED` is the canonical name. The money path also accepts
+`MAINNET_PAYMENT_ENABLED` (read by `src/config/configuration.ts`) and
+`MAINNET_PAYMENTS_ENABLED` (shipped in `.env.example`) so the rename cannot
+silently enable or disable a live money path mid-rollout. The **first variable
+that is set wins**, in this order:
+
+1. `PAYMENT_MAINNET_ENABLED`
+2. `MAINNET_PAYMENT_ENABLED`
+3. `MAINNET_PAYMENTS_ENABLED`
+4. `FEATURE_MAINNET_PAYMENTS`
+
+An explicit `false` therefore always beats a stale `true` in another variable.
+`GET /v1/payments/policy` reports which variable decided the flag (by *name*,
+never by value), so a misconfiguration is visible without reading the
+deployment's secrets.
 
 All flags are **deny-by-default**: unset or unparseable values are treated as
 `false`.
@@ -32,6 +50,10 @@ All flags are **deny-by-default**: unset or unparseable values are treated as
   outbound webhook delivery are disabled. Testnet behavior is unaffected.
 - **Fail-closed.** If the flag cannot be read (config/RPC/DB outage), treat it as
   `false` and reject the write rather than proceeding.
+- **Fail-closed on misconfiguration.** In production, mainnet payments enabled
+  *without* `STELLAR_HORIZON_MAINNET_URL` refuses live mainnet writes with
+  `PAYMENT_MAINNET_MISCONFIGURED` (503) instead of submitting value against an
+  unknown network.
 - **Kill-switch.** Setting the flag to `false` at runtime must stop new mainnet
   writes and webhook deliveries without a redeploy; in-flight retries drain to
   the dead-letter queue instead of being re-sent.
@@ -171,6 +193,20 @@ same flag on mainnet.
   failures emit metrics and structured logs with correlation ids. Webhook
   secrets, JWTs, and key material are redacted.
 
+## Where this is enforced
+
+`PaymentMoneyPathService` (`src/payments/payment-money-path.service.ts`) is the
+single gate on `POST /v1/payments`. Order of evaluation — authz, kill-switch,
+validation, dry-run flag, mainnet flag, idempotency reservation, submission —
+means a flag that is off stops the write **before** any key material is read,
+before anything is persisted, and before Horizon is called. The flags themselves
+are resolved only server-side by
+`src/payments/payment-money-path.policy.ts`; a client can never enable them with
+a header, query parameter, or body field.
+
+Coverage: `src/payments/payment-money-path.service.spec.ts` and
+`src/payments/payment-money-path.policy.spec.ts`.
+
 ## Invariants
 
 1. Dry-run **never** submits to Stellar/Horizon. It only validates and returns
@@ -207,17 +243,23 @@ This flag also gates the invisible-wallet orchestration money path. When the fla
 ## Rollback
 
 - Disable dry-run: `PAYMENT_DRY_RUN_ENABLED=false`.
-- Disable live mainnet: `PAYMENT_MAINNET_ENABLED=false`.
+- Disable live mainnet: `PAYMENT_MAINNET_ENABLED=false` (any accepted alias
+  name works; the canonical variable is listed first).
 - Full stop: `PAYMENT_KILL_SWITCH=true`.
+
+Each flag is read per request, so flipping it takes effect without a redeploy;
+no schema migration is involved and no state is rewritten.
 - Set `FEATURE_MAINNET_PAYMENT_SUBMIT=false` (or unset) to immediately stop all mainnet orchestration spends; testnet flows continue to work. No migration or redeploy of wallet state is required.
 
 Each flag is independently reversible without a schema migration.
 
 ## Observability
 
-- `payments_dry_run_total{result}` — dry-run outcomes.
-- `payments_rejected_total{reason}` — authz/flag/idempotency rejections.
-- `payments_submitted_total` — live mainnet submissions.
+- `payments_dry_run_total` — dry-run outcomes.
+- `payments_rejected_total` — authz/flag/idempotency rejections.
+- `payments_submitted_total` — live submissions.
+- `payment_write_failclosed_total` — write refused by a dependency outage.
+- `feature_flag_evaluations_total{key,result}` — flag evaluation outcomes.
 - `feature_flag_evaluations_total{key,result}` — flag evaluation outcomes.
 - `feature_flag_mutations_total{key,result}` — flag mutation outcomes.
 - `feature_flag_errors_total{code}` — stable feature-flag error codes.

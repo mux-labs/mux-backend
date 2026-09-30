@@ -436,6 +436,14 @@ Both specs run in `.github/workflows/ci.yml` as required checks:
 | --- | --- |
 | `api-prefix-docs` | `test/api-prefix-v1-docs.e2e-spec.ts` — this guide, `README_V1_PREFIX.md`, and the spec stay in agreement |
 | `e2e-tests` | `test/api-prefix-v1.e2e-spec.ts` (among the full e2e run) — the prefix behaviour itself |
+| `ci-workflow-contract` | `test/ci-required-e2e-subset.e2e-spec.ts` — this wiring itself (no duplicate job ids, every required check fail-closed) |
 
 Both jobs run a `test -f <spec>` presence check first, so the check fails
 closed rather than silently passing on zero tests if a spec is deleted.
+
+The `ci-workflow-contract` job exists because a duplicate job id in
+`.github/workflows/ci.yml` is not a duplicate *run*: YAML mapping keys are
+last-wins, so the earlier definition of that job is silently discarded along
+with the required check it carried. A required check that lost its definition
+never reports at all, which looks like a green build. That job fails closed on
+that whole class of bug.
