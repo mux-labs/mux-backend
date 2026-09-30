@@ -8,6 +8,14 @@ import { buildCorsOptions } from './common/http/cors';
 import { validateEnv } from './config/env.validation';
 import { IsoUtcTimestampInterceptor } from './common/interceptors';
 import { HttpExceptionFilter } from './common/filters/http-exception.filter';
+import { Logger, ValidationPipe } from '@nestjs/common';
+import { NestFactory } from '@nestjs/core';
+import { AppModule } from './app.module';
+import requestLogger from './common/middleware/request-logging.middleware';
+import { configureBodySizeLimit } from './common/http/body-size-limit';
+import { securityHeaders } from './common/http/security-headers';
+import { buildCorsOptions } from './common/http/cors';
+import { validateEnv } from './config/env.validation';
 
 /**
  * Application bootstrap.
@@ -79,7 +87,7 @@ async function bootstrap(): Promise<void> {
   app.useGlobalFilters(new HttpExceptionFilter());
 
   // Let Nest call onModuleDestroy/beforeApplicationShutdown on SIGTERM/SIGINT
-  // so in-flight requests finish and connections (Prisma, etc.) close cleanly.
+  // so in-flight requests can finish and connections (Prisma, etc.) close cleanly.
   app.enableShutdownHooks();
 
   await app.listen(env.PORT);
