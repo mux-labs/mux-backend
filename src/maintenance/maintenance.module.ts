@@ -6,6 +6,9 @@ import { MaintenanceSecretService } from './maintenance-secret.service';
 import { MaintenanceService } from './maintenance.service';
 import { PrismaModule } from '../prisma/prisma.module';
 
+import { ApiKeyGuard } from '../api-keys/api-key.guard';
+import { ApiKeyService } from '../api-keys/api-key.service';
+
 /**
  * Maintenance mode: the global write kill-switch and the admin surface that
  * controls it.
@@ -22,6 +25,8 @@ import { PrismaModule } from '../prisma/prisma.module';
     MaintenanceGuard,
     MaintenanceAdminGuard,
     MaintenanceSecretService,
+    ApiKeyGuard,
+    ApiKeyService,
   ],
   exports: [MaintenanceService, MaintenanceGuard, MaintenanceSecretService],
 })

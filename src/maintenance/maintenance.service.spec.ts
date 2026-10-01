@@ -112,5 +112,36 @@ describe('MaintenanceService (#925)', () => {
       expect(status.message).toBeNull();
       expect(status.retryAfterSeconds).toBeNull();
     });
+
+    it('sanitizes secrets, Stellar private keys, API keys, webhook secrets, and JWTs from status messages (#966)', async () => {
+      const client = prisma();
+      const stellarSecret = 'SB34ABCDEF1234567890ABCDEF1234567890ABCDEF1234567890ABC1234';
+      const apiKey = 'mux_live_secret1234567890abcdef';
+      const webhookSecret = 'whsec_9876543210fedcba';
+      const jwtToken = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.sflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c';
+
+      client.maintenanceState.findUnique.mockResolvedValue({
+        id: 'global',
+        enabled: true,
+        message: `Maintenance alert with key ${stellarSecret}, api ${apiKey}, hook ${webhookSecret}, jwt ${jwtToken}`,
+        retryAfterSeconds: 60,
+        enabledAt: NOW,
+        updatedBy: 'admin-key-id',
+        updatedAt: NOW,
+      });
+
+      const service = new MaintenanceService(client as never);
+      const status = await service.getStatus();
+
+      expect(status.message).not.toContain(stellarSecret);
+      expect(status.message).not.toContain(apiKey);
+      expect(status.message).not.toContain(webhookSecret);
+      expect(status.message).not.toContain(jwtToken);
+      expect(status.message).toContain('[REDACTED_KEY]');
+      expect(status.message).toContain('[REDACTED_API_KEY]');
+      expect(status.message).toContain('[REDACTED_WEBHOOK_SECRET]');
+      expect(status.message).toContain('[REDACTED_JWT]');
+      expect(status).not.toHaveProperty('updatedBy');
+    });
   });
 });
