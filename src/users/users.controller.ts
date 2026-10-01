@@ -1,6 +1,8 @@
 import {
   Controller,
   Post,
+  Delete,
+  Param,
   Body,
   HttpCode,
   HttpStatus,
@@ -8,6 +10,7 @@ import {
   Request,
   Logger,
 } from '@nestjs/common';
+import { ApiHeader, ApiOperation, ApiResponse, ApiTags } from '@nestjs/swagger';
 import { UsersService } from './users.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
 import { randomUUID } from 'crypto';
@@ -81,6 +84,23 @@ export class UsersController {
       created: result.created,
       idempotencyKey,
     };
+  }
+
+  /**
+   * DELETE /users/:id
+   *
+   * Soft-deletes a user.
+   * Requires API key authentication.
+   * Idempotent and fail-closed (#968).
+   */
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Soft-delete a user' })
+  @ApiResponse({ status: 200, description: 'User soft-deleted successfully' })
+  @ApiResponse({ status: 401, description: 'Missing or invalid API key' })
+  @ApiResponse({ status: 404, description: 'User not found' })
+  async remove(@Param('id') id: string) {
+    return this.usersService.remove(id);
   }
 
   private extractActorContext(req: any) {

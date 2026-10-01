@@ -116,9 +116,9 @@ While enabled, `POST`, `PUT`, `PATCH`, and `DELETE` routes return `503 Service
 Unavailable`; `GET`, `HEAD`, and `OPTIONS` remain available. A configured retry
 delay is returned in the `Retry-After` header.
 
-Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). To change the state,
-send `PATCH /v1/maintenance` with normal API-key authentication plus the
-`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`. This secret
+Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). The response is sanitized against secret leakage (Stellar private keys, API keys, webhook secrets, JWTs) and never exposes the caller audit identity (#966). To change the state,
+send `PATCH /v1/maintenance` with dual authentication: valid API-key authentication (`ApiKeyGuard`) plus the
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET` (`MaintenanceAdminGuard`). The server-resolved API key ID is recorded in `updatedBy` for an unforgeable audit trail (#967). This secret
 is required in production — startup fails fast if it is unset.
 
 The maintenance endpoint itself remains available while maintenance mode is on
@@ -401,7 +401,7 @@ Users go through the following lifecycle:
    - Every **API key** under those projects is `REVOKED`, so the keys immediately stop authenticating to the `/v1` API.
    - **Webhook endpoints** under those projects are disabled.
 
-   The cleanup is atomic and fail-closed: if any step fails, the transaction rolls back and the user stays active — there is no partial cleanup and no environment-dependent skip path. Only resources owned by the deleted user are touched; platform/onboarding developers without a `userId` are unaffected. Soft deletion preserves audit trails and on-chain transaction history.
+   The cleanup is atomic and fail-closed: if any step fails, the transaction rolls back and the user stays active — there is no partial cleanup and no environment-dependent skip path. Only resources owned by the deleted user are touched; platform/onboarding developers without a `userId` are unaffected. Soft deletion preserves audit trails and on-chain transaction history. Deletion vs. retention policies, privacy rights, and regulatory compliance boundaries are documented in [docs/USER-DELETION-RETENTION.md](docs/USER-DELETION-RETENTION.md) (#968).
 
    Existing developers are linked to their owning user by the `Developer.userId` column (backfilled by email match in the `20260831000000_add_developer_user_owner` migration); new developers can record their owner via the optional `userId` field on `POST /developers`.
 
