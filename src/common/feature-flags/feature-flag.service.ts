@@ -4,10 +4,12 @@ import { ConfigService } from '@nestjs/config';
 /**
  * All recognized FEATURE_* environment variable names.
  * These gate the core API surfaces of Mux Backend.
- * In development (NODE_ENV !== 'production') unset flags default to ENABLED.
- * In production (NODE_ENV === 'production') unset flags ALSO default to ENABLED
- * so a fresh deploy serves all core APIs out of the box.  A flag must be
- * explicitly set to "false" (case-insensitive) to disable it.
+ * Core API flags default to ENABLED when unset so a fresh deploy serves core
+ * APIs out of the box. A core flag must be explicitly set to "false" to disable.
+ *
+ * Money-path and mainnet-affecting flags (FEATURE_MAINNET_PAYMENTS) are
+ * DENY-BY-DEFAULT: they default to DISABLED (false) unless explicitly enabled
+ * with a truthy token ('true', '1', 'yes', 'on') per docs/MAINNET-PAYMENT-FEATURE-FLAG.md (#965).
  *
  * NEVER silently mock or bypass a flag in production — if a flag is false in
  * production the corresponding API must return 503 / 404 rather than pretend
@@ -69,14 +71,26 @@ export class FeatureFlagService implements OnModuleInit {
    * Returns true when the feature flag is enabled.
    *
    * Resolution order:
-   *  1. If the env var is explicitly "false" (case-insensitive) → disabled
-   *  2. Otherwise → enabled  (safe default for fresh deploys)
+   *  - MAINNET_PAYMENTS is deny-by-default: it is false unless explicitly set
+   *    to a truthy token ('true', '1', 'yes', 'on'). Unset, blank, or any other
+   *    value resolves to false (fail-closed mainnet default).
+   *  - Core API flags default to true when unset to ensure fresh deploys serve
+   *    core APIs, and must be explicitly set to "false" to disable.
    */
   isEnabled(flag: FeatureFlagKey): boolean {
     const envVar = FEATURE_FLAGS[flag];
     const raw = this.config.get<string>(envVar);
 
-    // Only treat the value as disabled when explicitly set to the string "false"
+    // Mainnet payment flag is deny-by-default (issue #965)
+    if (flag === 'MAINNET_PAYMENTS') {
+      if (raw === undefined || raw === null || raw.trim() === '') {
+        return false;
+      }
+      const normalized = raw.trim().toLowerCase();
+      return ['1', 'true', 'yes', 'on'].includes(normalized);
+    }
+
+    // Only treat core API flags as disabled when explicitly set to the string "false"
     if (raw !== undefined && raw !== null && raw.trim().toLowerCase() === 'false') {
       return false;
     }

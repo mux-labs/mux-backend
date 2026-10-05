@@ -25,7 +25,7 @@ Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 | `FEATURE_TRANSACTIONS`        | `/v1/transactions/**` — transactions     | enabled  |
 | `FEATURE_LIMITS`              | `/v1/limits/**` — spending limits        | enabled  |
 | `FEATURE_KEY_MANAGEMENT`      | `/v1/key-management/**` — key ops        | enabled  |
-| `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | enabled  |
+| `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | **disabled** (deny-by-default) |
 | `FEE_SPONSORSHIP_ENABLED`     | Fee sponsorship budget writes on mainnet | **disabled** (deny-by-default) |
 | `SOROBAN_INVOKE_ENABLED`      | Soroban contract invocation            | **disabled** (deny-by-default) |
 | `MULTI_ASSET_PAYMENTS_ENABLED` | Credit-asset payment writes (non-native) | **disabled** (deny-by-default) |
