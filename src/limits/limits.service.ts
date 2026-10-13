@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   NotFoundException,
   ForbiddenException,
   Logger,
@@ -23,11 +24,21 @@ export class LimitsService {
   constructor(private readonly prisma: PrismaService) {}
 
   async setLimits(walletId: string, daily: number, perTx: number) {
+    this.assertValidLimit('daily', daily);
+    this.assertValidLimit('perTx', perTx);
     return this.prisma.walletLimit.upsert({
       where: { walletId },
       update: { dailyLimit: daily, perTransactionLimit: perTx },
       create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
     });
+  }
+
+  private assertValidLimit(field: 'daily' | 'perTx', value: number): void {
+    if (!Number.isFinite(value) || value < 0) {
+      throw new BadRequestException(
+        `${field} must be a finite number greater than or equal to 0 (received ${value})`,
+      );
+    }
   }
 
   async getLimits(walletId: string) {
@@ -48,7 +59,10 @@ export class LimitsService {
    * @param walletId  Sender wallet UUID
    * @param amount    Transaction amount as a decimal string (e.g. "10.5")
    */
-  async checkLimits(walletId: string, amount: number | string): Promise<LimitCheckResult> {
+  async checkLimits(
+    walletId: string,
+    amount: number | string,
+  ): Promise<LimitCheckResult> {
     const amountNum = typeof amount === 'string' ? parseFloat(amount) : amount;
 
     const limits = await this.getLimits(walletId);
