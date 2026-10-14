@@ -67,14 +67,27 @@ export const resolveMainnetPaymentFlag = (
     };
   }
 
-  const enabled = parseBoolean(env.MAINNET_PAYMENT_ENABLED, false);
+  // Check canonical PAYMENT_MAINNET_ENABLED first, then legacy aliases (docs/MAINNET-PAYMENT-FEATURE-FLAG.md)
+  const candidates = [
+    'PAYMENT_MAINNET_ENABLED',
+    'MAINNET_PAYMENT_ENABLED',
+    'MAINNET_PAYMENTS_ENABLED',
+    'FEATURE_MAINNET_PAYMENTS',
+  ];
+  let rawValue: string | undefined;
+  for (const name of candidates) {
+    if (env[name] !== undefined && env[name] !== null && env[name].trim() !== '') {
+      rawValue = env[name];
+      break;
+    }
+  }
+
+  const enabled = parseBoolean(rawValue, false);
 
   return {
     enabled,
     network: 'mainnet',
-    denialCode: enabled
-      ? MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED
-      : MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED,
+    denialCode: MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED,
   };
 };
 

@@ -32,8 +32,19 @@ export enum ErrorCode {
   // Dependency / fail-closed
   DEPENDENCY_UNAVAILABLE = 'DEPENDENCY_UNAVAILABLE',
   WRITE_REJECTED = 'WRITE_REJECTED',
-  /** The process is draining for shutdown and refuses new writes (#950). */
-  SHUTDOWN_IN_PROGRESS = 'SHUTDOWN_IN_PROGRESS',
+
+  // Payment money-path (feature flags, kill-switch — fail-closed)
+  /** The payment kill-switch is engaged; every payment write is refused. */
+  PAYMENT_KILL_SWITCH_ENGAGED = 'PAYMENT_KILL_SWITCH_ENGAGED',
+  /** Live mainnet payment submission is disabled by the feature flag. */
+  PAYMENT_MAINNET_DISABLED = 'PAYMENT_MAINNET_DISABLED',
+  /** Payment dry-run is disabled by the feature flag. */
+  PAYMENT_DRY_RUN_DISABLED = 'PAYMENT_DRY_RUN_DISABLED',
+  /**
+   * Mainnet payments are enabled while the mainnet Horizon endpoint is
+   * missing; submitting value against an unknown network is refused.
+   */
+  PAYMENT_MAINNET_MISCONFIGURED = 'PAYMENT_MAINNET_MISCONFIGURED',
 
   // Key management / custody (fail-closed)
   KEY_DECRYPT_FAILED = 'KEY_DECRYPT_FAILED',
@@ -143,11 +154,7 @@ export interface RawErrorInput {
   debug?: Record<string, unknown>;
 }
 
-/**
- * Canonical HTTP status for each error code. Exported so the frontend-facing
- * catalog (#949) can be drift-checked against the envelope builder in tests.
- */
-export const DEFAULT_STATUS_BY_CODE: Record<ErrorCode, number> = {
+const DEFAULT_STATUS_BY_CODE: Record<ErrorCode, number> = {
   [ErrorCode.BAD_REQUEST]: 400,
   [ErrorCode.UNAUTHORIZED]: 401,
   [ErrorCode.FORBIDDEN]: 403,
@@ -165,7 +172,10 @@ export const DEFAULT_STATUS_BY_CODE: Record<ErrorCode, number> = {
   [ErrorCode.IDEMPOTENCY_CONFLICT]: 409,
   [ErrorCode.DEPENDENCY_UNAVAILABLE]: 503,
   [ErrorCode.WRITE_REJECTED]: 503,
-  [ErrorCode.SHUTDOWN_IN_PROGRESS]: 503,
+  [ErrorCode.PAYMENT_KILL_SWITCH_ENGAGED]: 403,
+  [ErrorCode.PAYMENT_MAINNET_DISABLED]: 403,
+  [ErrorCode.PAYMENT_DRY_RUN_DISABLED]: 403,
+  [ErrorCode.PAYMENT_MAINNET_MISCONFIGURED]: 503,
   [ErrorCode.KEY_DECRYPT_FAILED]: 503,
   [ErrorCode.KEY_VERSION_UNSUPPORTED]: 503,
   [ErrorCode.EXPORT_JOB_NOT_FOUND]: 404,
@@ -205,8 +215,12 @@ const GENERIC_MESSAGE_BY_CODE: Record<ErrorCode, string> = {
     'Idempotency key reused with a different payload.',
   [ErrorCode.DEPENDENCY_UNAVAILABLE]: 'A required dependency is unavailable.',
   [ErrorCode.WRITE_REJECTED]: 'Write rejected to protect data integrity.',
-  [ErrorCode.SHUTDOWN_IN_PROGRESS]:
-    'The service is shutting down and is not accepting new writes.',
+  [ErrorCode.PAYMENT_KILL_SWITCH_ENGAGED]: 'Payments are temporarily disabled.',
+  [ErrorCode.PAYMENT_MAINNET_DISABLED]:
+    'Mainnet payment submission is disabled.',
+  [ErrorCode.PAYMENT_DRY_RUN_DISABLED]: 'Payment dry-run is disabled.',
+  [ErrorCode.PAYMENT_MAINNET_MISCONFIGURED]:
+    'Mainnet payments are not configured correctly; write refused.',
   [ErrorCode.KEY_DECRYPT_FAILED]:
     'Key material could not be decrypted; operation refused.',
   [ErrorCode.KEY_VERSION_UNSUPPORTED]:

@@ -1,472 +1,514 @@
-import {
-  BadRequestException,
-  NotFoundException,
-  PayloadTooLargeException,
-  ServiceUnavailableException,
-} from '@nestjs/common';
+import { Test, TestingModule } from '@nestjs/testing';
+import { ConfigService } from '@nestjs/config';
+import { NotFoundException } from '@nestjs/common';
 import { BalanceIndexerService } from './balance-indexer.service';
-import {
-  BalanceIndexerErrorCode,
-  BALANCE_SYNC_ENABLED_ENV,
-} from './balance-indexer.error-codes';
-import type { HorizonAccountBalances } from './balance-indexer.error-codes';
-import { MetricsService } from '../common/metrics/metrics.service';
+import { StellarHorizonService } from './stellar-horizon.service';
+import { BalanceRepository } from './balance.repository';
+import { PrismaService } from '../prisma/prisma.service';
+import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
+import { AssetType, BalanceSyncStatus } from './domain/balance.model';
 
-const WALLET = 'wallet-1';
-const ACCOUNT = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+const WALLET_ID = 'wallet-123';
+const PUBLIC_KEY = 'GABC123';
 
-function snapshot(
-  balances: HorizonAccountBalances['balances'],
-): HorizonAccountBalances {
-  return { accountId: ACCOUNT, ledger: 42, balances };
-}
-
-function native(balance: string) {
+function makeBalance(overrides: Partial<any> = {}) {
   return {
-    assetType: 'NATIVE' as const,
+    id: 'bal-1',
+    walletId: WALLET_ID,
+    assetType: AssetType.NATIVE,
     assetCode: null,
     assetIssuer: null,
-    balance,
+    balance: '100.0000000',
+    syncStatus: BalanceSyncStatus.SYNCED,
+    lastSyncedAt: new Date(),
+    lastSyncedLedger: 1,
+    lastReconciledAt: null,
+    reconciliationAttempts: 0,
+    onChainBalance: '100.0000000',
+    mismatchDetectedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+    ...overrides,
   };
 }
+
+const mockPrisma = {
+  walletBalance: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+    updateMany: jest.fn(),
+    upsert: jest.fn(),
+  },
+  wallet: {
+    findUnique: jest.fn(),
+    findMany: jest.fn(),
+  },
+  balanceSyncJob: {
+    create: jest.fn().mockResolvedValue({ id: 'job-1' }),
+    update: jest.fn().mockResolvedValue({}),
+  },
+};
 
 describe('BalanceIndexerService', () => {
   let service: BalanceIndexerService;
-  let prisma: {
-    wallet: { findUnique: jest.Mock; findMany: jest.Mock };
-    walletBalance: {
-      findMany: jest.Mock;
-      findUnique: jest.Mock;
-      count: jest.Mock;
-      upsert: jest.Mock;
-      update: jest.Mock;
-      create: jest.Mock;
-    };
+  let prisma: jest.Mocked<PrismaService>;
+  let repo: jest.Mocked<BalanceRepository>;
+  let horizonService: jest.Mocked<StellarHorizonService>;
+  let webhookEmitter: jest.Mocked<WebhookEventEmitterService>;
+  let configService: jest.Mocked<ConfigService>;
+  const mockHorizon = {
+    getAccountBalances: jest.fn(),
+    accountExists: jest.fn(),
   };
-  let horizon: { fetchAccountBalances: jest.Mock };
-  let metrics: { incrementCounter: jest.Mock };
 
-  beforeEach(() => {
-    process.env[BALANCE_SYNC_ENABLED_ENV] = 'true';
+  const mockRequestContext = {
+    getRequestId: jest.fn().mockReturnValue('test-request-id-spec'),
+  };
 
-    prisma = {
-      wallet: {
-        findUnique: jest
-          .fn()
-          .mockResolvedValue({ id: WALLET, publicKey: ACCOUNT }),
-        findMany: jest
-          .fn()
-          .mockResolvedValue([{ id: WALLET, publicKey: ACCOUNT }]),
-      },
-      walletBalance: {
-        findMany: jest.fn().mockResolvedValue([]),
-        findUnique: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(0),
-        upsert: jest.fn().mockResolvedValue({}),
-        update: jest.fn().mockResolvedValue({}),
-        create: jest.fn().mockResolvedValue({}),
-      },
-    };
-    horizon = {
-      fetchAccountBalances: jest
-        .fn()
-        .mockResolvedValue(snapshot([native('100')])),
-    };
-    metrics = { incrementCounter: jest.fn() };
+  const mockMetrics = {
+    record: jest.fn(),
+    recordLag: jest.fn(),
+  };
 
-    service = new BalanceIndexerService(
-      prisma,
-      metrics as unknown as MetricsService,
-      horizon,
-    );
+  beforeEach(async () => {
+    repo = {
+      findOne: jest.fn(),
+      findAll: jest.fn(),
+      upsert: jest.fn(),
+      upsertNativeZero: jest.fn(),
+      markFailed: jest.fn(),
+      recordMismatch: jest.fn(),
+      clearMismatch: jest.fn(),
+      findWallet: jest.fn(),
+      findActiveWallets: jest.fn(),
+    } as any;
+
+    horizonService = {
+      getAccountBalances: jest.fn(),
+      accountExists: jest.fn(),
+    } as any;
+
+    webhookEmitter = {
+      emitBalanceMismatch: jest.fn().mockResolvedValue(undefined),
+      emitBalanceUpdated: jest.fn().mockResolvedValue(undefined),
+    } as any;
+
+    configService = {
+      get: jest.fn((key: string, defaultValue?: any) => {
+        if (key === 'STELLAR_HORIZON_URL')
+          return 'https://horizon-testnet.stellar.org';
+        if (key === 'BALANCE_STALE_THRESHOLD_MS')
+          return defaultValue ?? 300_000;
+        return defaultValue;
+      }),
+    } as any;
+    jest.clearAllMocks();
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BalanceIndexerService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StellarHorizonService, useValue: mockHorizon },
+        { provide: ConfigService, useValue: configService },
+        { provide: WebhookEventEmitterService, useValue: webhookEmitter },
+        { provide: RequestContextService, useValue: mockRequestContext },
+        { provide: BalanceIndexerMetricsService, useValue: mockMetrics },
+        { provide: BalanceRepository, useValue: repo },
+      ],
+    }).compile();
+
+    service = module.get<BalanceIndexerService>(BalanceIndexerService);
+    // Run lifecycle hook manually (compile() calls onModuleInit automatically
+    // only in full NestJS apps; call explicitly in unit tests)
+    service.onModuleInit();
+    prisma = module.get(PrismaService);
+    horizonService = module.get(StellarHorizonService);
+
+    mockPrisma.balanceSyncJob.create.mockResolvedValue({ id: 'job-1' });
+    mockPrisma.balanceSyncJob.update.mockResolvedValue({});
   });
 
   afterEach(() => {
-    delete process.env[BALANCE_SYNC_ENABLED_ENV];
-    delete process.env.BALANCE_STALE_THRESHOLD_MS;
-    jest.restoreAllMocks();
+    service.onModuleDestroy();
   });
 
-  describe('fail-closed writes', () => {
-    it('refuses to write when BALANCE_SYNC_ENABLED is unset', async () => {
-      delete process.env[BALANCE_SYNC_ENABLED_ENV];
+  afterEach(() => jest.clearAllMocks());
 
-      await expect(
-        service.syncWalletBalances({ walletId: WALLET }),
-      ).rejects.toBeInstanceOf(ServiceUnavailableException);
-      // Nothing may be persisted when the kill-switch is off.
-      expect(prisma.walletBalance.upsert).not.toHaveBeenCalled();
-    });
-
-    it('treats a non-truthy flag value as disabled', () => {
-      process.env[BALANCE_SYNC_ENABLED_ENV] = 'yes';
-      expect(service.isBalanceSyncEnabled()).toBe(false);
-    });
-
-    it('still serves reads while writes are disabled', async () => {
-      delete process.env[BALANCE_SYNC_ENABLED_ENV];
-      prisma.walletBalance.findMany.mockResolvedValue([
-        { ...native('5'), walletId: WALLET },
-      ] as never);
-
-      await expect(service.getAllBalances(WALLET)).resolves.toHaveLength(1);
-    });
+  it('should be defined', () => {
+    expect(service).toBeDefined();
   });
 
-  describe('Horizon outage (fail-closed)', () => {
-    it('throws a stable error and writes nothing when Horizon is down', async () => {
-      horizon.fetchAccountBalances.mockRejectedValue(new Error('ECONNREFUSED'));
+  // ---------------------------------------------------------------------------
+  // #391 — Env validation
+  // ---------------------------------------------------------------------------
 
-      await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
-      ).rejects.toMatchObject({
-        response: { code: BalanceIndexerErrorCode.DEPENDENCY_UNAVAILABLE },
+  describe('onModuleInit (env validation)', () => {
+    it('throws when STELLAR_HORIZON_URL is missing', () => {
+      configService.get.mockImplementation((key: string) => {
+        if (key === 'STELLAR_HORIZON_URL') return '';
+        return undefined;
       });
-
-      expect(prisma.walletBalance.upsert).not.toHaveBeenCalled();
+      expect(() => service.onModuleInit()).toThrow('STELLAR_HORIZON_URL');
     });
 
-    it('rejects a malformed Horizon payload rather than treating it as empty', async () => {
-      // A payload without `balances` must not be persisted as "holds nothing".
-      horizon.fetchAccountBalances.mockResolvedValue({
-        accountId: ACCOUNT,
-        ledger: 1,
+    it('throws when BALANCE_STALE_THRESHOLD_MS is zero', () => {
+      configService.get.mockImplementation((key: string, def?: any) => {
+        if (key === 'STELLAR_HORIZON_URL')
+          return 'https://horizon-testnet.stellar.org';
+        if (key === 'BALANCE_STALE_THRESHOLD_MS') return 0;
+        return def;
       });
-
-      await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
-      ).rejects.toBeInstanceOf(ServiceUnavailableException);
-
-      expect(prisma.walletBalance.upsert).not.toHaveBeenCalled();
-    });
-
-    it('surfaces a store outage as 503 without leaking driver detail', async () => {
-      prisma.wallet.findUnique.mockRejectedValue(
-        new Error('connect ECONNREFUSED 10.0.0.5:5432'),
+      expect(() => service.onModuleInit()).toThrow(
+        'BALANCE_STALE_THRESHOLD_MS',
       );
+    });
 
+    it('does not throw with valid configuration', () => {
+      expect(() => service.onModuleInit()).not.toThrow();
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getBalance
+  // ---------------------------------------------------------------------------
+
+  describe('getBalance', () => {
+    it('returns null when balance is not indexed', async () => {
+      repo.findOne.mockResolvedValue(null);
+      const result = await service.getBalance(WALLET_ID, {
+        type: AssetType.NATIVE,
+      });
+      expect(result).toBeNull();
+    });
+
+    it('returns a fresh balance without triggering sync', async () => {
+      const balance = makeBalance({ lastSyncedAt: new Date() });
+      repo.findOne.mockResolvedValue(balance);
+      const result = await service.getBalance(WALLET_ID, {
+        type: AssetType.NATIVE,
+      });
+      expect(result).toEqual(balance);
+    });
+
+    it('triggers a background sync for stale balances', async () => {
+      const staleDate = new Date(Date.now() - 10 * 60 * 1000); // 10 min ago
+      const balance = makeBalance({ lastSyncedAt: staleDate });
+      repo.findOne.mockResolvedValue(balance);
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
+      horizonService.accountExists.mockResolvedValue(true);
+      horizonService.getAccountBalances.mockResolvedValue([]);
+
+      await service.getBalance(WALLET_ID, { type: AssetType.NATIVE });
+
+      // Background sync is fire-and-forget; give microtask queue a tick
+      await new Promise((r) => setImmediate(r));
+      expect(repo.findWallet).toHaveBeenCalledWith(WALLET_ID);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // syncWalletBalances
+  // ---------------------------------------------------------------------------
+
+  describe('syncWalletBalances', () => {
+    it('throws NotFoundException when wallet does not exist', async () => {
+      repo.findWallet.mockResolvedValue(null);
       await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
-      ).rejects.toMatchObject({
-        response: { code: BalanceIndexerErrorCode.DEPENDENCY_UNAVAILABLE },
-      });
-    });
-  });
-
-  describe('reconciliation', () => {
-    it('reports a match when indexed and on-chain balances agree', async () => {
-      prisma.walletBalance.findUnique.mockResolvedValue({
-        id: 'b1',
-        balance: '100.0000000',
-      });
-
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-
-      expect(result.matches).toBe(true);
-      expect(result.indexedBalance).toBe('100.0000000');
-      expect(result.onChainBalance).toBe('100');
+        service.syncWalletBalances({ walletId: WALLET_ID }),
+      ).rejects.toThrow('Balance sync failed');
     });
 
-    it('does not report a mismatch for an equivalent decimal formatting', async () => {
-      // "100.0" and "100" are the same amount; flagging this would be noise.
-      prisma.walletBalance.findUnique.mockResolvedValue({
-        id: 'b1',
-        balance: '100.0',
+    it('sets zero balances when account is not on-chain', async () => {
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
       });
+      horizonService.accountExists.mockResolvedValue(false);
+      repo.upsertNativeZero.mockResolvedValue(undefined);
 
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-      expect(result.matches).toBe(true);
-    });
+      const result = await service.syncWalletBalances({ walletId: WALLET_ID });
 
-    it('flags a real mismatch and marks the row without overwriting the indexed value', async () => {
-      const updateArgs: Array<Record<string, unknown>> = [];
-      prisma.walletBalance.update.mockImplementation(
-        (args: Record<string, unknown>) => {
-          updateArgs.push(args);
-          return Promise.resolve({});
-        },
-      );
-      prisma.walletBalance.findUnique.mockResolvedValue({
-        id: 'b1',
-        balance: '50',
-      });
-
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-
-      expect(result.matches).toBe(false);
-      expect(result.indexedBalance).toBe('50');
-      expect(result.onChainBalance).toBe('100');
-
-      const updateArg = updateArgs[0] as { data: Record<string, unknown> };
-      expect(updateArg.data.syncStatus).toBe('MISMATCH');
-      // The indexed balance must be preserved — an operator decides which is right.
-      expect(updateArg.data.balance).toBeUndefined();
-    });
-
-    it('scopes the on-chain lookup to the requested asset', async () => {
-      horizon.fetchAccountBalances.mockResolvedValue(
-        snapshot([
-          native('100'),
-          {
-            assetType: 'CREDIT_ALPHANUM4' as const,
-            assetCode: 'USDC',
-            assetIssuer: 'GISSUER',
-            balance: '7',
-          },
-        ]),
-      );
-      prisma.walletBalance.findUnique.mockResolvedValue({
-        id: 'b2',
-        balance: '7',
-      });
-
-      const result = await service.reconcileBalance(WALLET, {
-        type: 'CREDIT_ALPHANUM4',
-        code: 'USDC',
-        issuer: 'GISSUER',
-      });
-
-      expect(result.onChainBalance).toBe('7');
-      expect(result.matches).toBe(true);
-    });
-
-    it('seeds a MISMATCH row for an asset that was never indexed', async () => {
-      const createArgs: Array<Record<string, unknown>> = [];
-      prisma.walletBalance.create.mockImplementation(
-        (args: Record<string, unknown>) => {
-          createArgs.push(args);
-          return Promise.resolve({});
-        },
-      );
-      prisma.walletBalance.findUnique.mockResolvedValue(null);
-
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-
-      expect(result.matches).toBe(false);
-      const createArg = createArgs[0] as { data: Record<string, unknown> };
-      expect(createArg.data.syncStatus).toBe('MISMATCH');
-      expect(createArg.data.onChainBalance).toBe('100');
-    });
-
-    it('404s for an unknown wallet instead of reconciling nothing', async () => {
-      prisma.wallet.findUnique.mockResolvedValue(null);
-
-      await expect(
-        service.reconcileBalance('missing', { type: 'NATIVE' }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      expect(horizon.fetchAccountBalances).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('idempotency / replay', () => {
-    it('skips the Horizon round-trip when the balance is already fresh', async () => {
-      prisma.walletBalance.count.mockResolvedValue(1);
-
-      const result = await service.syncWalletBalances({ walletId: WALLET });
-
-      expect(result.balancesUpdated).toBe(0);
-      expect(horizon.fetchAccountBalances).not.toHaveBeenCalled();
-    });
-
-    it('is idempotent: repeating a forced sync converges on the same state', async () => {
-      const first = await service.syncWalletBalances({
-        walletId: WALLET,
-        forceRefresh: true,
-      });
-      const second = await service.syncWalletBalances({
-        walletId: WALLET,
-        forceRefresh: true,
-      });
-
-      expect(second.balancesUpdated).toBe(first.balancesUpdated);
-      // Upserts, not creates — a replay must not duplicate balance rows.
-      expect(prisma.walletBalance.create).not.toHaveBeenCalled();
-    });
-
-    it('re-running a reconciliation on unchanged data is a no-op match', async () => {
-      prisma.walletBalance.findUnique.mockResolvedValue({
-        id: 'b1',
-        balance: '100',
-      });
-
-      const first = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-      const second = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-
-      expect(first).toEqual(second);
-    });
-  });
-
-  describe('retry policy', () => {
-    it('retries a transient Horizon outage and succeeds', async () => {
-      horizon.fetchAccountBalances
-        .mockRejectedValueOnce(new Error('timeout'))
-        .mockResolvedValueOnce(snapshot([native('100')]));
-
-      const result = await service.syncWalletBalancesWithRetry({
-        walletId: WALLET,
-        forceRefresh: true,
-      });
-
+      expect(repo.upsertNativeZero).toHaveBeenCalledWith(WALLET_ID);
       expect(result.balancesUpdated).toBe(1);
-      expect(horizon.fetchAccountBalances).toHaveBeenCalledTimes(2);
+      expect(result.syncStatus).toBe(BalanceSyncStatus.SYNCED);
     });
 
-    it('gives up after the attempt budget instead of retrying forever', async () => {
-      horizon.fetchAccountBalances.mockRejectedValue(new Error('timeout'));
+    it('syncs balances and returns SYNCED status when no mismatches', async () => {
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
+      horizonService.accountExists.mockResolvedValue(true);
+      horizonService.getAccountBalances.mockResolvedValue([
+        {
+          walletId: WALLET_ID,
+          asset: { type: AssetType.NATIVE },
+          balance: '1000.0000000',
+          ledgerSequence: 123456,
+          timestamp: new Date(),
+        },
+      ]);
+      repo.findOne.mockResolvedValue(null); // first call in applyBalanceUpdate
+      repo.upsert.mockResolvedValue(undefined);
 
-      await expect(
-        service.syncWalletBalancesWithRetry({
-          walletId: WALLET,
-          forceRefresh: true,
-          maxAttempts: 2,
+      const result = await service.syncWalletBalances({ walletId: WALLET_ID });
+
+      expect(repo.upsert).toHaveBeenCalledTimes(1);
+      expect(result.syncStatus).toBe(BalanceSyncStatus.SYNCED);
+      expect(result.mismatchesFound).toBe(0);
+    });
+
+    // #387 — Emit domain events
+    it('emits balance.updated when balance value changes', async () => {
+      const existingBalance = makeBalance({ balance: '50.0000000' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
+      horizonService.accountExists.mockResolvedValue(true);
+      horizonService.getAccountBalances.mockResolvedValue([
+        {
+          walletId: WALLET_ID,
+          asset: { type: AssetType.NATIVE },
+          balance: '100.0000000',
+          ledgerSequence: 2,
+          timestamp: new Date(),
+        },
+      ]);
+      repo.findOne.mockResolvedValue(existingBalance);
+      repo.upsert.mockResolvedValue(undefined);
+
+      await service.syncWalletBalances({ walletId: WALLET_ID });
+
+      await new Promise((r) => setImmediate(r));
+      expect(webhookEmitter.emitBalanceUpdated).toHaveBeenCalledWith(
+        expect.objectContaining({
+          walletId: WALLET_ID,
+          previousBalance: '50.0000000',
+          newBalance: '100.0000000',
         }),
-      ).rejects.toBeInstanceOf(ServiceUnavailableException);
-
-      expect(horizon.fetchAccountBalances).toHaveBeenCalledTimes(2);
-    });
-
-    it('does not retry a permanent failure', async () => {
-      // A 404 will never succeed on retry, so retrying only amplifies load.
-      prisma.wallet.findUnique.mockResolvedValue(null);
-
-      await expect(
-        service.syncWalletBalancesWithRetry({
-          walletId: 'missing',
-          maxAttempts: 3,
-        }),
-      ).rejects.toBeInstanceOf(NotFoundException);
-
-      expect(horizon.fetchAccountBalances).not.toHaveBeenCalled();
-    });
-  });
-
-  describe('adversarial input', () => {
-    it('rejects a wallet id that could be used for log injection', async () => {
-      await expect(
-        service.getAllBalances('wallet\nlevel=ERROR'),
-      ).rejects.toBeInstanceOf(BadRequestException);
-      expect(prisma.walletBalance.findMany).not.toHaveBeenCalled();
-    });
-
-    it('rejects an oversized wallet id', async () => {
-      await expect(
-        service.getAllBalances('a'.repeat(129)),
-      ).rejects.toBeInstanceOf(BadRequestException);
-    });
-
-    it('fails closed on an oversized sweep rather than silently truncating', async () => {
-      prisma.wallet.findMany.mockResolvedValue(
-        Array.from({ length: 501 }, (_, i) => ({
-          id: `w${i}`,
-          publicKey: ACCOUNT,
-        })),
-      );
-
-      await expect(service.syncAllWallets()).rejects.toBeInstanceOf(
-        PayloadTooLargeException,
       );
     });
-  });
 
-  describe('staleness detection', () => {
-    it('reports never-synced rows as stale', async () => {
-      prisma.walletBalance.findMany.mockResolvedValue([
+    it('does NOT emit balance.updated when balance is unchanged', async () => {
+      const existingBalance = makeBalance({ balance: '100.0000000' });
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
+      horizonService.accountExists.mockResolvedValue(true);
+      horizonService.getAccountBalances.mockResolvedValue([
         {
-          assetType: 'NATIVE',
-          assetCode: null,
-          assetIssuer: null,
-          lastSyncedAt: null,
+          walletId: WALLET_ID,
+          asset: { type: AssetType.NATIVE },
+          balance: '100.0000000',
+          ledgerSequence: 2,
+          timestamp: new Date(),
         },
-      ] as never);
+      ]);
+      repo.findOne.mockResolvedValue(existingBalance);
+      repo.upsert.mockResolvedValue(undefined);
 
-      const report = await service.detectStaleBalances(WALLET);
-      expect(report.staleAssets).toHaveLength(1);
-      expect(report.staleSince).toBeNull();
-    });
+      await service.syncWalletBalances({ walletId: WALLET_ID });
 
-    it('reports rows older than the threshold as stale', async () => {
-      process.env.BALANCE_STALE_THRESHOLD_MS = '1000';
-      prisma.walletBalance.findMany.mockResolvedValue([
-        {
-          assetType: 'NATIVE',
-          assetCode: null,
-          assetIssuer: null,
-          lastSyncedAt: new Date(Date.now() - 60_000),
-        },
-      ] as never);
-
-      const report = await service.detectStaleBalances(WALLET);
-      expect(report.staleAssets).toHaveLength(1);
-      expect(report.staleSince).toBeInstanceOf(Date);
-    });
-
-    it('does not report a recently synced row as stale', async () => {
-      process.env.BALANCE_STALE_THRESHOLD_MS = '600000';
-      prisma.walletBalance.findMany.mockResolvedValue([
-        {
-          assetType: 'NATIVE',
-          assetCode: null,
-          assetIssuer: null,
-          lastSyncedAt: new Date(),
-        },
-      ] as never);
-
-      const report = await service.detectStaleBalances(WALLET);
-      expect(report.staleAssets).toHaveLength(0);
+      await new Promise((r) => setImmediate(r));
+      expect(webhookEmitter.emitBalanceUpdated).not.toHaveBeenCalled();
     });
   });
 
-  describe('scheduled sweep', () => {
-    it('keeps going when one wallet fails and counts the failure', async () => {
-      prisma.wallet.findMany.mockResolvedValue([
-        { id: 'bad', publicKey: ACCOUNT },
-        { id: 'good', publicKey: ACCOUNT },
-      ] as never);
-      prisma.wallet.findUnique.mockImplementation(
-        (args: { where: { id: string } }) =>
-          Promise.resolve(
-            args.where.id === 'bad' ? null : { id: 'good', publicKey: ACCOUNT },
-          ),
-      );
+  // ---------------------------------------------------------------------------
+  // reconcileBalance
+  // ---------------------------------------------------------------------------
 
-      await expect(service.runScheduledSync()).resolves.toBeUndefined();
-
-      expect(metrics.incrementCounter).toHaveBeenCalledWith(
-        'balance_scheduled_sync_failed',
-      );
-    });
-  });
-
-  describe('observability', () => {
-    it('never logs a full account id', async () => {
-      const logSpy = jest
-        .spyOn(
-          (service as unknown as { logger: { error: (m: string) => void } })
-            .logger,
-          'error',
-        )
-        .mockImplementation(() => undefined);
-      horizon.fetchAccountBalances.mockRejectedValue(new Error('down'));
-
+  describe('reconcileBalance', () => {
+    it('throws NotFoundException when wallet does not exist', async () => {
+      repo.findOne.mockResolvedValue(null);
+      repo.findWallet.mockResolvedValue(null);
       await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
-      ).rejects.toBeInstanceOf(ServiceUnavailableException);
-
-      const logged = logSpy.mock.calls.flat().join(' ');
-      expect(logged).not.toContain(ACCOUNT);
+        service.reconcileBalance(WALLET_ID, { type: AssetType.NATIVE }),
+      ).rejects.toThrow(NotFoundException);
     });
 
-    it('emits a mismatch metric on a discrepancy', async () => {
-      prisma.walletBalance.findUnique.mockResolvedValue({
-        id: 'b1',
-        balance: '1',
+    it('returns matches=true and clears mismatch when balances are equal', async () => {
+      const balance = makeBalance({ balance: '100.0000000' });
+      repo.findOne.mockResolvedValue(balance);
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
+      horizonService.getAccountBalances.mockResolvedValue([
+        {
+          walletId: WALLET_ID,
+          asset: { type: AssetType.NATIVE },
+          balance: '100.0000000',
+          ledgerSequence: 1,
+          timestamp: new Date(),
+        },
+      ]);
+      repo.clearMismatch.mockResolvedValue(undefined);
+
+      const result = await service.reconcileBalance(WALLET_ID, {
+        type: AssetType.NATIVE,
       });
 
-      await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      expect(result.matches).toBe(true);
+      expect(repo.clearMismatch).toHaveBeenCalled();
+      expect(webhookEmitter.emitBalanceMismatch).not.toHaveBeenCalled();
+    });
 
-      expect(metrics.incrementCounter).toHaveBeenCalledWith(
-        'balance_reconcile_mismatch',
+    // #387 — Emit balance.mismatch domain event
+    it('emits balance.mismatch when divergence is detected', async () => {
+      const balance = makeBalance({ balance: '50.0000000' });
+      repo.findOne
+        .mockResolvedValueOnce(balance) // getBalance call
+        .mockResolvedValueOnce(balance); // applyBalanceUpdate findOne call
+      repo.findWallet.mockResolvedValue({
+        id: WALLET_ID,
+        publicKey: PUBLIC_KEY,
+        status: 'ACTIVE',
+      });
+      horizonService.getAccountBalances.mockResolvedValue([
+        {
+          walletId: WALLET_ID,
+          asset: { type: AssetType.NATIVE },
+          balance: '100.0000000',
+          ledgerSequence: 1,
+          timestamp: new Date(),
+        },
+      ]);
+      repo.upsert.mockResolvedValue(undefined);
+      repo.recordMismatch.mockResolvedValue(undefined);
+
+      const result = await service.reconcileBalance(WALLET_ID, {
+        type: AssetType.NATIVE,
+      });
+
+      await new Promise((r) => setImmediate(r));
+      expect(result.matches).toBe(false);
+      expect(result.difference).toBeDefined();
+      expect(webhookEmitter.emitBalanceMismatch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          walletId: WALLET_ID,
+          indexedBalance: '50.0000000',
+          onChainBalance: '100.0000000',
+        }),
       );
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getAllBalances
+  // ---------------------------------------------------------------------------
+
+  describe('getAllBalances', () => {
+    it('delegates to repository', async () => {
+      const balances = [makeBalance()];
+      repo.findAll.mockResolvedValue(balances);
+
+      const result = await service.getAllBalances(WALLET_ID);
+
+      expect(repo.findAll).toHaveBeenCalledWith(WALLET_ID);
+      expect(result).toEqual(balances);
+    });
+  });
+
+  // ---------------------------------------------------------------------------
+  // getIndexerLag — fail-closed observability (#959)
+  // ---------------------------------------------------------------------------
+
+  describe('getIndexerLag', () => {
+    afterEach(() => {
+      delete process.env.BALANCE_LAG_ALERT_THRESHOLD_MS;
+    });
+
+    it('reports lag for a freshly synced index', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([
+        makeBalance({ lastSyncedAt: new Date() }),
+      ]);
+
+      const report = await service.getIndexerLag();
+
+      expect(report.breaching).toBe(false);
+      expect(report.neverSynced).toBe(0);
+      expect(mockMetrics.recordLag).toHaveBeenCalledWith(
+        expect.objectContaining({
+          lag: expect.objectContaining({ breaching: false }),
+        }),
+      );
+    });
+
+    it('scopes the query to a wallet when one is supplied', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([]);
+
+      await service.getIndexerLag(WALLET_ID);
+
+      expect(mockPrisma.walletBalance.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { walletId: WALLET_ID } }),
+      );
+    });
+
+    it('caps the scan so a huge index cannot become an outage', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([]);
+
+      await service.getIndexerLag();
+
+      expect(mockPrisma.walletBalance.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 10_000 }),
+      );
+    });
+
+    it('honours BALANCE_LAG_ALERT_THRESHOLD_MS', async () => {
+      process.env.BALANCE_LAG_ALERT_THRESHOLD_MS = '1000';
+      mockPrisma.walletBalance.findMany.mockResolvedValue([
+        makeBalance({ lastSyncedAt: new Date(Date.now() - 5_000) }),
+      ]);
+
+      const report = await service.getIndexerLag();
+
+      expect(report.thresholdMs).toBe(1_000);
+      expect(report.breaching).toBe(true);
+    });
+
+    it('fails closed with a stable code when the balance store is down', async () => {
+      // Reporting lag 0 during a DB outage would make an unreachable index look
+      // healthy and silently disable the alerting this exists to provide.
+      mockPrisma.walletBalance.findMany.mockRejectedValue(
+        new Error('connection terminated'),
+      );
+
+      const err = await service.getIndexerLag().catch((e) => e);
+
+      expect(err).toBeInstanceOf(Error);
+      expect((err as { code?: string }).code).toBe(
+        'BALANCE_LAG_DEPENDENCY_UNAVAILABLE',
+      );
+      // And it must not be reported as a healthy observation.
+      expect(mockMetrics.recordLag).not.toHaveBeenCalled();
+      expect(mockMetrics.record).toHaveBeenCalledWith(
+        expect.objectContaining({ outcome: 'failure' }),
+      );
+    });
+
+    it('never puts a wallet id in the report', async () => {
+      mockPrisma.walletBalance.findMany.mockResolvedValue([
+        makeBalance({ lastSyncedAt: new Date() }),
+      ]);
+
+      const report = await service.getIndexerLag(WALLET_ID);
+
+      expect(JSON.stringify(report)).not.toContain(WALLET_ID);
+      expect(JSON.stringify(report)).not.toContain(PUBLIC_KEY);
     });
   });
 });

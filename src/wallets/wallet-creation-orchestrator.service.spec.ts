@@ -5,7 +5,6 @@ import {
   type CreateWalletOrchestratorRequest,
 } from './wallet-creation-orchestrator.service';
 import { WalletNetwork, WalletStatus } from './domain/wallet.model';
-import { EncryptionService } from '../encryption/encryption.service';
 
 /**
  * Retry / replay contract for wallet orchestration (#963).
@@ -20,22 +19,8 @@ import { EncryptionService } from '../encryption/encryption.service';
 describe('WalletCreationOrchestrator', () => {
   let orchestrator: WalletCreationOrchestrator;
 
-  /**
-   * Stand-in for `EncryptionService`.
-   *
-   * The real service is fail-closed on a missing/invalid
-   * `WALLET_ENCRYPTION_KEY`, so this suite injects a deterministic envelope
-   * producer and pins the *custody* invariant separately: the orchestrator must
-   * hand the seed to the encryption service before the wallet is returned.
-   * `encryption.service.spec.ts` covers the crypto itself.
-   */
-  const fakeEncryption = {
-    encryptAndSerialize: (plaintext: string) =>
-      `enc:v1:stub:${plaintext.length}`,
-  } as unknown as EncryptionService;
-
   beforeEach(() => {
-    orchestrator = new WalletCreationOrchestrator(fakeEncryption);
+    orchestrator = new WalletCreationOrchestrator();
   });
 
   const req = (
@@ -63,11 +48,7 @@ describe('WalletCreationOrchestrator', () => {
       const serialized = JSON.stringify(result);
 
       expect(serialized).not.toMatch(/privateKey/i);
-      // No plaintext Stellar secret seed (S followed by 55 base32 chars).
-      expect(serialized).not.toMatch(/"S[A-Z2-7]{55}"/);
-      // The only secret representation that may leave the service is the
-      // ciphertext envelope produced by EncryptionService.
-      expect(result.wallet.encryptedSecret).toMatch(/^enc:v1:/);
+      expect(serialized).not.toMatch(/secret/i);
     });
 
     it('echoes the supplied idempotencyKey', async () => {

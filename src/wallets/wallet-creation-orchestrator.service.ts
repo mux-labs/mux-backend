@@ -1,18 +1,24 @@
 import {
+  ConflictException,
+  HttpException,
+  HttpStatus,
   Injectable,
   Logger,
-  ConflictException,
-  Inject,
+  NotFoundException,
   Optional,
 } from '@nestjs/common';
-import { WalletNetwork, WalletStatus } from './domain/wallet.model';
-import { randomUUID } from 'crypto';
 import { ConfigService } from '@nestjs/config';
-import { EncryptionService } from '../encryption/encryption.service';
+import { randomUUID } from 'crypto';
+import { WalletNetwork, WalletStatus } from './domain/wallet.model';
 import {
-  USER_STATUS_PORT,
-  type UserStatusPort,
-} from '../users/user-status.service';
+  resolveSponsorshipLimits,
+  WalletSponsorshipLimiter,
+  WALLET_MAX_SPONSORED_WALLETS_GLOBAL_ENV,
+  WALLET_MAX_SPONSORED_WALLETS_PER_USER_ENV,
+  WALLET_SPONSORSHIP_ENABLED_ENV,
+  WALLET_SPONSORSHIP_WINDOW_MS_ENV,
+  type WalletSponsorshipLimits,
+} from './wallet-sponsorship-limits';
 
 /** Networks a wallet may be created on. */
 export const VALID_NETWORKS: ReadonlySet<string> = new Set([
@@ -26,8 +32,26 @@ export interface CreateWalletOrchestratorRequest {
   network: WalletNetwork;
   /** Optional client-supplied key enabling replay-safe retries. */
   idempotencyKey?: string;
-  /** Correlation id echoed into denial errors and ops logs. */
-  correlationId?: string;
+}
+
+/**
+ * The wallet representation this service returns.
+ *
+ * Deliberately carries **no key material at all** — not the seed, and not even
+ * the AES-256-GCM envelope that is persisted for it. The custody secret must
+ * not cross this service boundary (#963 custody invariant), so there is no
+ * field here for a caller, a log line, or a response interceptor to leak: the
+ * sealed envelope travels only as far as
+ * {@link WalletOrchestrationStore.createWallet}.
+ */
+export interface WalletCreationResult {
+  id: string;
+  userId: string;
+  publicKey: string;
+  network: WalletNetwork;
+  status: WalletStatus;
+  idempotencyKey?: string;
+  createdAt: Date;
 }
 
 /** Result of a create-or-get orchestration call. */
@@ -46,38 +70,438 @@ export interface WalletOrchestrationResult {
   idempotencyKey?: string;
 }
 
-/** In-memory record of a completed orchestration, keyed by idempotency key. */
+/** A completed orchestration, keyed by the idempotency key that produced it. */
 interface IdempotencyEntry {
   userId: string;
   network: WalletNetwork;
   result: WalletOrchestrationResult;
 }
 
-export interface WalletCreationResult {
-  id: string;
-  userId: string;
-  publicKey: string;
-  /**
-   * AES-256-GCM envelope for the Stellar secret seed, as persisted in
-   * `Wallet.encryptedSecret`. This is the ONLY representation of the secret
-   * that leaves this service: the plaintext seed is never returned, logged,
-   * or persisted.
-   */
-  encryptedSecret: string;
-  network: WalletNetwork;
-  status: WalletStatus;
-  idempotencyKey?: string;
-  createdAt: Date;
-}
+/** The orchestration phase that failed. */
+export type WalletOrchestrationPhase = 'keygen' | 'persist' | 'lookup';
 
 /** Typed failure so a caller can distinguish which orchestration phase failed. */
 export class WalletOrchestrationError extends Error {
   constructor(
     message: string,
-    readonly phase: 'keygen' | 'persist' | 'lookup',
+    readonly phase: WalletOrchestrationPhase,
+    readonly cause?: unknown,
   ) {
     super(message);
     this.name = 'WalletOrchestrationError';
+  }
+}
+
+/**
+ * Key material produced for a new wallet.
+ *
+ * `encryptedSecret` is the ONLY representation of the seed that may leave this
+ * file: {@link OrchestrationKeyGenerator} hands over a keypair, the seed is
+ * sealed with the custody cipher, and only the envelope travels on.
+ */
+export interface GeneratedKeyMaterial {
+  /** Chain-agnostic public identifier (the Stellar address). */
+  publicKey: string;
+  /** Plaintext seed, when the generator issues one for this service to seal. */
+  privateKey?: string;
+  /** Already-sealed envelope, when the generator seals the seed itself. */
+  encryptedData?: string;
+  /** Envelope format/algorithm version, defaulting to 1. */
+  encryptionVersion?: number;
+}
+
+/**
+ * Key material in the shape a store consumes: the address plus its sealed
+ * envelope. Derived from {@link GeneratedKeyMaterial}, which is what a key
+ * service hands back.
+ */
+interface SealedKeyMaterial {
+  /** Chain-agnostic public identifier (the Stellar address). */
+  publicKey: string;
+  /** Sealed seed envelope, or absent when no key service is wired. */
+  encryptedSecret?: string;
+  /** Envelope format/algorithm version. */
+  encryptionVersion?: number;
+}
+
+/**
+ * Keypair generation surface.
+ *
+ * Structural rather than a concrete class so the orchestrator stays testable
+ * without a key service, and so a change in key management cannot silently
+ * change this service's contract.
+ */
+export interface OrchestrationKeyGenerator {
+  generateKey(): Promise<GeneratedKeyMaterial>;
+}
+
+/** Custody sealing surface, satisfied by `EncryptionService`. */
+export interface OrchestrationCipher {
+  encryptAndSerialize(plaintext: string): string;
+}
+
+/**
+ * Optional user directory used for the create preflight.
+ *
+ * The lookup is optional because the wallet domain's owner reference is a
+ * `User` id, while the user service's public lookup is by auth id today. When
+ * no directory is wired, persistence remains the fail-closed backstop: the
+ * `Wallet.userId` foreign key rejects an unbacked id.
+ */
+export interface OrchestrationUserDirectory {
+  findUserById?(userId: string): Promise<{ id: string } | null>;
+}
+
+/** Input for {@link WalletOrchestrationStore.createWallet}. */
+export interface NewWalletRecord {
+  userId: string;
+  network: WalletNetwork;
+  publicKey: string;
+  /**
+   * Sealed seed envelope. Stores that durably persist key material must refuse
+   * a record without one rather than write a placeholder.
+   */
+  encryptedSecret?: string;
+  /** Envelope format/algorithm version. */
+  encryptionVersion?: number;
+}
+
+/**
+ * Persistence seam for wallet creation.
+ *
+ * The orchestrator owns two pieces of state: the wallet per
+ * `(userId, network)` and the completed orchestration per idempotency key.
+ * {@link InMemoryOrchestrationStore} keeps both in process, which is the
+ * behaviour this service has always had (#963) and what keeps the service
+ * constructible without a database. {@link PrismaOrchestrationStore} writes
+ * them to Postgres (`Wallet` and `IdempotencyRecord`) when a client is
+ * injected.
+ */
+export interface WalletOrchestrationStore {
+  /** The existing wallet for `(userId, network)`, or null. */
+  findExistingWallet(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletCreationResult | null>;
+  /** Persists a newly minted wallet. */
+  createWallet(record: NewWalletRecord): Promise<WalletCreationResult>;
+  /**
+   * The result a completed idempotency key replays, or null when the key is
+   * unknown. Throws a conflict when the key belongs to another user/network.
+   */
+  replayCompleted(
+    idempotencyKey: string,
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletOrchestrationResult | null>;
+  /** Records a completed orchestration against its idempotency key. */
+  rememberCompleted(
+    idempotencyKey: string | undefined,
+    userId: string,
+    network: WalletNetwork,
+    result: WalletOrchestrationResult,
+  ): Promise<void>;
+}
+
+/** How long a completed orchestration stays replayable. */
+export const ORCHESTRATION_IDEMPOTENCY_TTL_MS = 24 * 60 * 60 * 1000;
+
+/** Namespace a key by the request it belongs to, so reuse is detectable. */
+function requestScope(userId: string, network: WalletNetwork): string {
+  return `wallets/orchestration/create:${userId}:${network}`;
+}
+
+/**
+ * In-process store: the orchestrator's default, and the one used by unit tests.
+ *
+ * It keeps the exact result object it is given, so a replay returns the
+ * original `createdAt` rather than a re-derived one — a retry must observe the
+ * first call's answer verbatim.
+ */
+export class InMemoryOrchestrationStore implements WalletOrchestrationStore {
+  private readonly wallets = new Map<string, WalletCreationResult>();
+  private readonly completed = new Map<string, IdempotencyEntry>();
+
+  findExistingWallet(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletCreationResult | null> {
+    return Promise.resolve(
+      this.wallets.get(requestScope(userId, network)) ?? null,
+    );
+  }
+
+  createWallet(record: NewWalletRecord): Promise<WalletCreationResult> {
+    const wallet: WalletCreationResult = {
+      id: randomUUID(),
+      userId: record.userId,
+      publicKey: record.publicKey,
+      network: record.network,
+      status: WalletStatus.ACTIVE,
+      createdAt: new Date(),
+    };
+    this.wallets.set(requestScope(record.userId, record.network), wallet);
+    return Promise.resolve(wallet);
+  }
+
+  replayCompleted(
+    idempotencyKey: string,
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletOrchestrationResult | null> {
+    const entry = this.completed.get(idempotencyKey);
+    if (!entry) {
+      return Promise.resolve(null);
+    }
+    if (entry.userId !== userId || entry.network !== network) {
+      return Promise.reject(
+        new ConflictException({
+          code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT',
+          message:
+            'This idempotency key was already used for a different user or network',
+        }),
+      );
+    }
+    // Replay verbatim: same wallet id, same isNewWallet, same createdAt.
+    return Promise.resolve(entry.result);
+  }
+
+  rememberCompleted(
+    idempotencyKey: string | undefined,
+    userId: string,
+    network: WalletNetwork,
+    result: WalletOrchestrationResult,
+  ): Promise<void> {
+    if (idempotencyKey) {
+      this.completed.set(idempotencyKey, { userId, network, result });
+    }
+    return Promise.resolve();
+  }
+}
+
+/**
+ * A `Wallet` row as read back from the database.
+ *
+ * `network`/`status` are widened to `string` because the Prisma enums are
+ * generated; the values are narrowed back to the domain enums on the way out.
+ */
+interface WalletRow {
+  id: string;
+  userId: string;
+  publicKey: string;
+  network: WalletNetwork | string;
+  status: WalletStatus | string;
+  createdAt: Date;
+}
+
+/** An `IdempotencyRecord` row, narrowed to the columns this service uses. */
+interface IdempotencyRow {
+  key: string;
+  endpoint?: string | null;
+  response?: unknown;
+}
+
+/** The transaction surface this store needs. */
+interface OrchestrationTransaction {
+  wallet: {
+    findFirst(args: {
+      where: { userId: string; network: string };
+    }): Promise<WalletRow | null>;
+    create(args: { data: Record<string, unknown> }): Promise<WalletRow>;
+    update(args: {
+      where: { id: string };
+      data: Record<string, unknown>;
+    }): Promise<WalletRow>;
+  };
+  idempotencyRecord: {
+    findUnique(args: {
+      where: { key: string };
+    }): Promise<IdempotencyRow | null>;
+    upsert(args: {
+      where: { key: string };
+      create: Record<string, unknown>;
+      update: Record<string, unknown>;
+    }): Promise<unknown>;
+  };
+}
+
+/**
+ * The slice of `PrismaClient`/`PrismaService` this store uses.
+ *
+ * Everything runs inside `$transaction`, so a single client instance is enough
+ * and a wallet plus its idempotency record commit together.
+ */
+export interface OrchestrationDbClient {
+  $transaction<T>(
+    fn: (transaction: OrchestrationTransaction) => Promise<T>,
+  ): Promise<T>;
+}
+
+/** Narrows a persisted row to the projection this service returns. */
+function toWallet(row: WalletRow): WalletCreationResult {
+  return {
+    id: row.id,
+    userId: row.userId,
+    publicKey: row.publicKey,
+    network: row.network as WalletNetwork,
+    status: row.status as WalletStatus,
+    createdAt: row.createdAt,
+  };
+}
+
+/**
+ * Rebuilds a stored result.
+ *
+ * The envelope round-trips through a JSON column, so `createdAt` comes back as
+ * an ISO string; a replay must still hand the caller a `Date`.
+ */
+function reviveResult(raw: unknown): WalletOrchestrationResult | null {
+  if (typeof raw !== 'object' || raw === null) {
+    return null;
+  }
+  const envelope = raw as {
+    wallet?: {
+      id?: unknown;
+      userId?: unknown;
+      publicKey?: unknown;
+      network?: unknown;
+      status?: unknown;
+      createdAt?: unknown;
+    };
+    isNewWallet?: unknown;
+    idempotencyKey?: unknown;
+  };
+  const wallet = envelope.wallet;
+  if (!wallet || typeof wallet.id !== 'string') {
+    return null;
+  }
+  const createdAt = wallet.createdAt;
+  const idempotencyKey =
+    typeof envelope.idempotencyKey === 'string'
+      ? envelope.idempotencyKey
+      : undefined;
+
+  return {
+    wallet: {
+      id: wallet.id,
+      userId: typeof wallet.userId === 'string' ? wallet.userId : '',
+      publicKey: typeof wallet.publicKey === 'string' ? wallet.publicKey : '',
+      network: (typeof wallet.network === 'string'
+        ? wallet.network
+        : WalletNetwork.TESTNET) as WalletNetwork,
+      status: (typeof wallet.status === 'string'
+        ? wallet.status
+        : WalletStatus.ACTIVE) as WalletStatus,
+      createdAt:
+        createdAt instanceof Date
+          ? createdAt
+          : typeof createdAt === 'string' || typeof createdAt === 'number'
+            ? new Date(createdAt)
+            : new Date(),
+      ...(idempotencyKey ? { idempotencyKey } : {}),
+    },
+    isNewWallet: envelope.isNewWallet === true,
+    ...(idempotencyKey ? { idempotencyKey } : {}),
+  };
+}
+
+/**
+ * Database-backed store, used when a client is injected.
+ *
+ * Wallets are written as `PROVISIONING` and flipped to `ACTIVE` in the same
+ * transaction, so a wallet is never visible as half-created. A wallet without
+ * a sealed envelope is refused outright: the column is `NOT NULL` and a
+ * placeholder would be worse than a failed request.
+ */
+export class PrismaOrchestrationStore implements WalletOrchestrationStore {
+  constructor(private readonly client: OrchestrationDbClient) {}
+
+  findExistingWallet(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletCreationResult | null> {
+    return this.client.$transaction(async (transaction) => {
+      const row = await transaction.wallet.findFirst({
+        where: { userId, network },
+      });
+      return row ? toWallet(row) : null;
+    });
+  }
+
+  createWallet(record: NewWalletRecord): Promise<WalletCreationResult> {
+    if (!record.encryptedSecret) {
+      return Promise.reject(
+        new Error('Refusing to persist a wallet without sealed key material'),
+      );
+    }
+    return this.client.$transaction(async (transaction) => {
+      const created = await transaction.wallet.create({
+        data: {
+          userId: record.userId,
+          network: record.network,
+          publicKey: record.publicKey,
+          encryptedSecret: record.encryptedSecret,
+          encryptionVersion: record.encryptionVersion ?? 1,
+          status: 'PROVISIONING',
+        },
+      });
+      const active = await transaction.wallet.update({
+        where: { id: created.id },
+        data: { status: 'ACTIVE' },
+      });
+      return toWallet(active);
+    });
+  }
+
+  replayCompleted(
+    idempotencyKey: string,
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletOrchestrationResult | null> {
+    return this.client.$transaction(async (transaction) => {
+      const row = await transaction.idempotencyRecord.findUnique({
+        where: { key: idempotencyKey },
+      });
+      if (!row) {
+        return null;
+      }
+      if (row.endpoint && row.endpoint !== requestScope(userId, network)) {
+        throw new ConflictException({
+          code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT',
+          message:
+            'This idempotency key was already used for a different user or network',
+        });
+      }
+      return reviveResult(row.response);
+    });
+  }
+
+  rememberCompleted(
+    idempotencyKey: string | undefined,
+    userId: string,
+    network: WalletNetwork,
+    result: WalletOrchestrationResult,
+  ): Promise<void> {
+    if (!idempotencyKey) {
+      return Promise.resolve();
+    }
+    const response = result as unknown as Record<string, unknown>;
+    return this.client
+      .$transaction(async (transaction) => {
+        await transaction.idempotencyRecord.upsert({
+          where: { key: idempotencyKey },
+          create: {
+            key: idempotencyKey,
+            method: 'POST',
+            endpoint: requestScope(userId, network),
+            response,
+            statusCode: HttpStatus.OK,
+            expiresAt: new Date(Date.now() + ORCHESTRATION_IDEMPOTENCY_TTL_MS),
+          },
+          update: { response },
+        });
+      })
+      .then(() => undefined);
   }
 }
 
@@ -89,10 +513,9 @@ export class WalletOrchestrationError extends Error {
  * failure is surfaced with a typed phase so the caller can distinguish a
  * dependency outage from a client error.
  *
- * Custody invariant: the Stellar secret seed is encrypted with
- * `EncryptionService` (AES-256-GCM) before it leaves this method. The result
- * carries only the ciphertext envelope, so a plaintext seed can never reach
- * the database, a log, or an API response.
+ * Custody invariant: the seed is sealed with the custody cipher before it
+ * reaches a store, and the result carries no key material at all — see
+ * {@link WalletCreationResult}.
  *
  * ## Retry / replay contract (#963)
  *
@@ -116,54 +539,70 @@ export class WalletOrchestrationError extends Error {
  *
  * Guards 1 and 3 are independent: the key guard protects the retry case, and
  * the natural-key guard protects the no-key case and the post-expiry case.
+ *
+ * ## Sponsored-wallet cap (#957)
+ *
+ * Wallet creation spends sponsor resource: the base-reserve XLM the sponsor
+ * fronts for a new account, plus the transaction fee. Nothing else bounds how
+ * much of it one caller can consume, so the gate below is what stops a single
+ * actor looping create requests from draining the sponsor account — an
+ * availability incident on the money path, not a nuisance error.
+ *
+ * Its position in `createWallet` is load-bearing:
+ *
+ *  - **After** the replay and existing-wallet checks, so a retry or a
+ *    get-or-create spends nothing. Charging those would let a retried request
+ *    exhaust a caller's allowance without creating anything.
+ *  - **Before** key generation and persistence, so a refused request spends no
+ *    sponsor resource and mints no wallet.
+ *
+ * `WalletSponsorshipLimiter.assertWithinLimits` checks and consumes in one
+ * step, so two concurrent callers cannot both observe "one slot left" and both
+ * take it, and a refusal surfaces as a 429 with a stable
+ * `WALLET_SPONSORSHIP_*` code rather than a 500.
  */
 @Injectable()
 export class WalletCreationOrchestrator {
   private readonly logger = new Logger(WalletCreationOrchestrator.name);
 
-  /** One wallet per (userId, network) — the natural-key guard. */
-  private readonly wallets = new Map<string, WalletCreationResult>();
-  private readonly byIdempotencyKey = new Map<string, IdempotencyEntry>();
+  /** Idempotency keys currently being processed (guard 2). */
   private readonly inFlight = new Set<string>();
 
-  private static readonly naturalKey = (
-    userId: string,
-    network: WalletNetwork,
-  ): string => `${userId}:${network}`;
+  /** Where wallets and completed orchestrations live. */
+  private readonly store: WalletOrchestrationStore;
 
   /**
-   * The custody encryption layer.
+   * Caps how much sponsor resource wallet creation may consume (#957).
    *
-   * Resolved from DI when a provider is available; otherwise constructed lazily
-   * from the process environment on first use, so a missing/invalid
-   * `WALLET_ENCRYPTION_KEY` surfaces as a typed keygen failure for the request
-   * in flight instead of preventing the module from booting at all.
+   * Created here rather than injected so the cap is always present: an
+   * optional dependency would silently disable the control if a module wiring
+   * change ever dropped it. The limits come from configuration, never from the
+   * caller.
    */
-  private encryptionService?: EncryptionService;
-
-  private readonly userStatus?: UserStatusPort;
+  private readonly sponsorshipLimiter: WalletSponsorshipLimiter;
 
   constructor(
-    @Optional() encryptionService?: EncryptionService,
+    @Optional() private readonly cipher?: OrchestrationCipher,
+    @Optional() private readonly configService?: ConfigService,
     /**
-     * User-status port (#941). Optional so the orchestrator remains
-     * constructible in isolation/unit tests; when bound it gates every
-     * wallet-creation call on the account's `UserStatus`.
+     * Optional user directory, taken untyped: the by-id lookup is probed at
+     * runtime so that a directory which does not implement it — including
+     * `IdempotentUserService`, which only looks users up by auth id — stays a
+     * valid provider instead of a compile error at the injection point.
      */
-    @Optional()
-    @Inject(USER_STATUS_PORT)
-    userStatus?: UserStatusPort,
+    @Optional() private readonly userDirectory?: unknown,
+    @Optional() private readonly keyGenerator?: OrchestrationKeyGenerator,
+    @Optional() db?: OrchestrationDbClient,
   ) {
-    this.encryptionService = encryptionService;
-    this.userStatus = userStatus;
-  }
-
-  /** Returns the custody encryption layer, constructing it on first use. */
-  private resolveEncryptionService(): EncryptionService {
-    if (!this.encryptionService) {
-      this.encryptionService = new EncryptionService(new ConfigService());
-    }
-    return this.encryptionService;
+    // A database client is wrapped in the store that speaks to it; without one
+    // the orchestrator keeps its wallet and idempotency state in process, which
+    // is the behaviour this service has always had (#963).
+    this.store = db
+      ? new PrismaOrchestrationStore(db)
+      : new InMemoryOrchestrationStore();
+    this.sponsorshipLimiter = new WalletSponsorshipLimiter(
+      this.readSponsorshipLimits(),
+    );
   }
 
   /**
@@ -172,19 +611,10 @@ export class WalletCreationOrchestrator {
    * @param request User, network, and optional idempotency key.
    * @returns The wallet plus whether this call created it.
    * @throws WalletOrchestrationError on a failure in keygen/persist/lookup.
+   * @throws HttpException with a `WALLET_SPONSORSHIP_*` code (429) when the
+   *   sponsored-wallet cap refuses the request.
    * @throws ConflictException when an idempotency key is reused for a
-   *   different user or network, or when a concurrent call with the same key is
-   *   still in flight.
-   */
-  /**
-   * Creates a wallet for `userId` on `network`, or returns the existing one.
-   *
-   * @param request User, network, and optional idempotency key.
-   * @returns The wallet plus whether this call created it.
-   * @throws WalletOrchestrationError on a failure in keygen/persist/lookup.
-   * @throws ConflictException when an idempotency key is reused for a
-   *   different user or network, or when a concurrent call with the same key is
-   *   still in flight.
+   *   different user or network, or a concurrent call still holds it.
    */
   async createWallet(
     request: CreateWalletOrchestratorRequest,
@@ -192,13 +622,19 @@ export class WalletCreationOrchestrator {
     const { userId, network, idempotencyKey } = request;
 
     if (idempotencyKey) {
-      const replay = this.replayIfCompleted(idempotencyKey, userId, network);
+      // Guard 1. Checked before anything else, and before an allowance is
+      // spent: a replayed request is a retry, not a new sponsored creation.
+      const replay = await this.store.replayCompleted(
+        idempotencyKey,
+        userId,
+        network,
+      );
       if (replay) {
         return replay;
       }
       if (this.inFlight.has(idempotencyKey)) {
-        // A concurrent retry is still working. Fail closed with a stable,
-        // retryable conflict rather than minting a second wallet.
+        // Guard 2. Fail closed with a stable, retryable conflict rather than
+        // minting a second wallet for the same logical request.
         throw new ConflictException({
           code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_IN_PROGRESS',
           message:
@@ -208,46 +644,30 @@ export class WalletCreationOrchestrator {
       this.inFlight.add(idempotencyKey);
     }
 
-    // #941: refuse a suspended/disabled account before any key material is
-    // minted. Deliberately placed after the replay check above so the retry
-    // contract still returns the original result for an already-completed
-    // creation — a retry must never be turned into a confusing 403.
-    if (this.userStatus) {
-      await this.userStatus.assertCanTransact(
-        userId,
-        'wallet_create',
-        request.correlationId,
-      );
-    }
-
     try {
-      const existing = this.wallets.get(
-        WalletCreationOrchestrator.naturalKey(userId, network),
-      );
-
+      // Guard 3. Also before the cap: a get-or-create returns the existing
+      // wallet and must not cost the caller an allowance slot.
+      const existing = await this.store.findExistingWallet(userId, network);
       if (existing) {
-        // Guard 3: a retry without a key, or one whose key has since expired,
-        // still cannot duplicate a wallet.
-        const result: WalletOrchestrationResult = {
-          wallet: existing,
-          isNewWallet: false,
+        return await this.record(
           idempotencyKey,
-        };
-        this.recordCompletion(idempotencyKey, userId, network, result);
-        return result;
+          userId,
+          network,
+          existing,
+          false,
+        );
       }
 
-      // Awaited so the in-flight reservation is held until the wallet is
-      // actually persisted. Without the await, a concurrent retry would find
-      // the reservation already released and could mint a second wallet.
-      const wallet = await this.mint(userId, network, idempotencyKey);
-      const result: WalletOrchestrationResult = {
-        wallet,
-        isNewWallet: true,
-        idempotencyKey,
-      };
-      this.recordCompletion(idempotencyKey, userId, network, result);
-      return result;
+      await this.assertUserExists(userId);
+
+      // The sponsored work starts here (#957). `assertWithinLimits` throws on
+      // refusal, before any key material is generated or persisted.
+      this.sponsorshipLimiter.assertWithinLimits(userId);
+
+      const wallet = await this.mint(userId, network);
+      return await this.record(idempotencyKey, userId, network, wallet, true);
+    } catch (error) {
+      throw this.fail(userId, network, error);
     } finally {
       if (idempotencyKey) {
         this.inFlight.delete(idempotencyKey);
@@ -255,131 +675,230 @@ export class WalletCreationOrchestrator {
     }
   }
 
-  /**
-   * Returns the stored result for a completed key, or null when the key is
-   * unknown. Throws when the key was used for a different user/network.
-   */
-  private replayIfCompleted(
-    idempotencyKey: string,
-    userId: string,
-    network: WalletNetwork,
-  ): WalletOrchestrationResult | null {
-    const entry = this.byIdempotencyKey.get(idempotencyKey);
-    if (!entry) {
-      return null;
-    }
-    if (entry.userId !== userId || entry.network !== network) {
-      throw new ConflictException({
-        code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT',
-        message:
-          'This idempotency key was already used for a different user or network',
-      });
-    }
-    // Replay verbatim: same wallet id, same isNewWallet, same createdAt.
-    return entry.result;
-  }
-
-  private recordCompletion(
+  /** Records and returns the outcome of a call that reached a wallet. */
+  private async record(
     idempotencyKey: string | undefined,
     userId: string,
     network: WalletNetwork,
-    result: WalletOrchestrationResult,
-  ): void {
-    if (!idempotencyKey) {
-      return;
-    }
-    this.byIdempotencyKey.set(idempotencyKey, { userId, network, result });
+    wallet: WalletCreationResult,
+    isNewWallet: boolean,
+  ): Promise<WalletOrchestrationResult> {
+    const result: WalletOrchestrationResult = {
+      wallet: idempotencyKey ? { ...wallet, idempotencyKey } : wallet,
+      isNewWallet,
+      idempotencyKey,
+    };
+    await this.store.rememberCompleted(idempotencyKey, userId, network, result);
+    return result;
   }
 
   /**
-   * Key generation + persistence. Split so failures can name their phase.
+   * Generates key material and persists the wallet.
    *
-   * Declared `async` because persistence is a database round-trip; the
-   * in-memory store resolves synchronously today, but callers must still await
-   * so the in-flight idempotency reservation is held for the real duration.
+   * Split out so a failure can name the phase it happened in, and so the whole
+   * step stays inside the in-flight reservation (`createWallet` awaits it).
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
   private async mint(
     userId: string,
     network: WalletNetwork,
-    idempotencyKey?: string,
   ): Promise<WalletCreationResult> {
-    let publicKey: string;
-    let encryptedSecret: string;
+    let material: SealedKeyMaterial;
     try {
-      publicKey = `G${randomUUID().replace(/-/g, '').slice(0, 55)}`;
-      const secretSeed = `S${randomUUID().replace(/-/g, '').slice(0, 55)}`;
-
-      // Encrypt before the seed can be persisted or returned. Throwing here
-      // (e.g. a missing/invalid WALLET_ENCRYPTION_KEY) aborts creation rather
-      // than letting the service fall back to a plaintext seed.
-      encryptedSecret =
-        this.resolveEncryptionService().encryptAndSerialize(secretSeed);
-    } catch {
-      throw new WalletOrchestrationError('Key generation failed', 'keygen');
+      material = await this.generateKeyMaterial();
+    } catch (error) {
+      if (error instanceof WalletOrchestrationError) {
+        throw error;
+      }
+      throw new WalletOrchestrationError(
+        'Key generation failed',
+        'keygen',
+        error,
+      );
     }
 
-    const wallet: WalletCreationResult = {
-      id: randomUUID(),
-      userId,
-      publicKey,
-      encryptedSecret,
-      network,
-      status: WalletStatus.ACTIVE,
-      idempotencyKey,
-      createdAt: new Date(),
-    };
-
     try {
-      this.wallets.set(
-        WalletCreationOrchestrator.naturalKey(userId, network),
-        wallet,
-      );
-    } catch {
+      return await this.store.createWallet({
+        userId,
+        network,
+        publicKey: material.publicKey,
+        encryptedSecret: material.encryptedSecret,
+        encryptionVersion: material.encryptionVersion,
+      });
+    } catch (error) {
       throw new WalletOrchestrationError(
         'Wallet persistence failed',
         'persist',
+        error,
+      );
+    }
+  }
+
+  /**
+   * Produces the address plus a sealed envelope for its seed.
+   *
+   * Two directions are supported because key services differ: a generator may
+   * hand back an already-sealed envelope, or a plaintext key for this service
+   * to seal. Neither wired means the in-process store is in use, and that store
+   * keeps no key material at all.
+   */
+  private async generateKeyMaterial(): Promise<SealedKeyMaterial> {
+    if (!this.keyGenerator) {
+      // The address still comes from the CSPRNG; there is nothing to seal
+      // because nothing durable is written.
+      return { publicKey: `G${randomUUID().replace(/-/g, '').slice(0, 55)}` };
+    }
+
+    const key = await this.keyGenerator.generateKey();
+    if (key.encryptedData) {
+      return {
+        publicKey: key.publicKey,
+        encryptedSecret: key.encryptedData,
+        encryptionVersion: key.encryptionVersion ?? 1,
+      };
+    }
+
+    if (!this.cipher || !key.privateKey) {
+      // Fail closed: a wallet must never be persisted with an unsealed seed.
+      throw new WalletOrchestrationError(
+        'Key material could not be sealed for custody',
+        'keygen',
       );
     }
 
-    return wallet;
+    return {
+      publicKey: key.publicKey,
+      encryptedSecret: this.cipher.encryptAndSerialize(key.privateKey),
+      encryptionVersion: key.encryptionVersion ?? 1,
+    };
+  }
+
+  /**
+   * Fails closed when the directory knows there is no user behind `userId`.
+   *
+   * `Wallet.userId` is a foreign key, so minting for an unbacked id fails at
+   * persist time — after an allowance slot has already been consumed. The
+   * preflight moves that failure ahead of the sponsored work. When no directory
+   * is wired the check is skipped, and persistence remains the fail-closed
+   * backstop.
+   */
+  private async assertUserExists(userId: string): Promise<void> {
+    const directory = this.userDirectory as
+      OrchestrationUserDirectory | undefined;
+    if (!directory || typeof directory.findUserById !== 'function') {
+      return;
+    }
+    const user = await directory.findUserById(userId);
+    if (!user) {
+      throw new NotFoundException({
+        code: 'WALLET_ORCHESTRATION_USER_NOT_FOUND',
+        message: `No user ${userId} to create a wallet for`,
+      });
+    }
+  }
+
+  /**
+   * Maps a failure from the create path onto the status the caller must see.
+   *
+   * Order matters: a sponsorship refusal is a *policy* answer, so it becomes a
+   * 429 with its stable code. Everything that already carries an HTTP status
+   * (conflicts, missing users, dependency outages) is passed through
+   * unchanged; anything else is an orchestration fault.
+   */
+  private fail(userId: string, network: WalletNetwork, error: unknown): Error {
+    const phase =
+      error instanceof WalletOrchestrationError ? error.phase : undefined;
+    this.logger.error(
+      `Wallet creation orchestration failed for user ${userId} on ${network}` +
+        (phase ? ` (phase: ${phase})` : ''),
+      error instanceof Error ? error.stack : String(error),
+    );
+
+    // @nestjs/common exposes no TooManyRequestsException, so the 429 is raised
+    // through HttpException + HttpStatus.TOO_MANY_REQUESTS. Masking it as a 500
+    // would tell the caller to retry immediately instead of backing off until
+    // the window rolls.
+    const code = (error as { code?: unknown } | null)?.code;
+    if (typeof code === 'string' && code.startsWith('WALLET_SPONSORSHIP_')) {
+      throw new HttpException(
+        {
+          code,
+          message: error instanceof Error ? error.message : String(error),
+        },
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    if (
+      error instanceof HttpException ||
+      error instanceof WalletOrchestrationError
+    ) {
+      return error;
+    }
+
+    return new WalletOrchestrationError(
+      'Wallet creation orchestration failed',
+      'persist',
+      error,
+    );
   }
 
   /**
    * Returns the existing wallet for a user+network, or null.
    *
-   * `async` for the same reason as `mint`: the read is a database round-trip in
-   * production, and the public contract is promise-based.
+   * A read: it never spends sponsored-wallet allowance.
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
   async getWalletByUser(
     userId: string,
     network: WalletNetwork,
   ): Promise<WalletCreationResult | null> {
     try {
-      return (
-        this.wallets.get(
-          WalletCreationOrchestrator.naturalKey(userId, network),
-        ) ?? null
+      return await this.store.findExistingWallet(userId, network);
+    } catch (error) {
+      throw new WalletOrchestrationError(
+        'Wallet lookup failed',
+        'lookup',
+        error,
       );
-    } catch {
-      throw new WalletOrchestrationError('Wallet lookup failed', 'lookup');
     }
   }
 
   /**
    * Whether `userId` has no wallet yet on `network`, i.e. whether a create
    * call would mint a new wallet rather than return an existing one.
-   *
-   * `async` to match the other public reads (a DB round-trip in production).
    */
-  // eslint-disable-next-line @typescript-eslint/require-await
   async validateUserCanCreateWallet(
     userId: string,
     network: WalletNetwork,
   ): Promise<boolean> {
-    return !this.wallets.has(
-      WalletCreationOrchestrator.naturalKey(userId, network),
-    );
+    return (await this.getWalletByUser(userId, network)) === null;
+  }
+
+  /**
+   * Reads the sponsored-wallet caps (#957).
+   *
+   * `WalletSponsorshipLimiter` validates and defaults every value, so a typo,
+   * an empty string, or a negative can only narrow the allowance — never widen
+   * it — and unset means "default caps", never "no caps". Configuration is read
+   * through `ConfigService` when it is wired, so the caps come from the app's
+   * configuration rather than an ad-hoc `process.env` read at the call site.
+   */
+  private readSponsorshipLimits(): WalletSponsorshipLimits {
+    const config = this.configService;
+    if (!config) {
+      return resolveSponsorshipLimits();
+    }
+    const read = (key: string): string | undefined => config.get<string>(key);
+    return resolveSponsorshipLimits({
+      [WALLET_SPONSORSHIP_ENABLED_ENV]: read(WALLET_SPONSORSHIP_ENABLED_ENV),
+      [WALLET_MAX_SPONSORED_WALLETS_PER_USER_ENV]: read(
+        WALLET_MAX_SPONSORED_WALLETS_PER_USER_ENV,
+      ),
+      [WALLET_MAX_SPONSORED_WALLETS_GLOBAL_ENV]: read(
+        WALLET_MAX_SPONSORED_WALLETS_GLOBAL_ENV,
+      ),
+      [WALLET_SPONSORSHIP_WINDOW_MS_ENV]: read(
+        WALLET_SPONSORSHIP_WINDOW_MS_ENV,
+      ),
+    });
   }
 }

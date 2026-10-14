@@ -1,40 +1,38 @@
 import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
 import { BalanceIndexerService } from './balance-indexer.service';
 import { BalanceIndexerController } from './balance-indexer.controller';
-import { HorizonRestBalanceClient } from './horizon-rest-balance.client';
-import {
-  BALANCE_STORE,
-  HORIZON_BALANCE_CLIENT,
-} from './balance-indexer.error-codes';
-import { PrismaService } from '../prisma/prisma.service';
-import { MetricsService } from '../common/metrics/metrics.service';
-import { ApiKeyModule } from '../api-keys/api-key.module';
+import { StellarHorizonService } from './stellar-horizon.service';
+import { BalanceRepository } from './balance.repository';
+import { BalanceCacheService } from './balance-cache.service';
+import { WebhookModule } from '../webhooks/webhook.module';
+import { RequestContextService } from '../common/request-context/request-context.service';
+import { BalanceIndexerMetricsService } from './balance-indexer-metrics.service';
+import { CacheService } from '../common/cache/cache.service';
+import { FeatureFlagService } from '../common/feature-flags/feature-flag.service';
+import { FeatureFlagGuard } from '../common/feature-flags/feature-flag.guard';
+import { HorizonAccountCacheService } from './horizon-account-cache.service';
 
-/**
- * Horizon balance index and reconciliation.
- *
- * `HorizonRestBalanceClient` is the concrete `HorizonBalanceClient`
- * implementation. Tests override it with a fake so Horizon outages and
- * malformed payloads can be simulated deterministically without a live network.
- *
- * API-key auth comes from `ApiKeyModule` (single source of truth for key
- * validation/revocation and network scoping) rather than a locally declared
- * provider — a second instance would defeat immediate revocation (#942).
- */
 @Module({
-  imports: [ApiKeyModule],
+  imports: [WebhookModule, ConfigModule],
   controllers: [BalanceIndexerController],
   providers: [
-    PrismaService,
-    MetricsService,
     BalanceIndexerService,
-    // Bound to port tokens so the service depends on the interfaces, not on
-    // the concrete implementations. Tests rebind BALANCE_STORE /
-    // HORIZON_BALANCE_CLIENT to fakes without touching the service.
-    // PrismaService satisfies BalanceStore structurally.
-    { provide: BALANCE_STORE, useExisting: PrismaService },
-    { provide: HORIZON_BALANCE_CLIENT, useClass: HorizonRestBalanceClient },
+    StellarHorizonService,
+    BalanceRepository,
+    RequestContextService,
+    BalanceIndexerMetricsService,
+    CacheService,
+    BalanceCacheService,
+    HorizonAccountCacheService,
+    FeatureFlagService,
+    FeatureFlagGuard,
   ],
-  exports: [BalanceIndexerService],
+  exports: [
+    BalanceIndexerService,
+    BalanceIndexerMetricsService,
+    BalanceCacheService,
+    HorizonAccountCacheService,
+  ],
 })
 export class BalanceIndexerModule {}

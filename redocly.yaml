@@ -1,15 +1,39 @@
-# Redocly OpenAPI linting configuration
+# Redocly OpenAPI linting configuration (#948)
 # Docs: https://redocly.com/docs/cli/configuration/
+#
+# Pinned CLI: see the `openapi:lint` script in package.json. The CLI is pinned to
+# a specific 1.x release on purpose: `apis:` below is the 1.x configuration
+# block, and floating to `@latest` would change rule semantics (or reject the
+# config outright) under an unrelated CLI release. `scripts/check-openapi-lint.ts`
+# fails closed when a rule name here is not a real Redocly rule — an unknown rule
+# is only a *warning* in the CLI, so without that gate a typo silently disables
+# an invariant.
 apis:
   main:
     root: openapi.json
 
 rules:
-  # Enforce all operations have summaries
+  # ── Contract invariants (fail-closed: `error`) ──────────────────────────────
+  # An undocumented operation, a missing error shape, or an undefined security
+  # scheme is a contract defect a client cannot work around safely.
   operation-summary: error
-  # Ensure every path has at least one tag
-  operation-operationId: warn
-  # No empty descriptions
-  no-empty-enum-description: warn
-  # Require info.description
-  info-description: warn
+  operation-operationId: error
+  operation-4xx-response: error
+  security-defined: error
+  spec-strict-refs: error
+  no-identical-paths: error
+  no-ambiguous-paths: error
+  no-schema-type-mismatch: error
+  no-required-schema-properties-undefined: error
+
+  # ── Documentation quality (non-blocking: `warn`) ───────────────────────────
+  operation-2xx-response: warn
+  operation-description: warn
+  operation-tag-defined: warn
+  tag-description: warn
+  info-contact: warn
+  info-license: warn
+  no-enum-type-mismatch: warn
+  no-server-trailing-slash: warn
+  no-path-trailing-slash: warn
+  no-unused-components: warn

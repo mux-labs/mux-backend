@@ -1,11 +1,18 @@
 import { Module } from '@nestjs/common';
+import { TerminusModule } from '@nestjs/terminus';
 import { HealthController } from './health.controller';
-import { PrismaModule } from '../prisma/prisma.module';
+import { PrismaService } from '../prisma/prisma.service';
 
+/**
+ * Health module for the liveness / readiness probes (#933).
+ *
+ * `PrismaService` is provided here so `PrismaHealthIndicator` can open a
+ * short-lived connection for the readiness ping without coupling the probe to
+ * a feature module.
+ */
 @Module({
-  imports: [PrismaModule],
+  imports: [TerminusModule],
   controllers: [HealthController],
-  providers: [],
-  exports: [],
+  providers: [PrismaService],
 })
 export class HealthModule {}

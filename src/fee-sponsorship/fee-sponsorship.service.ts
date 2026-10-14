@@ -8,15 +8,10 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-// Import the generated client (see generator output in prisma/schema.prisma);
-// `@prisma/client` only resolves the legacy default output path.
-import { Prisma } from '../generated/prisma/client';
+import { Prisma } from '@prisma/client';
 import { MetricsService } from '../common/metrics/metrics.service';
 import { FeeSponsorshipBudget } from './domain/fee-sponsorship-budget.model';
-import {
-  FeeSponsorshipBudgetStatus,
-  FeeSponsorshipNetwork,
-} from './domain/fee-sponsorship-budget.model';
+import { FeeSponsorshipBudgetStatus, FeeSponsorshipNetwork } from './domain/fee-sponsorship-budget.model';
 import { CreateFeeSponsorshipBudgetDto } from './dto/create-fee-sponsorship-budget.dto';
 import { UpdateFeeSponsorshipBudgetDto } from './dto/update-fee-sponsorship-budget.dto';
 import { FeeSponsorshipErrorCode } from './fee-sponsorship-error-codes';
@@ -84,13 +79,10 @@ export class FeeSponsorshipService {
     actor: SponsorshipActor,
   ): Promise<FeeSponsorshipBudget> {
     const correlationId = actor.correlationId ?? randomUUID();
-    const network = dto.network ?? FeeSponsorshipNetwork.TESTNET;
+    const network = (dto.network ?? FeeSponsorshipNetwork.TESTNET) as FeeSponsorshipNetwork;
 
     // Fail-closed mainnet gate
-    if (
-      network === FeeSponsorshipNetwork.MAINNET &&
-      !this.isFeeSponsorshipEnabled()
-    ) {
+    if (network === FeeSponsorshipNetwork.MAINNET && !this.isFeeSponsorshipEnabled()) {
       this.logger.warn(
         `fee.sponsorship.create denied network=mainnet wallet=${dto.walletId} correlationId=${correlationId}`,
       );
@@ -211,12 +203,8 @@ export class FeeSponsorshipService {
       const updated = await this.prisma.feeSponsorshipBudget.update({
         where: { id: budgetId },
         data: {
-          ...(dto.limitAmount !== undefined && {
-            limitAmount: dto.limitAmount,
-          }),
-          ...(dto.remainingAmount !== undefined && {
-            remainingAmount: dto.remainingAmount,
-          }),
+          ...(dto.limitAmount !== undefined && { limitAmount: dto.limitAmount }),
+          ...(dto.remainingAmount !== undefined && { remainingAmount: dto.remainingAmount }),
           ...(dto.status !== undefined && { status: dto.status }),
           ...(dto.note !== undefined && { note: dto.note }),
         },
@@ -246,10 +234,7 @@ export class FeeSponsorshipService {
   /**
    * Get a fee sponsorship budget by ID.
    */
-  async getBudget(
-    budgetId: string,
-    actor: SponsorshipActor,
-  ): Promise<FeeSponsorshipBudget> {
+  async getBudget(budgetId: string, actor: SponsorshipActor): Promise<FeeSponsorshipBudget> {
     const correlationId = actor.correlationId ?? randomUUID();
 
     const budget = await this.prisma.feeSponsorshipBudget.findUnique({
@@ -374,11 +359,7 @@ export class FeeSponsorshipService {
    * Deny-by-default: only the wallet owner or an authorized
    * delegate/guardian may manage fee sponsorship budgets.
    */
-  private enforceAuthorization(
-    walletId: string,
-    actor: SponsorshipActor,
-    correlationId: string,
-  ): void {
+  private enforceAuthorization(walletId: string, actor: SponsorshipActor, correlationId: string): void {
     // Owner is always authorized
     // In a full implementation, we would check the wallet ownership
     // against the actor's subjectId. For now, we enforce role-based auth.

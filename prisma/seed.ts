@@ -1,12 +1,37 @@
 import { PrismaClient } from '../src/generated/prisma/client';
 import { WalletNetwork, WalletStatus, TransactionStatus } from '../src/generated/prisma/client';
+import {
+  assertSeedAllowed,
+  SeedNotAllowedError,
+} from '../src/common/seed/seed-safety';
 
 // import { PrismaClient } from '@prisma/client';
 // import { WalletNetwork, WalletStatus, TransactionStatus } from '../src/generated/prisma';
 
 const prisma = new PrismaClient({} as any);
 
+/**
+ * Demo public keys are padded, obviously-fake `G` addresses. They are not
+ * valid Stellar accounts and their `encryptedSecret` is a literal placeholder,
+ * so a seeded wallet can never sign. That is exactly why the seed must never
+ * run outside a local database — see `src/common/seed/seed-safety.ts` (#928).
+ */
+function demoPublicKey(prefix: string, authId: string, padTo: number): string {
+  return `${prefix}${authId.replace('demo-user-', '').padStart(padTo, '0')}`;
+}
+
 async function main() {
+  // Fail-closed preflight (#928): refuse to seed production, mainnet, or a
+  // non-local database. Runs before a single row is written.
+  const preflight = assertSeedAllowed();
+
+  if (preflight.includeMainnet) {
+    console.log(
+      'WARNING: PRISMA_SEED_INCLUDE_MAINNET=true — creating demo MAINNET wallet rows. ' +
+        'These hold placeholder secrets and are for local UI testing only.',
+    );
+  }
+
   console.log('Seeding demo users and wallets...');
 
   const demoUsers = [
@@ -30,7 +55,10 @@ async function main() {
     },
   ];
 
-  const walletMap: Record<string, { testnet: string; mainnet: string }> = {};
+  const walletMap: Record<
+    string,
+    { testnet: string; mainnet: string | null }
+  > = {};
 
   for (const userData of demoUsers) {
     const user = await prisma.user.upsert({
@@ -39,18 +67,20 @@ async function main() {
       create: { ...userData, status: 'ACTIVE' },
     });
 
+    const testnetPublicKey = demoPublicKey('GDEMO', userData.authId, 52);
+
     // Testnet wallet for each demo user
     const testnetWallet = await prisma.wallet.upsert({
       where: {
         network_publicKey: {
           network: WalletNetwork.TESTNET,
-          publicKey: `GDEMO${userData.authId.replace('demo-user-', '').padStart(52, '0')}`,
+          publicKey: testnetPublicKey,
         },
       },
       update: {},
       create: {
         userId: user.id,
-        publicKey: `GDEMO${userData.authId.replace('demo-user-', '').padStart(52, '0')}`,
+        publicKey: testnetPublicKey,
         encryptedSecret: `encrypted-demo-secret-${userData.authId}`,
         encryptionVersion: 1,
         secretVersion: 1,
@@ -59,25 +89,32 @@ async function main() {
       },
     });
 
-    // Mainnet wallet for each demo user
-    const mainnetWallet = await prisma.wallet.upsert({
-      where: {
-        network_publicKey: {
-          network: WalletNetwork.MAINNET,
-          publicKey: `GMAIN${userData.authId.replace('demo-user-', '').padStart(51, '0')}`,
+    // Mainnet wallet for each demo user. Opt-in only (#928): the row holds a
+    // placeholder secret and must not exist unless a developer explicitly asks
+    // for a mainnet-shaped fixture.
+    let mainnetWalletId: string | null = null;
+    if (preflight.includeMainnet) {
+      const mainnetPublicKey = demoPublicKey('GMAIN', userData.authId, 51);
+      const mainnetWallet = await prisma.wallet.upsert({
+        where: {
+          network_publicKey: {
+            network: WalletNetwork.MAINNET,
+            publicKey: mainnetPublicKey,
+          },
         },
-      },
-      update: {},
-      create: {
-        userId: user.id,
-        publicKey: `GMAIN${userData.authId.replace('demo-user-', '').padStart(51, '0')}`,
-        encryptedSecret: `encrypted-demo-secret-mainnet-${userData.authId}`,
-        encryptionVersion: 1,
-        secretVersion: 1,
-        network: WalletNetwork.MAINNET,
-        status: WalletStatus.ACTIVE,
-      },
-    });
+        update: {},
+        create: {
+          userId: user.id,
+          publicKey: mainnetPublicKey,
+          encryptedSecret: `encrypted-demo-secret-mainnet-${userData.authId}`,
+          encryptionVersion: 1,
+          secretVersion: 1,
+          network: WalletNetwork.MAINNET,
+          status: WalletStatus.ACTIVE,
+        },
+      });
+      mainnetWalletId = mainnetWallet.id;
+    }
 
     // Add spending limits for testnet wallet
     await prisma.walletLimit.upsert({
@@ -92,7 +129,7 @@ async function main() {
 
     walletMap[userData.authId] = {
       testnet: testnetWallet.id,
-      mainnet: mainnetWallet.id,
+      mainnet: mainnetWalletId,
     };
 
     console.log(`  Seeded user: ${userData.displayName} (${user.id})`);
@@ -238,6 +275,12 @@ async function main() {
 
 main()
   .catch((e) => {
+    // A refused preflight is an operator decision, not a crash: print the
+    // stable code and the remediation, never the connection string (#928).
+    if (e instanceof SeedNotAllowedError) {
+      console.error(`[${e.code}] ${e.message}`);
+      process.exit(1);
+    }
     console.error(e);
     process.exit(1);
   })

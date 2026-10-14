@@ -47,8 +47,16 @@ export interface BalanceUpdate {
   balance: string;
   ledgerSequence: number;
   timestamp: Date;
-  /** Horizon paging token for crash-resume cursor tracking (#975) */
-  pagingToken?: string | null;
+  transactionHash?: string;
+}
+
+export interface BalanceChangeEvent {
+  walletId: string;
+  asset: Asset;
+  balance: string;
+  ledgerSequence: number;
+  transactionHash: string;
+  timestamp?: Date;
 }
 
 export interface ReconciliationResult {

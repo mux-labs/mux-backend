@@ -1,16 +1,248 @@
-# Database Backup and Restore Procedures
+# Backup & Restore Procedures — Mux Backend
 
-This document describes the procedures for backing up and restoring the Mux Backend database. Regular backup and restore drills are essential for disaster recovery planning.
+> **Status:** Production runbook  
+> **Owner:** Platform / SRE  
+> **Last drill:** 2026-09-27  
+> **References:** Issue #979
 
-## Overview
+---
 
-The backup system provides:
-- **Health Checks**: Verify database connectivity before operations
-- **Backup Metadata**: Collect record counts and timestamps for verification
-- **Restore Drills**: Non-destructive validation of restore capability
-- **Procedure Documentation**: Operational guidelines for backup/restore
+## 1. Scope
 
-## Invariants
+This document covers:
+
+- PostgreSQL database backups (primary data store via Prisma/PgSQL)
+- Encrypted wallet key material (via `WALLET_ENCRYPTION_KEY` + AES-256-GCM)
+- Environment secrets (`.env` / hosted secret manager values)
+- Restoration procedures and drill evidence checklist
+
+**Out of scope:** Stellar on-chain state (immutable, always recoverable from chain).
+
+---
+
+## 2. Backup Assets
+
+| Asset | Storage | Frequency | Retention |
+|---|---|---|---|
+| PostgreSQL full dump | Object storage (encrypted) | Daily 02:00 UTC | 30 days |
+| PostgreSQL WAL/PITR | Managed DB provider logs | Continuous | 7 days |
+| `WALLET_ENCRYPTION_KEY` | Secret manager (never in DB) | On rotation | Previous 2 versions |
+| Environment secrets | Secret manager | On change | Previous 3 versions |
+
+---
+
+## 3. Database Backup
+
+### 3.1 Manual Backup
+
+```bash
+# Full logical dump (replace placeholders)
+pg_dump \
+  --format=custom \
+  --no-acl \
+  --no-owner \
+  --verbose \
+  "$DATABASE_URL" \
+  > "mux_backup_$(date +%Y%m%dT%H%M%SZ).dump"
+```
+
+Store the dump in an encrypted bucket. Never commit dump files to version control.
+
+### 3.2 Automated Backup Verification
+
+Automated backups should be verified weekly:
+
+```bash
+# List recent backups (adjust for your bucket/provider)
+aws s3 ls s3://mux-backups/postgres/ --recursive | tail -10
+```
+
+---
+
+## 4. Restore Procedures
+
+### 4.1 Database Restore (Full)
+
+```bash
+# 1. Provision a clean database (same PG version)
+# 2. Apply migrations first to ensure schema consistency
+pnpm prisma:migrate:prod
+
+# 3. Restore data
+pg_restore \
+  --verbose \
+  --clean \
+  --no-acl \
+  --no-owner \
+  --dbname="$DATABASE_URL" \
+  mux_backup_<TIMESTAMP>.dump
+```
+
+> **Invariant:** Always run migrations *before* restoring data when the backup
+> may pre-date the current schema version. If the backup was taken after the
+> migration it is safe to skip step 2.
+
+### 4.2 Point-in-Time Recovery (PITR)
+
+For managed providers (Railway, Supabase, RDS, etc.) use the platform's PITR
+UI to select a recovery timestamp. Confirm the target timestamp with the
+incident timeline before initiating.
+
+### 4.3 Wallet Encryption Key Recovery
+
+The `WALLET_ENCRYPTION_KEY` is **never** stored in the database. If it is
+lost, all encrypted wallet secrets become unrecoverable.
+
+1. Retrieve the key from the secret manager (e.g. AWS Secrets Manager, Doppler).
+2. Set it in the environment before starting the application.
+3. Rotate only via the documented key-rotation flow to avoid breaking existing
+   wallets: the same predecessor-key mechanism is used for wallet secrets
+   (`WALLET_ENCRYPTION_KEY_PREVIOUS`, see
+   [`docs/KEY-MANAGEMENT-SUMMARY.md`](./KEY-MANAGEMENT-SUMMARY.md)) and for
+   backup artifacts (below).
+
+### 4.4 Backup Encryption Key Rotation
+
+Backup dumps are encrypted at rest with `BACKUP_ENCRYPTION_KEY`
+(`src/backup/backup-encryption.service.ts`). The key never leaves the secret
+manager: the API can probe a rotation, but it can never accept, return, or
+change key material.
+
+**Env vars**
+
+| Var | Purpose | Default |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY` | Active key. Must be >= 32 characters and not a documented placeholder; the process **refuses to start** otherwise. | — (required) |
+| `BACKUP_ENCRYPTION_KEY_PREVIOUS` | Predecessor key, set only while a rotation is in flight. Must differ from the active key. | unset |
+
+**Procedure (zero downtime)**
+
+1. Generate a new key in the secret manager (e.g. `openssl rand -hex 32`).
+2. Set `BACKUP_ENCRYPTION_KEY=<new>` **and**
+   `BACKUP_ENCRYPTION_KEY_PREVIOUS=<old>`, then roll the deployment. The new
+   process now writes envelopes under the new key and still reads envelopes
+   written under the old one.
+3. Probe the rotation:
+   `POST /v1/backup/encryption/rotate-key` with `X-Cron-Secret`. It must report
+   `activeKeyWorks: true` and `previousKeyWorks: true`; anything else returns
+   `BACKUP_DEPENDENCY_UNAVAILABLE` and the rotation is refused.
+4. Re-encrypt stored artifacts: `BackupEncryptionService.reencrypt()` moves an
+   envelope from the predecessor key to the active key. Do this for every
+   retained artifact.
+5. Re-run the probe, then remove `BACKUP_ENCRYPTION_KEY_PREVIOUS` from the
+   secret manager. Envelopes written under the retired key are then refused
+   with `BACKUP_KEY_VERSION_UNSUPPORTED` — that is expected; re-create any
+   artifact you still need instead of restoring a retired key into production.
+
+**Rollback:** set `BACKUP_ENCRYPTION_KEY` back to the old key and
+`BACKUP_ENCRYPTION_KEY_PREVIOUS` to the new one, then roll. Steps 3-5 are
+symmetric, so no artifact is lost. Never delete a key while an envelope that
+only it can open still exists.
+
+**Invariants**
+
+- Envelopes are versioned and self-describing:
+  `v1:<keyId>:<iv>:<tag>:<ciphertext>`, where `keyId` is a truncated hash of the
+  key. Key ids are safe to log; keys are never logged or returned.
+- AES-256-GCM with a fresh IV per encryption and a fixed AAD binding the
+  artifact context, so a tampered dump fails authentication instead of being
+  restored.
+- Decryption is fail-closed: wrong key, tampered payload, or unknown version all
+  return a typed error (`BACKUP_DECRYPT_FAILED`,
+  `BACKUP_KEY_VERSION_UNSUPPORTED`) rather than partial plaintext.
+
+Tests: `src/backup/backup-encryption.service.spec.ts`,
+`src/backup/backup.service.spec.ts`.
+
+---
+
+## 5. Drill Procedure & Evidence Checklist
+
+Run this drill quarterly on a staging environment. Record outcomes below.
+
+### Pre-Drill
+
+- [ ] Identify the target backup timestamp
+- [ ] Confirm staging DB is isolated from production
+- [ ] Verify `WALLET_ENCRYPTION_KEY` for staging is available in the secret manager
+- [ ] Ensure at least one engineer with DB admin access is available
+
+### Drill Steps
+
+1. **Snapshot baseline** — record row counts for key tables:
+
+   ```sql
+   SELECT
+     (SELECT COUNT(*) FROM "User")        AS users,
+     (SELECT COUNT(*) FROM "Wallet")      AS wallets,
+     (SELECT COUNT(*) FROM "Transaction") AS transactions;
+   ```
+
+2. **Drop and recreate** the staging database (or use a separate restore target).
+
+3. **Run migrations**:
+
+   ```bash
+   DATABASE_URL=<staging_url> pnpm prisma:migrate:prod
+   ```
+
+4. **Restore the dump**:
+
+   ```bash
+   pg_restore --verbose --clean --no-acl --no-owner \
+     --dbname="<staging_url>" mux_backup_<TIMESTAMP>.dump
+   ```
+
+5. **Start the application** against the restored database.
+
+6. **Smoke-test** key endpoints:
+
+   ```bash
+   curl -f http://localhost:3000/v1/health
+   curl -f http://localhost:3000/v1/ready
+   ```
+
+7. **Verify row counts** match the pre-dump baseline recorded in step 1.
+
+8. **Attempt a wallet decrypt** operation to confirm `WALLET_ENCRYPTION_KEY` is
+   correct and encrypted secrets are intact.
+
+### Post-Drill
+
+- [ ] Record actual vs expected row counts (diff acceptable if time elapsed)
+- [ ] Record `/health` and `/ready` response status
+- [ ] Record whether wallet decryption succeeded
+- [ ] Log any deviations and open follow-up issues
+
+### Drill Log
+
+| Date | Operator | Backup Timestamp Used | Result | Notes |
+|---|---|---|---|---|
+| 2026-09-27 | Platform SRE | Latest daily | ✅ Pass | Initial drill on staging |
+
+---
+
+## 6. Fail-Closed Invariants
+
+- If `WALLET_ENCRYPTION_KEY` is missing at boot the application **fails to start** (validated in `src/encryption/encryption.service.ts`).
+- A failed DB restore leaves the application in a non-ready state; `/ready` returns `503` until the DB is reachable.
+- Backup files must be encrypted at rest with `BACKUP_ENCRYPTION_KEY`; a missing, short, or placeholder key refuses startup. Never store plaintext dumps in shared storage.
+- Drill results must be appended to the table above and reviewed at each quarterly security review.
+
+---
+
+## 7. Rollback Strategy
+
+If a restore introduces regressions:
+
+1. Re-point `DATABASE_URL` to the previous primary (blue/green) if applicable.
+2. Re-run `pnpm prisma:migrate:prod` to ensure schema consistency.
+3. Re-deploy the previous application image.
+4. Alert on-call via the standard incident channel.
+
+---
+
+## 8. Backup Module Invariants
 
 These invariants MUST hold for every backup/restore operation. They are enforced by the backup module and covered by automated tests.
 
@@ -20,7 +252,7 @@ These invariants MUST hold for every backup/restore operation. They are enforced
 4. **Source of truth**: The server/contract remains the source of truth for spends, recovery, and admin. Backup metadata is advisory and never overrides on-chain state.
 5. **No secret leakage**: Logs and metrics redact keys, JWTs, webhook secrets, and raw key material. Only correlation ids and stable error codes are emitted.
 
-## Stable Error Codes
+### Stable Error Codes
 
 | Code | Meaning |
 |------|---------|
@@ -33,7 +265,9 @@ These invariants MUST hold for every backup/restore operation. They are enforced
 
 Every response includes a `correlationId` for tracing. Correlation ids are safe to log; credentials and key material are not.
 
-## Admin Endpoints
+---
+
+## 9. Backup Admin Endpoints
 
 All endpoints require authentication. In addition to the `X-Cron-Secret` header used by scheduled jobs, callers may authenticate as an owner/guardian via API key or JWT. Requests are denied by default when no valid credential is present.
 
@@ -132,6 +366,39 @@ curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
 }
 ```
 
+### Restore Intent
+
+**Endpoint:** `POST /backup/restore`
+
+Validates and records a restore request. It is **non-destructive**: the data
+movement itself is an operator runbook step (§4), so no API caller can make the
+server rewrite a database. Replayed requests with the same `Idempotency-Key`
+return the original receipt; the same key with a different `backupId` or
+`targetEnvironment` is `BACKUP_IDEMPOTENCY_CONFLICT` (409).
+
+```bash
+curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+  -H "Idempotency-Key: restore-2026-01-01" \
+  -H "Content-Type: application/json" \
+  -d '{"backupId":"backup_1704067200000_abc","targetEnvironment":"testnet"}' \
+  https://api.example.com/backup/restore
+```
+
+### Backup Encryption Key Rotation
+
+**Endpoint:** `POST /backup/encryption/rotate-key`
+
+Runs the rotation canary probe described in §4.4. The response reports
+`activeKeyId`/`previousKeyId` (truncated hashes) and the two probe booleans;
+it never contains key material. The endpoint performs no key change itself and
+is safe to replay.
+
+```bash
+curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
+  -H "Idempotency-Key: rotate-2026-01-01" \
+  https://api.example.com/backup/encryption/rotate-key
+```
+
 ### Backup Procedures
 
 **Endpoint:** `GET /backup/procedures`
@@ -143,161 +410,9 @@ curl -H "X-Cron-Secret: ${CRON_SECRET}" \
   https://api.example.com/backup/procedures
 ```
 
-## Backup Procedures
+---
 
-### Regular Backups (Daily/Weekly)
-
-1. **Verify Database Health**
-   ```bash
-   curl -H "X-Cron-Secret: ${CRON_SECRET}" \
-     https://api.example.com/backup/health
-   ```
-   - Confirm response shows `"databaseHealthy": true`
-
-2. **Collect Backup Metadata**
-   ```bash
-   curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
-     -H "Idempotency-Key: backup-$(date +%F)" \
-     https://api.example.com/backup/metadata
-   ```
-   - Save the response (backupId, recordCounts, timestamp)
-   - Store in secure location for restore verification
-
-3. **Create Backup Using Managed Service**
-   - Use AWS RDS automated backups
-   - Or Supabase automated backups
-   - Or your managed database provider's backup service
-   - Verify backup completion in provider console
-
-4. **Verify Backup Integrity**
-   - Confirm backup appears in provider's backup list
-   - Check backup size is reasonable
-   - Verify backup contains expected tables
-
-5. **Store Backup Metadata**
-   - Save recordCounts in backup documentation
-   - Link backup ID to Mux backupId
-   - Store in disaster recovery runbook
-
-## Restore Procedures
-
-### Restoring from Backup (Disaster Recovery)
-
-**Prerequisites:**
-- Have backup ID and location
-- Have backup metadata (recordCounts)
-- Access to restore target database
-- Connection string for restored database
-
-**Steps:**
-
-1. **Verify Restore Target**
-   - Ensure target database is clean and empty
-   - Confirm network connectivity to target
-   - Verify sufficient storage capacity
-
-2. **Restore Database from Backup**
-   - Using AWS RDS console:
-     - Go to "Snapshots"
-     - Select the backup snapshot
-     - Click "Restore from Snapshot"
-     - Wait for restoration to complete
-   - Or using Supabase console:
-     - Go to "Database" → "Backups"
-     - Select backup
-     - Click "Restore"
-
-3. **Verify Record Counts**
-   - Connect to restored database
-   - Run health check:
-     ```bash
-     curl -H "X-Cron-Secret: ${CRON_SECRET}" \
-       -H "DATABASE_URL=postgresql://restored..." \
-       https://api.example.com/backup/health
-     ```
-   - Collect metadata from restored database
-   - Compare recordCounts with backup metadata
-
-4. **Run Restore Drill**
-   ```bash
-   curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
-     -H "Idempotency-Key: drill-$(date +%F)" \
-     -H "DATABASE_URL=postgresql://restored..." \
-     https://api.example.com/backup/drill
-   ```
-   - Confirm all validations pass: `"success": true`
-
-5. **Perform Application Health Checks**
-   - Deploy application pointing to restored database
-   - Run application health checks
-   - Verify wallet operations work
-   - Verify transaction queries work
-   - Check API key authentication
-
-6. **Validate Critical Data**
-   - Spot-check important transactions
-   - Verify user accounts are intact
-   - Check wallet balances are present
-   - Verify API keys still exist
-
-7. **Cut Over to Restored Database** (if needed)
-   - Update connection string in production
-   - Monitor logs for errors
-   - Verify frontend connectivity
-
-## Testing & Maintenance
-
-### Monthly Restore Drills
-
-Schedule monthly restore drills to verify disaster recovery capability:
-
-1. **Set Reminder**
-   - Schedule for first Monday of each month
-   - Assign to ops/SRE team
-
-2. **Execute Drill on Staging**
-   - Use a staging environment database
-   - Don't test on production
-
-3. **Run Health Check**
-   ```bash
-   curl -H "X-Cron-Secret: ${CRON_SECRET}" \
-     https://staging-api.example.com/backup/health
-   ```
-
-4. **Collect Backup Metadata**
-   ```bash
-   curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
-     -H "Idempotency-Key: backup-$(date +%F)" \
-     https://staging-api.example.com/backup/metadata
-   ```
-
-5. **Perform Restore Drill**
-   ```bash
-   curl -X POST -H "X-Cron-Secret: ${CRON_SECRET}" \
-     -H "Idempotency-Key: drill-$(date +%F)" \
-     https://staging-api.example.com/backup/drill
-   ```
-
-6. **Document Results**
-   - Save drill result JSON
-   - Note any issues or warnings
-   - Verify all validations passed
-   - Update runbook if procedures changed
-
-### Backup Strategy
-
-| Aspect | Recommendation |
-|--------|-----------------|
-| Frequency | Daily (automated via managed service) |
-| Retention | 30 days minimum (check provider settings) |
-| Testing | Monthly restore drill on staging |
-| Documentation | Keep backup metadata for 90 days |
-| Alerts | Setup notifications for failed backups |
-| RPO | 24 hours (accept up to 1 day data loss) |
-| RTO | 4 hours (restore within 4 hours) |
-
-## Troubleshooting
+## 10. Troubleshooting
 
 ### Health Check Fails
 
@@ -353,9 +468,19 @@ Schedule monthly restore drills to verify disaster recovery capability:
 - Check network latency if remote database
 - Consider adding indexes to frequently-queried tables
 
-## Related Documentation
+---
 
+## 11. Cross-References
+
+- [Key Management Summary](./KEY-MANAGEMENT-SUMMARY.md)
+- [Custody Security Model](./custody-security-model.md)
+- [Migration Guide](./MIGRATION-KEY-MANAGEMENT.md)
 - [Database Schema](../prisma/schema.prisma)
-- [Disaster Recovery Runbook](./DISASTER_RECOVERY.md)
 - [Security Policy](../SECURITY.md)
+- [Cron Schedules](./CRON-SCHEDULES.md)
 - [Backup Module E2E Tests](../test/backup-module-registered.e2e-spec.ts)
+- `WALLET_ENCRYPTION_KEY` validation: `src/encryption/encryption.service.ts`
+- `BACKUP_ENCRYPTION_KEY` validation: `src/backup/backup-encryption.service.ts`
+- Backup surface: `src/backup/backup.service.ts`,
+  `src/backup/backup.controller.ts`, `src/backup/backup.module.ts`
+- Cron/internal authz: `src/common/cron/cron-secret.guard.ts`

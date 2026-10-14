@@ -1,25 +1,24 @@
 # .github/workflows/ci.yml
 #
-# #970 — CI compose Postgres for e2e
-#
-# Full CI pipeline: lint → build → unit tests → e2e tests.
-# E2e tests run against a real Postgres 16 service container so that migration
-# and query behaviour is tested against the same engine used in production.
+# Full CI pipeline: lint → build → unit tests → e2e tests, plus one
+# fail-closed required check per documented contract.
 #
 # Invariants:
-#   - E2e tests are isolated from unit tests (separate Jest config).
-#   - DATABASE_URL points to the service container, never to a production DB.
-#   - WALLET_ENCRYPTION_KEY is a CI-only throwaway secret; it satisfies the
-#     ≥32-char + non-placeholder validation without exposing real key material.
-#   - PAYMENT_ISOLATION_ENABLED=true so isolation invariants are tested in CI.
+#   - Every job id is unique. YAML duplicate mapping keys are silently
+#     last-wins, so a repeated job id does not "run twice" — it silently
+#     *discards* every earlier definition of that job, taking its required
+#     check with it. `test/ci-required-e2e-subset.e2e-spec.ts` fails closed
+#     on a duplicate id so that cannot regress.
+#   - E2e tests run against a real Postgres 16 service container so migration
+#     and query behaviour is tested against the same engine used in production.
+#   - DATABASE_URL points at the service container, never a production DB.
+#   - Each required check asserts `test -f <spec>` before running it, so a
+#     deleted spec fails the job instead of passing on zero tests.
 #   - The workflow fails closed: any step failure aborts the pipeline.
-#   - Postgres health-check must pass before migrations or tests run.
 #
 # Rollback / kill-switch:
-#   - Disable the e2e job by setting the `run_e2e` input to false on
-#     workflow_dispatch, or delete the job entirely for a quick bypass.
-#   - The unit-test job is independent and will continue to run.
-
+#   - Delete the individual job to bypass it. The remaining jobs are
+#     independent, so a single removal does not gate the rest of the pipeline.
 name: CI
 
 on:
@@ -33,11 +32,150 @@ on:
   pull_request:
 
 jobs:
-  # ──────────────────────────────────────────────────────────────────────────
-  # Job 1: Lint & build
-  # ──────────────────────────────────────────────────────────────────────────
-  build:
-    name: Lint & Build
+  # ───────────────────────────────────────────────────────────────────────────
+  # Lint
+  # ───────────────────────────────────────────────────────────────────────────
+  test:
+    name: Build and test
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run ESLint
+        run: pnpm lint
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Migration authoring rules
+  # ───────────────────────────────────────────────────────────────────────────
+  migration-naming:
+    name: Prisma Migration Naming
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check Prisma migration naming
+        # #907: Fail-closed gate enforcing the naming rules documented in
+        # docs/PRISMA-MIGRATIONS.md (timestamp-prefixed snake_case dirs,
+        # migration_lock.toml presence, no duplicate timestamps).
+        run: pnpm run prisma:check-migrations
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Security verification scripts (dependency-free, cannot be skipped)
+  # ───────────────────────────────────────────────────────────────────────────
+  verify-scripts:
+    # #917: Fail-closed CI gate for the security verification scripts.
+    # Each script asserts a set of documented invariants (encryption before
+    # storage, atomic/idempotent wallet orchestration, idempotent user
+    # creation) and exits non-zero when any are violated. Kept dependency-free
+    # (plain bash + static analysis) so it runs fast and cannot be silently
+    # skipped by a broken service/dependency step.
+    name: Verify Security Invariants
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run verify-encryption.sh
+        run: bash verify-encryption.sh
+
+      - name: Run verify-orchestrator.sh
+        run: bash verify-orchestrator.sh
+
+      - name: Run verify-orchestrator-retries.sh
+        # #963: Fail-closed gate for the wallet-orchestration retry contract —
+        # a retry must never mint a second custody key for the same user.
+        run: bash verify-orchestrator-retries.sh
+
+      - name: Run verify-idempotent-user.sh
+        run: bash verify-idempotent-user.sh
+
+      - name: Run verify-idempotency-ttl.sh
+        # #962: Fail-closed gate for the idempotency TTL invariants — cleanup
+        # must only delete strictly-expired rows, must be batch-bounded, and
+        # must fail closed (not mask) a database outage.
+        run: bash verify-idempotency-ttl.sh
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Wallet orchestration + custody encryption
+  # ───────────────────────────────────────────────────────────────────────────
+  wallet-orchestration-e2e:
+    name: Wallet Orchestration E2E (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify encryption spec is present
+        # #964: Fail closed if the spec is missing so the custody-encryption
+        # contract can never be silently un-gated.
+        run: test -f src/encryption/encryption.service.spec.ts
+
+      - name: Run encryption service unit tests
+        # Pure crypto unit tests: no DB, no network, no secrets.
+        run: pnpm exec jest --runTestsByPath src/encryption/encryption.service.spec.ts
+
+      - name: Verify wallet orchestration e2e spec is present
+        # #963: Fail closed if the spec is missing so the retry contract can
+        # never be silently un-gated.
+        run: test -f test/wallet-orchestration.e2e-spec.ts
+
+      - name: Run wallet orchestration e2e
+        # Pure in-memory suite: no DB, RPC, or Horizon required.
+        run: pnpm test:e2e -- test/wallet-orchestration.e2e-spec.ts
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # OpenAPI generation, lint, and drift
+  # ───────────────────────────────────────────────────────────────────────────
+  openapi-drift:
+    name: OpenAPI Generate + Drift
     runs-on: ubuntu-latest
 
     steps:
@@ -61,19 +199,75 @@ jobs:
       - name: Generate Prisma client
         run: pnpm prisma:generate
 
-      - name: Lint
-        run: pnpm lint
+      - name: Generate OpenAPI spec
+        # #908: Deterministic generation (stable ordering, no timestamps) so
+        # the committed artifact can be diffed meaningfully.
+        run: pnpm run openapi:generate
+        env:
+          DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
+          WALLET_ENCRYPTION_KEY: ${{ secrets.WALLET_ENCRYPTION_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
+          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+          STELLAR_NETWORK: TESTNET
+          STELLAR_HORIZON_TESTNET_URL: https://horizon-testnet.stellar.org
+          STELLAR_HORIZON_MAINNET_URL: https://horizon.stellar.org
+          STELLAR_HORIZON_MAX_RETRIES: 3
+          STELLAR_HORIZON_RETRY_BACKOFF_MS: 500
+          STELLAR_HORIZON_RETRY_JITTER_MS: 250
+          BALANCE_STALE_THRESHOLD_MS: 300000
+          WEBHOOK_MAX_RETRIES: 5
+          WEBHOOK_RETRY_BACKOFF_MS: 1000
+          WEBHOOK_TIMEOUT_MS: 10000
+          WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10
+          WEBHOOK_SIGNING_KEY: ci-openapi-webhook-signing-key-min-32-chars
+          AUTH_RATE_LIMIT_MAX: 10
+          AUTH_RATE_LIMIT_WINDOW_MS: 60000
 
-      - name: Build
-        run: pnpm build
+      - name: Verify OpenAPI lint config is present
+        # #948: Fail closed when the lint config is missing so the gate can
+        # never be skipped by an absent file.
+        run: test -f redocly.yaml
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Job 2: Unit tests (no database required)
-  # ──────────────────────────────────────────────────────────────────────────
+      - name: Verify OpenAPI lint contract
+        # #948: Fails when redocly.yaml names a rule Redocly does not know, a
+        # contract invariant is downgraded to `warn`, the CLI is unpinned, or CI
+        # stops running the lint/drift gates. Exits non-zero (fail-closed).
+        run: pnpm run openapi:check-lint-config
+
+      - name: Lint OpenAPI spec
+        # #948: Pinned CLI + the checked-in redocly.yaml rules. Every contract
+        # rule is an `error`, so a spec regression fails the build.
+        run: pnpm run openapi:lint
+
+      - name: Check OpenAPI spec for drift
+        # #908: Fail-closed required check. Regenerates the spec and diffs it
+        # against the committed artifact, exiting non-zero with the drifted
+        # paths/operations when they differ. Run "pnpm openapi:generate"
+        # locally and commit the updated file to fix drift.
+        run: pnpm run openapi:check-drift
+        env:
+          DATABASE_URL: postgresql://stub:stub@localhost:5432/stub
+          WALLET_ENCRYPTION_KEY: ${{ secrets.WALLET_ENCRYPTION_KEY || '0000000000000000000000000000000000000000000000000000000000000000' }}
+          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+          STELLAR_NETWORK: TESTNET
+          STELLAR_HORIZON_TESTNET_URL: https://horizon-testnet.stellar.org
+          STELLAR_HORIZON_MAINNET_URL: https://horizon.stellar.org
+          STELLAR_HORIZON_MAX_RETRIES: 3
+          STELLAR_HORIZON_RETRY_BACKOFF_MS: 500
+          STELLAR_HORIZON_RETRY_JITTER_MS: 250
+          BALANCE_STALE_THRESHOLD_MS: 300000
+          WEBHOOK_MAX_RETRIES: 5
+          WEBHOOK_RETRY_BACKOFF_MS: 1000
+          WEBHOOK_TIMEOUT_MS: 10000
+          WEBHOOK_MAX_CONSECUTIVE_FAILURES: 10
+          AUTH_RATE_LIMIT_MAX: 10
+          AUTH_RATE_LIMIT_WINDOW_MS: 60000
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Unit tests
+  # ───────────────────────────────────────────────────────────────────────────
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    needs: build
 
     steps:
       - name: Checkout
@@ -99,20 +293,61 @@ jobs:
       - name: Run unit tests
         run: pnpm test
         env:
-          # Satisfy env validation without a real DB — unit tests mock Prisma.
-          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_unit
-          WALLET_ENCRYPTION_KEY: ci-unit-test-throwaway-key-min-32-chars-long
-          PAYMENT_ISOLATION_ENABLED: 'true'
-          STELLAR_NETWORK: TESTNET
-          STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+          NODE_ENV: test
+          DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+          WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+          WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
 
-  # ──────────────────────────────────────────────────────────────────────────
-  # Job 3: E2e tests — requires a real Postgres service container
-  # ──────────────────────────────────────────────────────────────────────────
-  e2e-tests:
-    name: E2e Tests (Postgres)
+  # ───────────────────────────────────────────────────────────────────────────
+  # SECURITY.md + key-management consolidation contract
+  # ───────────────────────────────────────────────────────────────────────────
+  security-md:
+    name: SECURITY.md contract
     runs-on: ubuntu-latest
-    needs: build
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify SECURITY.md contract spec is present
+        # #932: Fail closed if the spec is missing so the SECURITY.md
+        # contract cannot be silently un-gated.
+        run: test -f test/security-md.spec.ts
+
+      - name: Verify SECURITY.md against test contract
+        # #916: Required check. Runs test/security-md.spec.ts (previously
+        # ungated) so the security policy — contacts, Response SLA, safe
+        # harbor, production requirements, disclosure timeline — cannot
+        # silently drift from the documented contract.
+        run: pnpm exec jest --config ./test/jest-e2e.json --runTestsByPath test/security-md.spec.ts
+
+      - name: Run key management consolidation verification
+        # #918: Fail-closed required check for the custody-key invariants
+        # documented in docs/key-management-consolidation.md and
+        # docs/custody-security-model.md. Exit code is 0 on pass, 1 on any
+        # error-severity finding, 2/3 on verifier misuse.
+        run: pnpm verify:key-consolidation
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Login smoke (needs Postgres)
+  # ───────────────────────────────────────────────────────────────────────────
+  login-smoke-e2e:
+    name: Login Smoke E2E (required)
+    runs-on: ubuntu-latest
 
     services:
       postgres:
@@ -120,7 +355,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: mux_e2e
+          POSTGRES_DB: mux_test
         ports:
           - 5432:5432
         options: >-
@@ -130,15 +365,11 @@ jobs:
           --health-retries 5
 
     env:
-      # Points to the service container above — never a real production DB.
-      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_e2e
-      # CI-only throwaway key (≥32 chars, not the default placeholder string).
-      WALLET_ENCRYPTION_KEY: ci-e2e-throwaway-encryption-key-min-32-chars
-      PAYMENT_ISOLATION_ENABLED: 'true'
-      STELLAR_NETWORK: TESTNET
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
       STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
-      # Disable Swagger UI in e2e (not required, avoids noise)
-      SWAGGER_ENABLED: 'false'
 
     steps:
       - name: Checkout
@@ -164,5 +395,475 @@ jobs:
       - name: Run database migrations
         run: pnpm prisma:migrate:prod
 
+      - name: Verify login smoke spec is present
+        # #903: Fail closed if the required login smoke e2e spec is missing so
+        # the check can never be silently skipped.
+        run: test -f test/login-smoke.e2e-spec.ts
+
+      - name: Run login smoke e2e
+        run: pnpm test:e2e -- test/login-smoke.e2e-spec.ts
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Transaction env validator
+  # ───────────────────────────────────────────────────────────────────────────
+  transaction-env-validator-e2e:
+    name: Transaction Env Validator E2E (required)
+    runs-on: ubuntu-latest
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify transaction env validator e2e spec is present
+        # #914: Fail closed if the required spec is missing so the check can
+        # never be silently skipped.
+        run: test -f test/transaction-env-validator.e2e-spec.ts
+
+      - name: Run transaction env validator e2e
+        run: pnpm test:e2e -- test/transaction-env-validator.e2e-spec.ts
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Cron schedule docs
+  # ───────────────────────────────────────────────────────────────────────────
+  cron-schedule-docs:
+    name: Cron Schedule Docs (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify cron schedule docs spec is present
+        # #961: Fail closed if the required spec is missing so the documented
+        # cron schedule surface can never be silently un-gated.
+        run: test -f test/cron-schedule-docs.e2e-spec.ts
+
+      - name: Run cron schedule docs contract test
+        # Pure documentation contract test: no DB, no secrets, no network.
+        run: pnpm test:e2e -- test/cron-schedule-docs.e2e-spec.ts
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Balance indexer lag metrics
+  # ───────────────────────────────────────────────────────────────────────────
+  indexer-lag-metrics:
+    # #959: Fail-closed required check for indexer lag reporting.
+    # The lag invariants (never-synced reads as stale, a store outage never
+    # reads as zero lag, bounded labels) are the contract that keeps a stale
+    # index from looking healthy. Pure unit tests: no DB, network, or secrets.
+    name: Indexer Lag Metrics (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify indexer lag spec is present
+        # Fail closed if the spec is missing so the contract cannot be
+        # silently un-gated.
+        run: test -f src/balance-indexer/balance-indexer-lag.spec.ts
+
+      - name: Run indexer lag tests
+        run: >
+          pnpm exec jest --runTestsByPath
+          src/balance-indexer/balance-indexer-lag.spec.ts
+          src/balance-indexer/balance-indexer-metrics.service.spec.ts
+        env:
+          NODE_ENV: test
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Webhook SSRF allowlist
+  # ───────────────────────────────────────────────────────────────────────────
+  webhook-ssrf-allowlist:
+    # #960: Fail-closed required check for the webhook SSRF allowlist.
+    # The allowlist is the only thing standing between an attacker-supplied
+    # endpoint URL and the cluster network / cloud metadata service, so it must
+    # never be silently un-gated. Pure unit tests: no DB, network or secrets.
+    name: Webhook SSRF Allowlist (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify SSRF allowlist spec is present
+        # Fail closed if the spec is missing so the contract cannot be
+        # silently un-gated.
+        run: test -f src/webhooks/webhook-url-allowlist.service.spec.ts
+
+      - name: Run webhook SSRF allowlist tests
+        run: >
+          pnpm exec jest --runTestsByPath
+          src/webhooks/webhook-url-allowlist.service.spec.ts
+          src/webhooks/webhook-url-allowlist.enforcement.spec.ts
+        env:
+          NODE_ENV: test
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Wallet nickname store
+  # ───────────────────────────────────────────────────────────────────────────
+  wallet-nickname-store:
+    # #958: Fail-closed required check for the wallet nickname store.
+    # The bounding/normalization invariants (code-point length, no coercion,
+    # reject-don't-truncate) are what stop a user-supplied label from becoming
+    # an unbounded write or an indistinguishable duplicate. Pure unit tests:
+    # no DB, network, or secrets.
+    name: Wallet Nickname Store (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify nickname safety spec is present
+        # Fail closed if the spec is missing so the contract cannot be
+        # silently un-gated.
+        run: test -f src/wallets/wallet-nickname-safety.spec.ts
+
+      - name: Run wallet nickname store tests
+        run: >
+          pnpm exec jest --runTestsByPath
+          src/wallets/wallet-nickname-safety.spec.ts
+          src/wallets/wallet-nickname.spec.ts
+        env:
+          NODE_ENV: test
+
+      - name: Verify nickname e2e spec is present
+        run: test -f test/wallet-nickname.e2e-spec.ts
+
+      - name: Run wallet nickname e2e
+        # In-memory suite: only the wallet controller and its guards are
+        # mounted, so no database or RPC is required.
+        run: pnpm test:e2e -- test/wallet-nickname.e2e-spec.ts
+        env:
+          NODE_ENV: test
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Wallet sponsorship limits + transaction env validator + cron docs
+  # ───────────────────────────────────────────────────────────────────────────
+  wallet-sponsorship-limits:
+    # #957: Fail-closed required check for wallet creation sponsorship limits.
+    # The cap invariants (defaults never widen, replay spends nothing, the
+    # kill-switch only removes) are what stop a caller from draining the
+    # sponsor account. Pure unit tests: no DB, network, or secrets.
+    name: Wallet Sponsorship Limits (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Verify sponsorship limits spec is present
+        # Fail closed if the spec is missing so the cap cannot be silently
+        # un-gated.
+        run: test -f src/wallets/wallet-sponsorship-limits.spec.ts
+
+      - name: Verify sponsorship enforcement spec is present
+        # The limiter unit spec passes even when nothing calls the limiter, so
+        # the enforcement spec is required too: it drives createWallet and
+        # fails if the cap is unwired. Without it the cap can be silently
+        # disabled (as it was when the orchestrator was truncated to zero
+        # bytes).
+        run: test -f src/wallets/wallet-sponsorship-limits.enforcement.spec.ts
+
+      - name: Run wallet sponsorship limit tests
+        # Pure unit tests: no DB, network, or secrets.
+        run: >-
+          pnpm exec jest --runTestsByPath
+          src/wallets/wallet-sponsorship-limits.spec.ts
+          src/wallets/wallet-sponsorship-limits.enforcement.spec.ts
+        env:
+          NODE_ENV: test
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Full e2e suite (needs Postgres)
+  # ───────────────────────────────────────────────────────────────────────────
+
+  e2e-tests:
+    name: E2E Tests
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: mux_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      NODE_ENV: test
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/mux_test
+      WALLET_ENCRYPTION_KEY: ci-test-encryption-key-min-32-chars-long!!
+      WEBHOOK_SIGNING_KEY: ci-test-webhook-signing-key-min-32-chars-long!!
+      STELLAR_HORIZON_URL: https://horizon-testnet.stellar.org
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm prisma:generate
+
+      - name: Run database migrations
+        run: pnpm prisma:migrate:prod
+
+      - name: Verify /v1 prefix spec is present
+        # #932: Fail closed if the spec is missing so the prefix behaviour
+        # can never be silently un-gated by the full e2e run.
+        run: test -f test/api-prefix-v1.e2e-spec.ts
+
+      - name: Verify migration recovery runbook is present
+        run: test -f docs/migration-recovery-runbook.md
+
       - name: Run e2e tests
         run: pnpm test:e2e
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # Migration recovery runbook + tabletop (#929)
+  # ───────────────────────────────────────────────────────────────────────────
+  migration-recovery-tabletop:
+    name: Migration Recovery Tabletop (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify migration recovery runbook is present
+        # #929: Fail closed if the runbook is missing so the recovery
+        # procedure can never be silently un-gated.
+        run: test -f docs/migration-recovery-runbook.md
+
+      - name: Verify tabletop exercise doc is present
+        run: test -f docs/migration-recovery-tabletop.md
+
+      - name: Verify tabletop contract spec is present
+        run: test -f test/migration-recovery-tabletop.e2e-spec.ts
+
+      - name: Run migration recovery tabletop contract test
+        # #929: Asserts the runbook only invokes scripts that exist in
+        # package.json (it previously named five that do not), and that the
+        # tabletop exercise covers every runbook scenario, names roles,
+        # timebox, abort conditions and after-action record, and forbids
+        # running against mainnet or real key material.
+        # Pure documentation test: no DB, no network, no secrets.
+        run: pnpm test:e2e -- test/migration-recovery-tabletop.e2e-spec.ts
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # /v1 prefix docs contract (#931, #930, #932)
+  # ───────────────────────────────────────────────────────────────────────────
+  api-prefix-docs:
+    name: API Prefix Docs Contract (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify prefix spec is present
+        # #932: Fail closed if the spec is missing so the /v1 prefix contract
+        # can never be silently un-gated.
+        run: test -f test/api-prefix-v1.e2e-spec.ts
+
+      - name: Verify docs contract spec is present
+        # #932: Same fail-closed guarantee for the docs<->spec contract test.
+        run: test -f test/api-prefix-v1-docs.e2e-spec.ts
+
+      - name: Run API prefix docs contract test
+        # #931, #930: Parses test/api-prefix-v1.e2e-spec.ts and fails when
+        # README_V1_PREFIX.md or TEST_VERIFICATION_GUIDE.md disagree with it
+        # about suite names, per-suite counts, totals, or referenced pnpm
+        # scripts. Pure documentation test: no DB, no network, no secrets.
+        run: pnpm test:e2e -- test/api-prefix-v1-docs.e2e-spec.ts
+
+  # ───────────────────────────────────────────────────────────────────────────
+  # CI wiring contract (#932) — guards this file against silent job loss
+  # ───────────────────────────────────────────────────────────────────────────
+  ci-workflow-contract:
+    # #932: A duplicate job id in this file is not a duplicate run — YAML
+    # mapping keys are last-wins, so the earlier definition is discarded
+    # along with the required check it carried. That failure is invisible in
+    # the Actions UI: the job simply never reports. This job fails closed on
+    # that class of bug, and on a required job that lost its `test -f` guard.
+    name: CI Workflow Contract (required)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: latest
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'pnpm'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify CI workflow contract spec is present
+        run: test -f test/ci-required-e2e-subset.e2e-spec.ts
+
+      - name: Run CI workflow contract test
+        # Pure CI/documentation test: no DB, no network, no secrets.
+        run: pnpm test:e2e -- test/ci-required-e2e-subset.e2e-spec.ts

@@ -13,8 +13,7 @@ secret-handling policy that every job below inherits.
 ## Invariants
 
 These hold for **every** internal job. They are asserted by
-`test/cron-schedule-docs.e2e-spec.ts` (#961) and
-`test/cron-secret-guard.e2e-spec.ts` (#981).
+`test/cron-schedule-docs.e2e-spec.ts` (#961).
 
 1. **Not public API.** Internal jobs are never part of the documented public
    surface. They live under an `/internal` route prefix (or an equivalent
@@ -58,30 +57,6 @@ These hold for **every** internal job. They are asserted by
 encoded) supplied only via the environment / secret manager. It must never be
 committed, logged, or returned in an error body. The rotation procedure lives in
 [`SECURITY.md`](../SECURITY.md#rotation).
-
-### Secret redaction (never logged)
-
-The cron secret is treated as **write-only** material: it is read from the
-environment, compared in constant time, and then discarded. It is never
-serialized into any log line, error message, stack trace, metric label, or
-response body. Concretely:
-
-- The presented `X-Cron-Secret` header value is **never** echoed back, even on
-  `401`. Auth failures log only a stable error code (e.g. `CRON_AUTH_DENIED`)
-  and a correlation/request id.
-- The configured `CRON_SECRET` is **never** interpolated into log messages,
-  thrown `Error` messages, or `console.*` calls. Missing-secret conditions log a
-  fixed, secret-free warning (e.g. `cron requests denied: CRON_SECRET unset`).
-- Request/response logging middleware must redact the `x-cron-secret` header
-  (and any `authorization` / `cookie` headers) before emitting a log record, so
-  a captured request dump cannot leak the secret.
-- Error objects surfaced to the scheduler are sanitized: no secret value, no
-  derived key material, no JWT, no webhook secret. Only the stable error code
-  and correlation id are safe to surface.
-
-This invariant is enforced by `test/cron-secret-guard.e2e-spec.ts` (#981), which
-captures log output across the cron scheduling and execution paths and asserts
-the secret value never appears in it.
 
 ---
 
@@ -170,4 +145,65 @@ implemented surface.
 | Secret rotated, scheduler not yet updated | Every trigger returns `401`; no job logic runs (fail-closed — jobs stop, they are never exposed) | Complete the rotation steps in `SECURITY.md`, then re-verify |
 | `CRON_SECRET` unset | All triggers return `401`; logs a warning that cron requests are being denied | Restore the secret via secret manager; do **not** add a fallback value |
 | DB / Horizon outage during `poll-pending` | No partial status updates; the job reports the error and the next tick retries the untouched rows | Check Horizon reachability; the job is safe to leave scheduled |
-| Duplicate / overlapping trigger | No duplicate side effects (natural-key or `Idempotency-Key` guard) | 
+| Duplicate / overlapping trigger | No duplicate side effects (natural-key or `Idempotency-Key` guard) | None |
+| Oversized `limit` / batch | Clamped to the documented maximum | None; fix the caller if it needs more headroom |
+| Testnet vs mainnet misconfiguration | Faucet path refuses to run on MAINNET; only a low-balance alert is raised | Correct `STELLAR_NETWORK` |
+
+**Safe replay:** every job in the table is safe to re-trigger after a failure.
+For a partially-completed restore drill, re-run with the same `Idempotency-Key`
+and follow the restore runbook rather than re-issuing ad hoc production
+operations.
+
+---
+
+## Adding a new scheduled job
+
+1. Put the route behind the cron secret guard. Do not add a second
+   authentication path, and do not accept a project API key or JWT as a
+   substitute.
+2. Give it a natural-key or `Idempotency-Key` guard so replay cannot duplicate
+   side effects.
+3. Clamp every batch/size parameter to a documented maximum.
+4. Fail closed on dependency outage for any write path.
+5. Add a row to the **Schedule reference** table above **and** a case to
+   `test/cron-schedule-docs.e2e-spec.ts`, in the same PR.
+6. Cross-link the runbook from `README.md` and `SECURITY.md`.
+
+---
+
+## Observability
+
+- Auth failures are logged with a correlation/request id, the request path, and
+  the source IP. **Never** the secret value.
+- Job outcomes are returned as coarse counters/summaries so the scheduler can
+  alert on `processed`/`confirmed`/`failed` deltas without exposing payloads.
+- Rate-limit records for internal callers are pruned by
+  `RateLimitCleanupWorker`; see `README.md` § *Rate-Limit Record Cleanup*.
+
+---
+
+## Rollback
+
+This document and its contract test are documentation/CI only. They do not
+change runtime behavior, so rollback is a plain revert with no data migration,
+no config change, and no mainnet impact. To **disable** internal jobs
+operationally (rather than reverting code), rotate or unset `CRON_SECRET`: the
+guard is fail-closed, so jobs stop being triggered instead of becoming
+reachable.
+
+---
+
+## References
+
+- [`SECURITY.md`](../SECURITY.md) — internal cron secret guard, rotation, and
+  production security requirements.
+- [`docs/BACKUP_RESTORE_PROCEDURES.md`](BACKUP_RESTORE_PROCEDURES.md) — backup
+  and restore drill runbook.
+- [`docs/verify-scripts-runbook.md`](verify-scripts-runbook.md) — fail-closed
+  verification gates.
+- `test/cron-schedule-docs.e2e-spec.ts` — contract test for this document.
+- `test/cron-secret-guard.e2e-spec.ts`,
+  `test/transactions-internal-cron-guard.e2e-spec.ts`,
+  `test/backup-module-registered.e2e-spec.ts` — guard enforcement tests.
+
+---

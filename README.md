@@ -29,7 +29,7 @@ It handles wallet creation, transaction orchestration, fee sponsorship, and on-c
 * Invisible wallet creation and management
 * Secure custody and encryption of Stellar keypairs
 * Transaction relaying and fee sponsorship
-* Soroban smart contract invocation (`POST /v1/soroban/invoke`, allowlisted contracts only, gated by `SOROBAN_INVOKE_ENABLED`; enabling the flag also enables a fail-closed contract-id boot gate — see [docs/SOROBAN-CONTRACT-ID-BOOT.md](docs/SOROBAN-CONTRACT-ID-BOOT.md))
+* Soroban smart contract invocation (`POST /v1/soroban/invoke`, allowlisted contracts only, gated by `SOROBAN_INVOKE_ENABLED`)
 * Spending limit and policy enforcement
 * Indexing and caching on-chain data
 * Serving APIs to frontend applications
@@ -66,11 +66,34 @@ exception provides them. `requestId` is echoed back from the `X-Request-ID`
 request header when present. In production, `message` on unhandled 500 errors
 is sanitized to strip connection strings, file paths, and secrets.
 
-Frontends should branch on `errorCode`. The full catalog — HTTP status,
-category, retryability and recommended client action for every code — is
-documented in [docs/ERROR-CODES.md](docs/ERROR-CODES.md) and served in
-machine-readable form from the public, cacheable
-`GET /v1/error-codes` endpoint.
+### Correlation IDs (`X-Request-ID`) (#927)
+
+A single correlation id ties together the access log, the error envelope, and
+any webhook the request caused, so one identifier can be quoted in a support
+request and traced end to end.
+
+- **Sent:** `X-Request-ID` is returned on every response, and included as
+  `requestId` in every error envelope.
+- **Accepted:** a client may supply its own `X-Request-ID`. It is honoured only
+  when it is at most 128 characters and matches `[A-Za-z0-9._:-]+`. Anything
+  else — control characters, whitespace, an over-long value — is **replaced**
+  with a server-generated UUID, so a hostile header cannot forge a log line or
+  a metric label.
+- **Resolved once:** `getRequestId()` in `src/common/http/correlation.ts` is the
+  single source of truth shared by the logging middleware, the exception filter,
+  and the outbound webhook path, so one client-supplied header can never produce
+  a different id in the log than in the error envelope.
+- **In logs:** every request/response and error line carries the id alongside
+  the method, path, status, and duration. No header value, body, or credential
+  is ever logged.
+- **In webhooks:** outbound deliveries carry the id in the `X-Request-Id`
+  header and as `requestId` in the payload envelope, so a subscriber can
+  correlate a delivery with the API call that caused it. Events raised by a
+  background job rather than a request get a server-generated id instead, so
+  they remain traceable without ever echoing untrusted input.
+
+Contract and helpers: `src/common/http/correlation.ts`
+(`getRequestId`, `buildWebhookCorrelationHeaders`, `withWebhookCorrelation`).
 
 ### Request body size
 
@@ -93,10 +116,26 @@ While enabled, `POST`, `PUT`, `PATCH`, and `DELETE` routes return `503 Service
 Unavailable`; `GET`, `HEAD`, and `OPTIONS` remain available. A configured retry
 delay is returned in the `Retry-After` header.
 
-Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). To change the state,
-send `PATCH /v1/maintenance` with normal API-key authentication plus the
-`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET`. This secret
+Inspect the current maintenance status with `GET /v1/maintenance` (public endpoint, no authentication required). The response is sanitized against secret leakage (Stellar private keys, API keys, webhook secrets, JWTs) and never exposes the caller audit identity (#966). To change the state,
+send `PATCH /v1/maintenance` with dual authentication: valid API-key authentication (`ApiKeyGuard`) plus the
+`X-Maintenance-Secret` header matching `MAINTENANCE_ADMIN_SECRET` (`MaintenanceAdminGuard`). The server-resolved API key ID is recorded in `updatedBy` for an unforgeable audit trail (#967). This secret
 is required in production — startup fails fast if it is unset.
+
+The maintenance endpoint itself remains available while maintenance mode is on
+so an authorized operator can disable it. If the persisted state cannot be read,
+mutating requests fail closed with `503 Service Unavailable` and the stable code
+`MAINTENANCE_STATE_UNAVAILABLE` — an unknown maintenance state is never reported
+as "not in maintenance".
+
+The admin secret is **rotated with an overlap window** so an operator is never
+locked out of the endpoint they need during a rotation: set the new value in
+`MAINTENANCE_ADMIN_SECRET`, move the old one to
+`MAINTENANCE_ADMIN_SECRET_PREVIOUS` with a
+`MAINTENANCE_ADMIN_SECRET_PREVIOUS_EXPIRES_AT` deadline, and both are accepted
+until that instant. With no expiry configured — or an unparseable one — the
+previous secret is **not** accepted, so a stale value can never become a
+permanent second credential. Full procedure and failure modes:
+[docs/MAINTENANCE-SECRET-ROTATION.md](docs/MAINTENANCE-SECRET-ROTATION.md). (#925)
 
 ```json
 {
@@ -112,16 +151,66 @@ mutating requests fail closed with `503 Service Unavailable`.
 
 ### Health & Monitoring
 
-#### `GET /health`
+Health is split into two **separate** probes. They answer different questions
+and must not be pointed at the same Kubernetes probe ([#933](https://github.com/mux-labs/mux-backend/issues/933)).
 
-Liveness probe endpoint for Kubernetes and container orchestration platforms.
+| Endpoint           | Probe type | Checks the DB? | Answers                                     |
+| ------------------ | ---------- | --------------- | ------------------------------------------- |
+| `GET /health`      | liveness   | no              | Should this process be **restarted**?       |
+| `GET /health/live` | liveness   | no              | Same as `/health`; explicit alias.          |
+| `GET /health/ready`| readiness  | yes             | Should this pod **receive traffic**?        |
+| `GET /ready`       | readiness  | yes             | Compatibility alias for `/health/ready`.    |
 
-**Purpose**: Indicates whether the application process is alive and responsive. This is a lightweight check that does NOT verify external dependencies like databases.
+> [!IMPORTANT]
+> **Do not configure `/health/ready` as the liveness probe.** A transient
+> database blip would then fail liveness on every replica and Kubernetes would
+> restart the entire fleet — turning a recoverable dependency outage into a
+> self-inflicted outage. Liveness performs no I/O and only fails when the
+> process itself is broken.
+
+#### `GET /health` (liveness)
+
+**Purpose**: Indicates whether the application process is alive and responsive.
+This check performs **no** I/O and does **not** verify external dependencies such
+as the database, so it stays `200` during a database outage.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ok",
+  "build": { "gitSha": "a1b2c3d4e5f6" }
+}
+```
+
+`build.gitSha` comes from the `GIT_SHA` build arg (see `Dockerfile`) and is
+`"unknown"` on local/dev builds. It is a commit hash only — never a secret.
+
+#### `GET /health/ready` (readiness)
+
+**Purpose**: Indicates whether the application is ready to serve traffic by
+verifying database connectivity. **Fails closed** with `503` when a dependency
+is unavailable, so a pod that cannot serve wallet/payment traffic is drained
+from the load balancer instead of erroring on live requests.
+
+**Response (200 OK)**:
+```json
+{
+  "status": "ok",
+  "info": { "database": { "status": "up" } },
+  "error": {},
+  "details": { "database": { "status": "up" } },
+  "build": { "gitSha": "a1b2c3d4e5f6" }
+}
+```
+
+**Response (503 Service Unavailable)**: Returned when the database is not
+accessible. The dependency status is included for operators; no secret or key
+material is ever present in the body.
+
 #### `GET /ready`
 
-Readiness probe endpoint for Kubernetes and container orchestration platforms.
-
-**Purpose**: Indicates whether the application is ready to serve traffic by verifying database connectivity.
+Compatibility alias for the readiness probe, backed by `AppService`. Same
+semantics: `200` when the database responds, `503` when it does not.
 
 **Response (200 OK)**:
 ```json
@@ -135,15 +224,23 @@ Readiness probe endpoint for Kubernetes and container orchestration platforms.
 }
 ```
 
-**Response (503 Service Unavailable)**: Returned when the database is not accessible.
-
 **Use Cases**:
-- Kubernetes readiness probes
+- Kubernetes liveness probes (`/health`) and readiness probes (`/health/ready`)
 - Load balancer health checks
 - Container orchestration platforms
 - CI/CD deployment verification
 
-**Authentication**: Public endpoint (no API key required)
+**Authentication**: Public endpoints (no API key required)
+
+**Example Kubernetes probe config**:
+```yaml
+livenessProbe:
+  httpGet: { path: /v1/health, port: 3000 }
+  periodSeconds: 10
+readinessProbe:
+  httpGet: { path: /v1/health/ready, port: 3000 }
+  periodSeconds: 5
+```
 
 ---
 
@@ -304,7 +401,7 @@ Users go through the following lifecycle:
    - Every **API key** under those projects is `REVOKED`, so the keys immediately stop authenticating to the `/v1` API.
    - **Webhook endpoints** under those projects are disabled.
 
-   The cleanup is atomic and fail-closed: if any step fails, the transaction rolls back and the user stays active — there is no partial cleanup and no environment-dependent skip path. Only resources owned by the deleted user are touched; platform/onboarding developers without a `userId` are unaffected. Soft deletion preserves audit trails and on-chain transaction history.
+   The cleanup is atomic and fail-closed: if any step fails, the transaction rolls back and the user stays active — there is no partial cleanup and no environment-dependent skip path. Only resources owned by the deleted user are touched; platform/onboarding developers without a `userId` are unaffected. Soft deletion preserves audit trails and on-chain transaction history. Deletion vs. retention policies, privacy rights, and regulatory compliance boundaries are documented in [docs/USER-DELETION-RETENTION.md](docs/USER-DELETION-RETENTION.md) (#968).
 
    Existing developers are linked to their owning user by the `Developer.userId` column (backfilled by email match in the `20260831000000_add_developer_user_owner` migration); new developers can record their owner via the optional `userId` field on `POST /developers`.
 
@@ -589,28 +686,133 @@ This seed also creates an onboarding developer account and a starter project for
 A new developer API route is available: `GET /developers/:id/projects` returns the projects belonging to a developer.
 ```
 
+> **The seed is local-only (#928).** It creates wallets whose `encryptedSecret`
+> is a literal placeholder and transactions with fabricated amounts, so it must
+> never run against a database that matters. `pnpm prisma:seed` refuses to
+> start when `NODE_ENV=production` (no override), when `STELLAR_NETWORK` is
+> mainnet/public (no override), or when `DATABASE_URL` points at a non-local
+> host. The last case can be waived for a throwaway database with
+> `PRISMA_SEED_ALLOW_NON_LOCAL=true`; the demo `MAINNET` wallet rows are
+> additionally opt-in via `PRISMA_SEED_INCLUDE_MAINNET=true`. Each refusal exits
+> non-zero with a stable code (`SEED_BLOCKED_*`). Full contract:
+> [docs/SEED-SAFETY.md](docs/SEED-SAFETY.md).
+
 > Developer ownership: `Developer.userId` links a developer account to the `User` that owns it. When that user is deleted, the developer, its projects, API keys, and webhook endpoints are cleaned up automatically (see [User Lifecycle](#user-lifecycle)). Seeded onboarding developers have no `userId` and are never touched by user deletion.
 
 > The `DATABASE_URL` variable is read at runtime and during migration. Never commit credentials to version control — use environment secrets in CI.
 
-### Connection Pool Sizing
-
-Prisma derives its pool ceiling from the **host's** CPU count unless you pin it,
-which is usually wrong in containers and across multiple replicas. Three optional
-variables size the pool explicitly and are appended to `DATABASE_URL` at startup:
-
-| Variable | Maps to | Suggested start |
-|----------|---------|-----------------|
-| `DATABASE_POOL_SIZE` | `connection_limit` | `min(20, max_connections / replicas)` |
-| `DATABASE_POOL_TIMEOUT_SECONDS` | `pool_timeout` | `10` |
-| `DATABASE_CONNECT_TIMEOUT_SECONDS` | `connect_timeout` | `5` |
-
-With none of them set the URL is untouched and the engine default applies. A
-malformed or out-of-range value fails startup (fail-closed) instead of silently
-reverting to an unbounded pool. Full guidance, budgets, verification queries and
-rollback: [docs/DB-POOL-SIZING.md](docs/DB-POOL-SIZING.md).
-
 ---
+
+### Cross-origin browser access (CORS)
+
+Browser clients must be allowlisted via the `CORS_ORIGINS` environment variable
+(see [.env.example](.env.example)). The policy is defined in
+[`src/common/http/cors.ts`](src/common/http/cors.ts) and is **deny-by-default**:
+
+- **Exact match only.** An origin is admitted only on a literal, normalized
+  match against the allowlist. There is no suffix, subdomain, or wildcard
+  matching — an entry for `https://app.mux.finance` does **not** admit
+  `https://evil.app.mux.finance`, `https://app.mux.finance.evil.com`, or
+  `https://app.mux.finance@evil.com`.
+- **Wildcards are rejected, not honoured.** An entry of `*` or
+  `https://*.mux.finance` is dropped and reported. `*` is invalid alongside
+  `credentials: true` and would hand every origin access to authenticated
+  responses.
+- **Credentials stay enabled** (`credentials: true`) because the dashboard uses
+  session-bearing requests. This is only safe because
+  `Access-Control-Allow-Origin` is always a specific allowlisted origin and
+  never `*`.
+- **Non-browser callers are unaffected.** A request with no `Origin` header is
+  not a browser cross-origin request, so it is allowed. CORS is a
+  browser-enforced mechanism and must not become an auth layer for curl or
+  server-to-server clients — those are authenticated by API key/JWT as usual.
+- **Scheme and port are part of the identity.** `http://app.mux.finance` and
+  `https://app.mux.finance:8443` are different origins and are not admitted by
+  an `https://app.mux.finance` entry.
+- **A refusal is not an error.** A request from a non-allowlisted origin is
+  served normally but carries **no** `Access-Control-Allow-Origin` header, so
+  the browser blocks it. The response is not a `5xx`: a blocked preflight is an
+  expected policy outcome, and reporting it as a server fault would burn error
+  budget and page an operator for traffic the allowlist is meant to turn away.
+  Authentication is unaffected — it is enforced by `ApiKeyGuard`, not by CORS.
+
+#### `GET /internal/cors-allowlist`
+
+The dashboard for the allowlist. Returns the **effective** policy so an operator
+or a support engineer debugging a blocked browser request does not have to read
+env vars.
+
+**Authentication**: required (API key). It is deny-by-default — an anonymous
+caller gets `401` and cannot enumerate the allowlist.
+
+**Response (200 OK)**:
+```json
+{
+  "origins": ["https://app.mux.finance", "https://partner.example.com"],
+  "rejected": [
+    { "entry": "*", "reason": "wildcard origins are not allowed with credentials enabled" }
+  ],
+  "usingDefault": false,
+  "production": true,
+  "credentials": true,
+  "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  "allowedHeaders": ["Content-Type", "Authorization", "X-API-Key", "X-Request-ID", "X-Client-Version"],
+  "exposedHeaders": ["X-Request-ID", "X-RateLimit-Remaining", "X-RateLimit-Reset"],
+  "maxAgeSeconds": 3600
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `origins` | Origins admitted by exact match. |
+| `rejected` | Configured entries that were dropped, with the reason. This is the field that answers "why is my origin blocked?". |
+| `usingDefault` | `true` when `CORS_ORIGINS` is unset and the `http://localhost:3000` default applies. A production deployment should never report `true`. |
+| `production` | Whether `NODE_ENV=production`, for display only. |
+
+This endpoint is **read-only** — there is no `POST`/`PUT`/`DELETE`. Changing the
+allowlist is a deployment concern, not an API one. The response contains only
+origin strings and header names: entries that are not valid `http(s)` origins
+are reported in `rejected` rather than echoed, so a secret mistakenly pasted
+into `CORS_ORIGINS` is never reflected back through the API.
+
+## Security headers
+
+Every HTTP response carries a baseline set of security headers, applied in
+[`src/common/http/security-headers.ts`](src/common/http/security-headers.ts)
+and installed in `main.ts` **before** any route — so error responses and 404s
+carry them too.
+
+| Header | Value | Why |
+| --- | --- | --- |
+| `X-Content-Type-Options` | `nosniff` | Stops a browser second-guessing `Content-Type`, the precondition for content-type confusion. |
+| `X-Frame-Options` | `DENY` | This is a JSON API, never something to interact with inside a frame. Clickjacking a wallet-approval dialog is a real threat. |
+| `Referrer-Policy` | `no-referrer` | Request URLs carry `userId` and wallet ids in the query string; a full referrer would hand those to third parties. |
+| `Cross-Origin-Resource-Policy` | `same-site` | A wallet API's responses must not be readable cross-site. |
+| `X-DNS-Prefetch-Control` | `off` | No speculative DNS for a JSON API. |
+| `Permissions-Policy` | deny-all allowlist | `camera=()`, `geolocation=()`, `payment=()`, `microphone=()`, `usb=()` and more are all denied. Adding a browser capability later is a deliberate act. |
+| `X-Powered-By` | *(removed)* | No reason to advertise the framework. Removed outright, not blanked. |
+
+### HSTS is opt-in
+
+`Strict-Transport-Security` is **not** emitted by default. It is only honoured
+over HTTPS, and this backend frequently terminates TLS at a proxy or runs on
+plain HTTP in local and test environments — emitting it unconditionally would
+pin a developer's browser to HTTPS for `localhost` and break local work.
+
+Deployments that terminate TLS should set:
+
+```bash
+SECURITY_HEADERS_HSTS=true
+```
+
+which emits `Strict-Transport-Security: max-age=31536000; includeSubDomains`.
+See [.env.example](.env.example).
+
+### No Content-Security-Policy
+
+CSP governs **documents**, and this service returns JSON only. A CSP here would
+be a no-op that implies protection that does not exist. Any HTML surface (the
+dashboard) is a separate app and must set its own CSP.
 
 ## Security Model (MVP)
 
@@ -769,36 +971,29 @@ User authentication is orchestrated via the auth service and integrates with Web
 - Expired keys are marked with status `EXPIRED` on first validation attempt
 - Subsequent requests with expired keys fail with "API key has expired"
 
-**API Key Audit Log:**
-
-Every authentication decision — accepted, rejected, or blocked by a dependency
-outage — is recorded by `ApiKeyAuditService` with a stable action code
-(`API_KEY_VALIDATED`, `API_KEY_REJECTED`, `API_KEY_VALIDATION_UNAVAILABLE`) and,
-for rejections, a stable reason (`MISSING`, `MALFORMED`, `UNKNOWN`, `REVOKED`,
-`EXPIRED`, `SUSPENDED`).
-
-- **No key material is ever recorded.** The presented key is SHA-256 hashed and
-  only the first 12 hex characters are kept as a fingerprint.
-- Every field is length-bounded and control-character-stripped, so a hostile
-  header cannot forge a log line.
-- The audit sink is fail-soft: an audit-sink failure never changes the
-  authentication outcome, and nothing is attached to the request on any failure
-  path.
-- A key-store outage is reported as `503` and audited as
-  `API_KEY_VALIDATION_UNAVAILABLE` rather than being disguised as an invalid key;
-  an upstream `401` (expired/revoked) is preserved as a `401`.
-- The in-process buffer is bounded (500 events) so a key spray cannot exhaust
-  memory. Durable retention is the log shipper's responsibility.
-
-Full contract, metrics, and rollback:
-[docs/API-KEY-AUDIT-LOG.md](docs/API-KEY-AUDIT-LOG.md).
-
 ### Rate Limiting & Inactive User Integration
 
 - Rate limits are enforced per API key
 - User status is checked during authentication; inactive users cannot authenticate
 - Once authenticated, API key usage is tracked independently of user status
 - Sensitive endpoints (payments, transactions) apply stricter rate limits
+
+On top of the per-key and per-developer budgets, requests are classified into
+**rate-limit tiers** chosen from the request path, not from tenant
+configuration — so a tenant cannot raise its own abuse ceiling:
+
+| Tier | Surfaces | Keyed by | Default |
+|------|----------|----------|---------|
+| `auth` | `/auth/login`, `/auth/register`, `/auth/verify`, `/auth/refresh`, `/auth/challenge` | Client **IP** (no API key exists yet) | 10 / 60s |
+| `payments` | `/v1/payments*`, `/v1/transactions*` | API key | 60 / 60s |
+| `default` | Everything else | API key | 600 / 60s |
+
+Invariants: a malformed or non-positive limit falls back to the tier default
+rather than disabling it; a strict tier can be tightened but never raised above
+the `default` ceiling; and an unrecognised path still lands in `default`, so
+adding a route never leaves it unthrottled. Refusals are `429` with the stable
+code `RATE_LIMITED`. Full contract, failure modes, and alerting:
+[docs/RATE-LIMITING.md](docs/RATE-LIMITING.md). (#926)
 
 ### Environment Variables
 
@@ -864,54 +1059,19 @@ Full contract, metrics, scheduling, and rollback:
 
 ## Rate-Limit Record Cleanup
 
-`RateLimitCleanupWorker` (in `RateLimitModule`) runs on a configurable interval
-and prunes `RateLimitRecord` rows whose sliding window has closed. Without this
-job the table grows unbounded as every API key × endpoint × time-window
-combination adds a row.
+The `RateLimitCleanupWorker` runs on a configurable interval and prunes expired
+`RateLimitRecord` rows from the database. Without this job the table grows
+unbounded as every API key × endpoint × time-window combination adds a row.
 
-The worker is **opt-in / deny-by-default**: it only starts when
-`RATE_LIMIT_CLEANUP_ENABLED=true`, so a deployment using an external scheduler
-can leave it off and run cleanup in exactly one place. It deletes only rows with
-`windowStart < now - windowMs` (a current-window row is still enforcing a limit),
-bounds each batch, and fails closed with
-`DEVELOPER_QUOTA_CLEANUP_DEPENDENCY_UNAVAILABLE` rather than reporting a false
-"0 deleted".
+The worker is automatically registered in `RateLimitModule` — no manual
+wiring is required.
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RATE_LIMIT_CLEANUP_ENABLED` | `false` | Set to `true` to run the in-process worker |
-| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run a cleanup pass |
-| `RATE_LIMIT_CLEANUP_BATCH_SIZE` | `1000` | Rows deleted per pass (clamped to `10000`) |
-
-## Per-Developer API Quotas
-
-The per-API-key rate limit is not a tenant boundary. A developer holding many
-keys across many projects can exceed an intended aggregate limit while every
-individual key stays under its own. `DeveloperQuotaGuard` enforces the limit at
-the **developer**, summed across all of their keys and projects.
-
-Quotas are **deny-by-default**: nothing is enforced unless
-`DEVELOPER_QUOTAS_ENABLED=true`, so a deployment that has not opted in behaves
-exactly as before.
-
-### Environment Variables
-
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DEVELOPER_QUOTAS_ENABLED` | `false` | Master switch for per-developer quotas |
-| `DEVELOPER_QUOTA_DEFAULT_RPM` | `600` | Requests per window per developer (clamped to `1..DEVELOPER_QUOTA_MAX_RPM`) |
-| `DEVELOPER_QUOTA_WINDOW_MS` | `60000` | Sliding-window length in ms |
-| `DEVELOPER_QUOTA_MAX_RPM` | `10000` | Hard ceiling on any quota — lower it to tighten every quota at once |
-
-The developer is resolved from the **validated API key**, never from a
-client-supplied `developerId`, so a caller can neither borrow another tenant's
-quota nor escape its own. Denials return `429` with the stable code
-`DEVELOPER_QUOTA_EXCEEDED`, plus `Retry-After` and `X-RateLimit-*` headers.
-
-Full contract, metrics, the in-process-counter limitation, and rollback:
-[docs/DEVELOPER-QUOTAS.md](docs/DEVELOPER-QUOTAS.md).
+| `RATE_LIMIT_CLEANUP_INTERVAL_MS` | `3600000` | How often (ms) to run the cleanup job |
+| `RATE_LIMIT_CLEANUP_OLDER_THAN_MS` | `3600000` | Delete records with `windowStart` older than this age (ms) |
 
 ---
 
@@ -1014,25 +1174,7 @@ initiative for production-grade deployments.
 | No new privileges | `security_opt: no-new-privileges:true` in `docker-compose.yml` prevents the container from gaining additional capabilities at runtime. |
 | Minimal runtime image | The production image uses `node:22-alpine` with only production dependencies, built artifacts, and Prisma migrations. Build tools and source code are not present. |
 | Fail-closed migrations | `docker-entrypoint.sh` runs `prisma migrate deploy` before starting the app. If migrations fail, the container exits non-zero so orchestrators (Kubernetes, ECS) detect the failure immediately. |
-| Graceful shutdown | The image declares `STOPSIGNAL SIGTERM`. On `SIGTERM`/`SIGINT` the app stops accepting new writes, drains in-flight work for up to `GRACEFUL_SHUTDOWN_TIMEOUT_MS` (default 25 s), then closes Prisma cleanly. See [docs/GRACEFUL-SHUTDOWN.md](docs/GRACEFUL-SHUTDOWN.md). |
 | No secrets in image | Secrets are injected at runtime via environment variables or a secret manager — they are never baked into the image. |
-
-### Graceful shutdown / payment drain
-
-Mutating requests received while the process is draining are refused with
-`503 SHUTDOWN_IN_PROGRESS` (retryable) instead of being accepted and then
-abandoned, while reads and health/readiness keep responding so the load balancer
-can observe the drain. In-flight operations registered via
-`GracefulShutdownService.trackOperation()` are awaited before exit.
-
-```bash
-# docker-compose.yml (api service)
-stop_grace_period: 30s   # must exceed GRACEFUL_SHUTDOWN_TIMEOUT_MS
-```
-
-For Kubernetes set `terminationGracePeriodSeconds` above
-`GRACEFUL_SHUTDOWN_TIMEOUT_MS` (e.g. `40` for the `25` default). Full sequence,
-configuration and rollback: [docs/GRACEFUL-SHUTDOWN.md](docs/GRACEFUL-SHUTDOWN.md).
 
 ### Running locally
 
@@ -1165,29 +1307,12 @@ All sync and reconciliation operations create a `BalanceSyncJob` record for audi
 Balance **writes** are gated by `BALANCE_SYNC_ENABLED` (default `false`, fail-closed);
 reads are always available. See [Horizon balance reconciliation](docs/WALLET-API.md#horizon-balance-reconciliation).
 
-#### Horizon retry (fail-closed)
-
-`HorizonRestBalanceClient` retries **transient** Horizon failures (`408`, `429`,
-`5xx`, connection reset/timeout/DNS) in-process with bounded exponential backoff
-and jitter, honouring `Retry-After`. Permanent `4xx` responses and malformed
-payloads are not retried. When the retry budget is exhausted the read fails with
-`503 BALANCE_DEPENDENCY_UNAVAILABLE` and **no write is applied** — an outage
-degrades freshness, it never zeroes a real balance. Full design, invariants and
-the ops runbook: [docs/HORIZON-RETRY.md](docs/HORIZON-RETRY.md).
-
-Run `POST /balances/wallet/:walletId/sync-with-retry` to apply the service-level
-retry in addition to the client-level one.
-
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `BALANCE_STALE_THRESHOLD_MS` | `300000` | Age (ms) after which a balance is considered stale |
 | `STELLAR_HORIZON_URL` | `https://horizon-testnet.stellar.org` | Stellar Horizon API URL |
-| `STELLAR_HORIZON_MAX_RETRIES` | `3` | Retries after the first attempt (clamped to 10) |
-| `STELLAR_HORIZON_RETRY_BACKOFF_MS` | `500` | Base exponential-backoff delay (ms) |
-| `STELLAR_HORIZON_RETRY_JITTER_MS` | `250` | Maximum jitter added per retry (ms) |
-| `STELLAR_HORIZON_RETRY_BUDGET_MS` | `15000` | Upper bound on total retry time per read (ms) |
 
 ---
 
@@ -1212,6 +1337,51 @@ Webhooks allow your application to receive real-time notifications when events o
 
 All webhook payloads are signed with HMAC-SHA256. The `X-Webhook-Signature` header has format `t=<timestamp>,v1=<signature>`. Verify with the secret returned at endpoint creation.
 
+#### Verifying an inbound signature (`WebhookSignatureService`)
+
+`src/webhooks/webhook-signature.service.ts` is the single, shared verifier for
+`X-Webhook-Signature`. Anything that accepts a Mux-signed payload (an inbound
+receiver, a partner relay, a test harness) should call it rather than
+hand-rolling a comparison, so the rules cannot drift between call sites.
+
+```ts
+verifier.verify({
+  header: req.header['x-webhook-signature'],
+  payload: rawBody, // exact bytes that were signed
+  secret, // endpoint secret; absent/blank => rejected
+});
+```
+
+Invariants, each covered by `src/webhooks/webhook-signature.service.spec.ts`:
+
+* **Constant-time.** The digest is compared with `crypto.timingSafeEqual` over
+  equal-length buffers. A length mismatch is a mismatch — it is never padded or
+  short-circuited, so a `===` on a digest can never leak a correct prefix.
+* **Fail closed on a missing secret.** No secret means every signature is
+  rejected (`WEBHOOK_SIGNATURE_SECRET_UNAVAILABLE`). There is no "skip
+  verification" path.
+* **Bounded replay window.** The signed timestamp must be within
+  `DEFAULT_SIGNATURE_TOLERANCE_SECONDS` (300s) of now, in *either* direction: a
+  stale capture and a forged future timestamp are both rejected.
+* **Bounded input.** A header larger than `MAX_SIGNATURE_HEADER_BYTES` (256) is
+  rejected before it is parsed.
+* **No leakage.** Failures throw `WebhookVerificationError` with a stable code
+  and a fixed message. The secret, the presented digest, and the payload never
+  reach a log line, a metric label, or an error body.
+
+Stable codes (`src/webhooks/webhook-signature.model.ts`):
+`WEBHOOK_SIGNATURE_MISSING`, `WEBHOOK_SIGNATURE_MALFORMED`,
+`WEBHOOK_SIGNATURE_HEADER_TOO_LARGE`, `WEBHOOK_SIGNATURE_SECRET_UNAVAILABLE`,
+`WEBHOOK_SIGNATURE_TIMESTAMP_OUT_OF_TOLERANCE`, `WEBHOOK_SIGNATURE_MISMATCH`,
+`WEBHOOK_VERIFY_INVALID_ARGUMENT`. Each rejection also increments a
+`webhook_signature_*` counter so a mismatch spike is visible without reading
+payloads. See [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md)
+for rotation and incident response.
+
+### Signing Secret Storage & Rotation
+
+* **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
+* **Returned exactly once**: The plaintext secret is returned only by `POST /webhooks/endpoints` (creation) and `POST /webhooks/endpoints/:id/rotate-s
 ### Signing Secret Storage & Rotation
 
 * **Hashed at rest**: Signing secrets are **never stored in plaintext**. Each endpoint's secret is derived deterministically from the server-side `WEBHOOK_SIGNING_KEY` (HMAC-SHA256 over endpoint id + version) and only its SHA-256 hash is persisted — exactly like API keys. A database leak exposes only hashes.
@@ -1231,7 +1401,7 @@ Endpoint semantics, idempotency, lifecycle events, dependency retries, and
 metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 
 - `POST /wallets` - create wallet
-- `GET /wallets` - list all wallets
+- `GET /wallets` - list wallets (paginated, filterable — see below)
 - `GET /wallets/user/:userId` - list wallets by userId (#189)
 - `GET /wallets/:id` - get wallet by id
 - `GET /wallets/:id/status` - get wallet status (#185)
@@ -1239,6 +1409,50 @@ metrics are documented in [docs/WALLET-API.md](docs/WALLET-API.md).
 - `PATCH /wallets/:id` - update wallet status
 - `PATCH /wallets/:id/activate` - activate wallet (PROVISIONING -> ACTIVE) (#188)
 - `DELETE /wallets/:id` - remove wallet
+
+### Listing wallets
+
+`GET /wallets` returns a **paginated envelope** rather than a bare array.
+
+| Query param | Type | Default | Notes |
+| --- | --- | --- | --- |
+| `userId` | string | — | Restrict to one owner. |
+| `network` | `TESTNET` \| `MAINNET` | — | Restrict to one network. |
+| `status` | wallet status enum | — | Restrict to one lifecycle status. |
+| `includeArchived` | `true` \| `false` | `false` | Archived wallets are excluded by default. |
+| `limit` | integer `1`–`100` | `20` | Hard ceiling; `1000` is rejected with `400`. |
+| `offset` | integer `>= 0` | `0` | |
+| `loadTestMode` | `true` \| `false` | `false` | Synthetic data; `403` in production. |
+
+**Response (200 OK)**:
+```json
+{
+  "data": [ /* wallets */ ],
+  "total": 137,
+  "limit": 20,
+  "offset": 0,
+  "hasMore": true
+}
+```
+
+`total` is the number of rows matching the **filters** (ignoring pagination);
+`hasMore` tells you whether another page exists, so a client can advance without
+a probe request.
+
+**Filter values are validated, not coerced** ([#936](https://github.com/mux-labs/mux-backend/issues/936)):
+
+- `network` and `status` are checked against closed enums. `?network=testnet`
+  (lower case) or `?network=NOT_A_NETWORK` is rejected with `400` rather than
+  reaching the database — an unvalidated value would silently widen the result
+  set across **testnet and mainnet** instead of failing.
+- `limit` must be an integer in `[1, 100]` and `offset` a non-negative integer;
+  `?limit=all` and `?limit=0` are rejected with `400`.
+- Unknown query parameters are rejected (`forbidNonWhitelisted`), so a typo
+  cannot be silently ignored.
+- `includeArchived` and `loadTestMode` are enabled only by the literal string
+  `true`; `1` and `yes` do **not** enable them.
+- The service clamps `limit`/`offset` again internally, so any future
+  non-HTTP caller is bounded too.
 
 ### Wallet Nickname
 
@@ -1335,6 +1549,97 @@ Testing
 
 Results are ordered newest-first. The response envelope includes `data`, `total`, `limit`, `offset`, and `hasMore`.
 
+### Transaction Export PII Minimization
+
+An export leaves the database: it lands in object storage behind a
+time-limited download URL and gets forwarded to whoever requested it.
+`src/transactions/transaction-export-minimisation.ts` defines the allowlist that
+shapes both the CSV/JSON payload and the job record, so the two cannot disagree.
+
+* **Allowlist, not denylist.** Only `transactionId`, `stellarHash`, `assetCode`,
+  `assetIssuer`, `amount`, `status`, `senderWalletId`, `receiverWalletId`,
+  `createdAt`, `confirmedAt` are exported. A column added to the schema later
+  cannot leak into an export by default — exporting it is a reviewed decision.
+* **Never exported** (see `NEVER_EXPORTED_COLUMNS`): `email`, `displayName`,
+  `authId`, `lastLoginIp`, `lastLoginUserAgent`, `requestedBy`, `memo`,
+  `metadata` (open JSON), `statusReason` (can carry a raw upstream error).
+* **CSV formula-injection guard.** A leading `=`, `+`, `-`, or `@` is prefixed
+  with `'`, so a value that a spreadsheet would evaluate is inert.
+* **Bounded.** `MAX_EXPORT_ROWS` (10 000) is fail-closed: the filter range is
+  client-chosen, so an unbounded export is a memory-exhaustion vector on the
+  job worker.
+* **Loud on a broken row.** A row with no `transactionId` raises
+  `EXPORT_ROW_MISSING_REQUIRED_FIELD` instead of producing a file with an
+  unreconcilable blank; a nested object raises `EXPORT_ROW_INVALID_FIELD`
+  rather than being stringified into a cell. Error messages never echo the
+  offending value.
+
+Stable codes: `EXPORT_UNSUPPORTED_FORMAT`, `EXPORT_ROW_MISSING_REQUIRED_FIELD`,
+`EXPORT_ROW_INVALID_FIELD`, `EXPORT_TOO_LARGE` — the last two align with the
+existing `ErrorCode.EXPORT_*` envelope in `src/common/dto/error-envelope.dto.ts`.
+
+### Today Usage (authoritative backend)
+
+A client that needs to know how much of its daily limit it has consumed must not
+be trusted to compute it. `UsageService.getTodayUsage(walletId)` in
+`src/transactions/transaction-usage.service.ts` is the authoritative backend for
+"used so far today":
+
+* **Server-derived, never client-supplied.** The figure is a `GROUP BY` over
+  the wallet's own transactions. There is no request field a caller can use to
+  assert a total, so usage cannot be understated to unlock a spend policy would
+  refuse.
+* **UTC calendar day.** The window is `[00:00Z, next 00:00Z)`, derived
+  server-side from an injectable clock. A client cannot widen or shift the
+  window, which is what stops "reset the counter by moving the clock".
+* **Exact decimal arithmetic.** Amounts are summed as scaled `BigInt`, never as
+  JS `Number` — the sum feeds a spending limit, so a rounding error would be a
+  limit bypass.
+* **Fail closed.** A store outage raises `USAGE_STORE_UNAVAILABLE`. The service
+  never reports `0` for a query it did not answer: a false zero reads as "full
+  allowance available", which is the dangerous direction to fail in. A
+  malformed aggregate is `USAGE_STORE_CONTRACT_VIOLATION` rather than being
+  coerced to zero.
+* `PENDING` and `CONFIRMED` count; `FAILED` does not.
+
+Stable codes: `USAGE_INVALID_WALLET_ID`, `USAGE_STORE_UNAVAILABLE`,
+`USAGE_STORE_CONTRACT_VIOLATION`. Each outcome increments a `usage_*` counter.
+
+### Transaction Memo Validation
+
+The `memo` field is client-supplied free text that is stored, indexed, searchable
+(`?memo=`), and ultimately becomes a Stellar `MemoText` on-chain. Stellar caps
+`MemoText` at **28 bytes**, so a memo that looks fine in JavaScript can still be
+un-submittable. `src/transactions/transaction-memo.ts` is the single place that
+decides admissibility, and `TransactionsService.createTransaction()` calls
+`normalizeMemo()` **before** the insert.
+
+* **Length is measured in UTF-8 bytes, not characters.** A 14-character emoji
+  memo is 28 bytes and is refused; 28 ASCII characters are accepted. Checking
+  `.length` would let an un-submittable memo through.
+* **No truncation.** An over-long memo is an error, never silently shortened to
+  something the client did not ask for.
+* **Whitespace-only is an error** (`MEMO_EMPTY`), not a stored blank, so a
+  caller cannot believe a memo was recorded when it was not.
+* **Control characters and unpaired surrogates are refused.** They cannot
+  survive XDR encoding and are a log-injection vector once stored.
+* **`undefined`/`null` mean "no memo"** and are never an error.
+
+Stable codes (`src/transactions/transaction-memo.ts`): `MEMO_TYPE_INVALID`,
+`MEMO_TOO_LONG`, `MEMO_CHARSET_INVALID`, `MEMO_EMPTY`. Error messages never
+echo the memo itself.
+
+### Transaction Status Lifecycle (#498)
+
+Internal transaction statuses and their Horizon result mappings:
+
+| Status | Description | Horizon mapping |
+|--------|-------------|-----------------|
+| `PENDING` | Created, not yet submitted | — |
+| `SUBMITTED` | Submitted to Stellar, awaiting ledger inclusion | HTTP 202, `result_code: tx_queued` |
+| `CONFIRMED` | Included in a ledger | `successful: true`, `result_code: tx_success` / `tx_fee_bump_inner_success` |
+| `FAILED` | Rejected or expired | `su
+
 ### Transaction Status Lifecycle (#498)
 
 Internal transaction statuses and their Horizon result mappings:
@@ -1379,8 +1684,3 @@ Testnet Friendbot funding is performed outside the transaction and is non-blocki
 ```
 
 Query parameters: `userId`, `network`, `status`, `includeArchived` (default `false`), `limit` (max 100, default 20), `offset` (default 0). Archived wallets are excluded by default; pass `includeArchived=true` to include them. `encryptedSecret` is never present in list responses.
-
-## Handsoff notes
-
-<!-- handsoff-issue-990 -->
-- #990: Key management e2e

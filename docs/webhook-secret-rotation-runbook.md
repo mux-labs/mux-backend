@@ -218,10 +218,6 @@ endpoint. Plan:
 | `WEBHOOK_SIGNING_KEY` | Yes (boot fails without it) | ≥ 32 chars. Never log it, never put it in a commit. If it is ever exposed, rotate it and re-issue every endpoint secret (see §9). |
 | `WEBHOOK_SECRET_GRACE_SECONDS` | No (default `3600`) | Grace window for rotation switchover. |
 
-The master key lives **outside** the database. Back it up with the same
-discipline as `WALLET_ENCRYPTION_KEY` — losing it means derived secrets
-cannot be recomputed and outbound signatures break.
-
 ## 11. Migration for endpoints created before this feature
 
 The migration (`20260831000000_hash_webhook_secrets`) drops the old plaintext

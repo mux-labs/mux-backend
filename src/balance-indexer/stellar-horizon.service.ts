@@ -1,214 +1,150 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  Optional,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Server } from 'stellar-sdk';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
+import { WalletNetwork } from '../wallets/domain/wallet.model';
 
 export interface HorizonAccountResponse {
   id: string;
   sequence: string;
   balances: HorizonBalance[];
-  /** Horizon paging token for the next page of operations */
-  pagingToken?: string;
 }
+import { RequestContextService } from '../common/request-context/request-context.service';
+import {
+  CircuitBreaker,
+  CircuitOpenError,
+} from '../common/utils/circuit-breaker';
+import { HorizonAccountCacheService } from './horizon-account-cache.service';
 
 export interface HorizonBalance {
   asset_type: string;
   asset_code?: string;
   asset_issuer?: string;
   balance: string;
-  /** Paging token attached to this balance entry (if Horizon provides one) */
-  paging_token?: string;
 }
 
-/**
- * Service for interacting with Stellar Horizon API
- *
- * In production, use stellar-sdk:
- * import { Server } from 'stellar-sdk';
- */
 @Injectable()
 export class StellarHorizonService {
   private readonly logger = new Logger(StellarHorizonService.name);
-  private readonly horizonUrl: string;
+  private readonly horizonUrls: Record<WalletNetwork, string>;
+  private readonly server: Server;
+  private readonly circuitBreaker: CircuitBreaker;
 
-  constructor(private readonly configService: ConfigService) {
-    // Default to testnet
-    this.horizonUrl = this.configService.get<string>(
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly requestContext: RequestContextService,
+    @Optional() private readonly horizonAccountCache?: HorizonAccountCacheService,
+  ) {
+    this.horizonUrls = {
+      [WalletNetwork.TESTNET]: this.configService.get<string>(
+        'STELLAR_HORIZON_TESTNET_URL',
+        'https://horizon-testnet.stellar.org',
+      ),
+      [WalletNetwork.MAINNET]: this.configService.get<string>(
+        'STELLAR_HORIZON_MAINNET_URL',
+        'https://horizon.stellar.org',
+      ),
+    };
+
+    const horizonUrl = this.configService.get<string>(
       'STELLAR_HORIZON_URL',
-      'https://horizon-testnet.stellar.org',
+      this.horizonUrls[WalletNetwork.TESTNET],
     );
+    this.server = new Server(horizonUrl, { allowHttp: false });
+    this.circuitBreaker = new CircuitBreaker('stellar-horizon', {
+      failureThreshold: this.configService.get<number>(
+        'HORIZON_CIRCUIT_FAILURE_THRESHOLD',
+        5,
+      ),
+      resetTimeoutMs: this.configService.get<number>(
+        'HORIZON_CIRCUIT_RESET_TIMEOUT_MS',
+        30000,
+      ),
+    });
 
-    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
+    this.logger.log(`Initialized Stellar Horizon client: ${horizonUrl}`);
   }
 
   /**
-   * Fetches account balances from Stellar Horizon.
-   *
-   * @param publicKey    Stellar public key of the account
-   * @param pagingToken  Optional resume token from a previous call (crash-resume, #975)
+   * Resolves the Horizon base URL for a given network. Defaults to testnet
+   * when no network is specified, matching prior (single-URL) behavior.
    */
-  async getAccountBalances(
-    publicKey: string,
-    pagingToken?: string,
-  ): Promise<BalanceUpdate[]> {
-    try {
-      // Simplified mock implementation
-      const response = await this.mockHorizonRequest(publicKey, pagingToken);
-
-      const balances: BalanceUpdate[] = response.balances.map((balance) => ({
-        walletId: '', // Will be set by caller
-        asset: this.parseAsset(balance),
-        balance: balance.balance,
-        ledgerSequence: parseInt(response.sequence, 10),
-        timestamp: new Date(),
-        // Propagate the paging token so the caller can persist it as a cursor
-        pagingToken: balance.paging_token ?? response.pagingToken ?? null,
-      }));
-
-      this.logger.log(
-        `Fetched ${balances.length} balances for account ${publicKey.substring(0, 8)}...` +
-          (pagingToken ? ` (resumed from token ${pagingToken})` : ''),
-      );
-      return balances;
-    } catch (error) {
-      this.logger.error(
-        `Failed to fetch balances for account ${publicKey}:`,
-        error,
-      );
-      throw new Error(`Horizon API request failed: ${error.message}`);
-    }
+  private resolveUrl(network: WalletNetwork = WalletNetwork.TESTNET): string {
+    return this.horizonUrls[network];
   }
 
   /**
-   * Checks if an account exists on-chain
+   * Helper to execute server actions with retry & backoff, guarded by a
+   * circuit breaker so a degraded Horizon backend fails fast instead of
+   * queuing up retries (and their backoff delays) on every caller.
    */
-  async accountExists(publicKey: string): Promise<boolean> {
+  private async executeWithRetry<T>(
+    operation: () => Promise<T>,
+    opName: string,
+  ): Promise<T> {
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
+
     try {
-      await this.mockHorizonRequest(publicKey);
-      return true;
+      this.circuitBreaker.assertClosed();
     } catch (error) {
-      if (error.message.includes('404')) {
-        return false;
+      if (error instanceof CircuitOpenError) {
+        this.logger.warn(
+          `${logPrefix}Horizon API ${opName} short-circuited: ${error.message}`,
+        );
+        throw new ServiceUnavailableException(
+          'Stellar Horizon is currently unavailable. Please try again shortly.',
+        );
       }
       throw error;
     }
-  }
 
-  /**
-   * Parses Horizon balance format to internal Asset model
-   */
-  private parseAsset(horizonBalance: HorizonBalance): Asset {
-    switch (horizonBalance.asset_type) {
-      case 'native':
-        return { type: AssetType.NATIVE };
-
-      case 'credit_alphanum4':
-        return {
-          type: AssetType.CREDIT_ALPHANUM4,
-          code: horizonBalance.asset_code,
-          issuer: horizonBalance.asset_issuer,
-        };
-
-      case 'credit_alphanum12':
-        return {
-          type: AssetType.CREDIT_ALPHANUM12,
-          code: horizonBalance.asset_code,
-          issuer: horizonBalance.asset_issuer,
-        };
-
-      case 'liquidity_pool_shares':
-        return {
-          type: AssetType.LIQUIDITY_POOL_SHARES,
-          code: horizonBalance.asset_code,
-        };
-
-      default:
-        throw new Error(`Unknown asset type: ${horizonBalance.asset_type}`);
+    const maxRetries = this.configService.get<number>('HORIZON_MAX_RETRIES', 3);
+    let attempt = 0;
+    while (true) {
+      try {
+        const result = await operation();
+        this.circuitBreaker.recordSuccess();
+        return result;
+      } catch (error) {
+        attempt++;
+        if (attempt > maxRetries) {
+          this.circuitBreaker.recordFailure();
+          throw error;
+        }
+        const delay = Math.min(
+          1000 * Math.pow(2, attempt) + Math.random() * 1000,
+          15000,
+        );
+        this.logger.warn(
+          `${logPrefix}Horizon API ${opName} failed (attempt ${attempt}/${maxRetries}). Retrying in ${Math.round(delay)}ms. Error: ${error.message}`,
+        );
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
     }
-  }
-
-  /**
-   * Mock Horizon request (replace with real stellar-sdk in production).
-   *
-   * When `pagingToken` is supplied the mock simulates a resumed page by
-   * returning an incremented sequence number, as a real Horizon response would.
-   */
-  private async mockHorizonRequest(
-    publicKey: string,
-    pagingToken?: string,
-  ): Promise<HorizonAccountResponse> {
-    // Simulate API call delay
-    await new Promise((resolve) => setTimeout(resolve, 100));
-
-    // Simulate a higher sequence when resuming from a paging token
-    const sequence = pagingToken
-      ? String(parseInt(pagingToken, 10) + 1 || 123456790)
-      : '123456789';
-
-    // Mock response with realistic data
-    return {
-      id: publicKey,
-      sequence,
-      pagingToken: String(parseInt(sequence, 10) + 1),
-      balances: [
-        {
-          asset_type: 'native',
-          balance: '1000.5000000',
-          paging_token: String(parseInt(sequence, 10) + 1),
-        },
-        {
-          asset_type: 'credit_alphanum4',
-          asset_code: 'USDC',
-          asset_issuer:
-            'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
-          balance: '500.0000000',
-          paging_token: String(parseInt(sequence, 10) + 2),
-        },
-      ],
-    };
-  }
-}
-
-export interface HorizonAccountResponse {
-  id: string;
-  sequence: string;
-  balances: HorizonBalance[];
-}
-
-export interface HorizonBalance {
-  asset_type: string;
-  asset_code?: string;
-  asset_issuer?: string;
-  balance: string;
-}
-
-/**
- * Service for interacting with Stellar Horizon API
- *
- * In production, use stellar-sdk:
- * import { Server } from 'stellar-sdk';
- */
-@Injectable()
-export class StellarHorizonService {
-  private readonly logger = new Logger(StellarHorizonService.name);
-  private readonly horizonUrl: string;
-
-  constructor(private readonly configService: ConfigService) {
-    // Default to testnet
-    this.horizonUrl = this.configService.get<string>(
-      'STELLAR_HORIZON_URL',
-      'https://horizon-testnet.stellar.org',
-    );
-
-    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
   }
 
   /**
    * Fetches account balances from Stellar Horizon
    */
-  async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
+  async getAccountBalances(
+    publicKey: string,
+    network: WalletNetwork = WalletNetwork.TESTNET,
+  ): Promise<BalanceUpdate[]> {
+    const horizonUrl = this.resolveUrl(network);
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
+
     try {
-      // Simplified mock implementation
-      const response = await this.mockHorizonRequest(publicKey);
+      const response = await this.executeWithRetry(
+        () => this.mockHorizonRequest(publicKey, horizonUrl),
+        `getAccountBalances(${publicKey.substring(0, 8)}...)`,
+      );
 
       const balances: BalanceUpdate[] = response.balances.map((balance) => ({
         walletId: '', // Will be set by caller
@@ -219,12 +155,12 @@ export class StellarHorizonService {
       }));
 
       this.logger.log(
-        `Fetched ${balances.length} balances for account ${publicKey.substring(0, 8)}...`,
+        `${logPrefix}Fetched ${balances.length} balances for account ${publicKey.substring(0, 8)}...`,
       );
       return balances;
     } catch (error) {
       this.logger.error(
-        `Failed to fetch balances for account ${publicKey}:`,
+        `${logPrefix}Failed to fetch balances for account ${publicKey}:`,
         error,
       );
       throw new Error(`Horizon API request failed: ${error.message}`);
@@ -232,16 +168,42 @@ export class StellarHorizonService {
   }
 
   /**
-   * Checks if an account exists on-chain
+   * Checks if an account exists on-chain.
+   * Results are cached for a short TTL via HorizonAccountCacheService to
+   * avoid redundant Horizon round-trips in high-frequency payment flows.
    */
-  async accountExists(publicKey: string): Promise<boolean> {
+  async accountExists(
+    publicKey: string,
+    network: WalletNetwork = WalletNetwork.TESTNET,
+  ): Promise<boolean> {
+    const requestId = this.requestContext.getRequestId();
+    const logPrefix = requestId ? `[${requestId}] ` : '';
+
+    const cached = this.horizonAccountCache?.get(publicKey);
+    if (cached !== null && cached !== undefined) {
+      return cached;
+    }
+
     try {
-      await this.mockHorizonRequest(publicKey);
+      await this.executeWithRetry(
+        () => this.server.loadAccount(publicKey),
+        `accountExists(${publicKey.substring(0, 8)}...)`,
+      );
+      this.horizonAccountCache?.set(publicKey, true);
       return true;
     } catch (error) {
-      if (error.message.includes('404')) {
+      if (
+        error?.response?.status === 404 ||
+        error?.message?.includes('404') ||
+        error?.name === 'NotFoundError'
+      ) {
+        this.horizonAccountCache?.set(publicKey, false);
         return false;
       }
+      this.logger.error(
+        `${logPrefix}Failed to check if account exists for ${publicKey}:`,
+        error,
+      );
       throw error;
     }
   }
@@ -284,7 +246,10 @@ export class StellarHorizonService {
    */
   private async mockHorizonRequest(
     publicKey: string,
+    horizonUrl: string,
   ): Promise<HorizonAccountResponse> {
+    this.logger.debug(`Requesting account ${publicKey} from ${horizonUrl}`);
+
     // Simulate API call delay
     await new Promise((resolve) => setTimeout(resolve, 100));
 

@@ -1,129 +1,154 @@
 # Feature Flags
 
-# Feature Flags
+Mux Backend uses `FEATURE_*` environment variables to gate its core API surfaces.
 
-This document tracks feature flags and kill-switches used across mux-backend.
-Every money-path or mainnet-affecting change MUST be gated behind a flag and
-have a documented rollback path (see the PR description for the specific
-rollback steps).
+## Default Behaviour
 
-Related docs:
+**All flags default to `true` (enabled) when unset.** A fresh deploy with no `FEATURE_*` variables set will expose all core APIs. This prevents accidental outages due to missing configuration.
 
-- `docs/AUTH-FEATURE-FLAGS.md` — authz roles (owner/delegate/guardian/API-key/JWT).
-- `docs/MAINNET-PAYMENT-FEATURE-FLAG.md` — mainnet money-path gating.
+To disable a feature, explicitly set its environment variable to `false`:
 
-## Conventions
+```
+FEATURE_AUTH=false
+```
 
-- Flags are read from environment variables and default to **off** (deny-by-default).
-- A flag must be safe to flip at runtime without a redeploy where possible.
-- Never log flag values that could contain secrets; log only the flag name and
-  the resolved boolean.
-- Each flag lists: purpose, default, owner, and rollback behavior.
+Any other value (`true`, `1`, `yes`, unset/empty) keeps the feature enabled.
 
-## Model
+## Available Flags
 
-Flags are resolved server-side and are the **source of truth**. Clients cannot
-enable a privileged surface by sending a flag value; any client-supplied flag is
-ignored and the server resolves the effective value from configuration.
+| Environment Variable          | API Surface                              | Default  |
+|-------------------------------|------------------------------------------|----------|
+| `FEATURE_AUTH`                | `/v1/auth/**` — authentication endpoints | enabled  |
+| `FEATURE_WALLETS`             | `/v1/wallets/**` — wallet management     | enabled  |
+| `FEATURE_PAYMENTS`            | `/v1/payments/**` — payment endpoints    | enabled  |
+| `FEATURE_WEBHOOKS`            | `/v1/webhooks/**` — webhook management   | enabled  |
+| `FEATURE_TRANSACTIONS`        | `/v1/transactions/**` — transactions     | enabled  |
+| `FEATURE_LIMITS`              | `/v1/limits/**` — spending limits        | enabled  |
+| `FEATURE_KEY_MANAGEMENT`      | `/v1/key-management/**` — key ops        | enabled  |
+| `FEATURE_MAINNET_PAYMENTS`    | Mainnet payment processing (extra gate)  | **disabled** (deny-by-default) |
+| `FEE_SPONSORSHIP_ENABLED`     | Fee sponsorship budget writes on mainnet | **disabled** (deny-by-default) |
+| `SOROBAN_INVOKE_ENABLED`      | Soroban contract invocation            | **disabled** (deny-by-default) |
+| `MULTI_ASSET_PAYMENTS_ENABLED` | Credit-asset payment writes (non-native) | **disabled** (deny-by-default) |
+| `KEY_ROTATION_ENABLED`        | Wallet `keyVersion` rotation writes     | **disabled** (deny-by-default) |
+| `BALANCE_SYNC_ENABLED`        | Horizon balance sync/reconcile writes   | **disabled** (deny-by-default) |
 
-Resolution order (first match wins):
+## Production vs Development
 
-1. **Kill-switch** — if a kill-switch is engaged, the surface is disabled
-   regardless of any other flag. Kill-switches are deny-by-default and fail
-   closed.
-2. **Environment default** — per-environment default (testnet vs mainnet).
-3. **Explicit override** — operator-set override, audited and logged.
+The `FeatureFlagService` behaves consistently across all environments:
 
-If flag resolution fails (config store outage, malformed value, unknown flag
-name), the surface is treated as **disabled** (fail closed).
+- **Unset** → enabled (safe default for fresh deploys)
+- **Set to `false`** → disabled (the API returns 503/404 — it is never silently mocked)
 
-## Flags
+In production, the service emits a `WARN` log for every explicitly-disabled flag at startup so operators have clear visibility.
 
-### `SUCCESSOR_MIGRATION_ENABLED`
+## Reading Flags in Code
 
-- **Purpose:** Gate the successor migration tooling (issue #982). When off, the
-  successor-migration entrypoints reject all writes with a stable error code
-  (`SUCCESSOR_MIGRATION_DISABLED`) and do not touch `wallet.successor_id`.
-- **Default:** `false` (off).
-- **Owner:** Wallet / AA team.
-- **Rollback:** Set to `false` and redeploy/restart. In-flight writes fail closed;
-  no partial successor assignments are persisted because the write is a single
-  transactional update guarded by the flag check.
-- **Notes:** The underlying schema field and migration
-  (`prisma/migrations/20260601000000_add_wallet_successor_id/`) are additive and
-  safe to leave in place when the flag is off.
+Inject `FeatureFlagService` from `FeatureFlagModule`:
 
-### `SUCCESSOR_MIGRATION_MAINNET_ENABLED`
+```typescript
+import { FeatureFlagService } from 'src/common/feature-flags/feature-flag.service';
 
-- **Purpose:** Additional kill-switch for mainnet. Even when
-  `SUCCESSOR_MIGRATION_ENABLED` is on, mainnet writes require this flag to be on.
-- **Default:** `false` (off).
-- **Owner:** Wallet / AA team.
-- **Rollback:** Set to `false`. Mainnet successor writes fail closed with
-  `SUCCESSOR_MIGRATION_MAINNET_DISABLED`; testnet behavior is unaffected.
-- **Notes:** Prevents testnet-vs-mainnet misconfiguration from mutating mainnet
-  wallet state.
+@Injectable()
+export class MyService {
+  constructor(private readonly flags: FeatureFlagService) {}
 
-## Wallet orchestrator flags
+  doSomething() {
+    if (this.flags.isDisabled('PAYMENTS')) {
+      throw new ServiceUnavailableException('Payments are currently disabled');
+    }
+    // ...
+  }
+}
+```
 
-| Flag | Default (testnet) | Default (mainnet) | Notes |
-| --- | --- | --- | --- |
-| `wallet.orchestrator.enabled` | `true` | `false` | Master switch for the orchestrator path. |
-| `wallet.orchestrator.aa.enabled` | `true` | `false` | Account-abstraction operations. |
-| `wallet.orchestrator.payments.enabled` | `true` | `false` | Money-path operations; see mainnet doc. |
+`FeatureFlagModule` exports `FeatureFlagService`; add it to the `imports` array of any module that needs it.
 
-Mainnet defaults are `false`; enabling any mainnet money-path flag requires the
-readiness checklist in `docs/MAINNET-PAYMENT-FEATURE-FLAG.md`.
+## Typed Evaluation API
 
-## Behavior contract (e2e)
+`FeatureFlagService` exposes a typed evaluation surface with stable error codes and
+correlation ids so callers and operators can trace every decision.
 
-The e2e suite asserts the following invariants:
+```typescript
+export type FeatureFlagName =
+  | 'AUTH'
+  | 'WALLETS'
+  | 'PAYMENTS'
+  | 'WEBHOOKS'
+  | 'TRANSACTIONS'
+  | 'LIMITS'
+  | 'KEY_MANAGEMENT'
+  | 'MAINNET_PAYMENTS';
 
-- **Disabled orchestrator** — requests to orchestrator entrypoints return a
-  stable error code (`WALLET_ORCHESTRATOR_DISABLED`) and do not mutate state.
-- **Kill-switch precedence** — engaging the kill-switch disables the surface even
-  when the environment default is `true`.
-- **Fail closed** — a flag-resolution failure yields the disabled behavior, not
-  an enabled one.
-- **Authz is independent of flags** — a disabled flag denies everyone; an enabled
-  flag still enforces owner/delegate/guardian/API-key/JWT policy. Flags never
-  grant access.
-- **Idempotency** — replayed requests with the same idempotency key return the
-  same result and do not double-apply.
-- **Correlation ids** — every response carries a correlation id; logs include it
-  and never include secrets, raw key material, JWTs, or webhook secrets.
+export enum FeatureFlagErrorCode {
+  FLAG_UNKNOWN = 'FEATURE_FLAG_UNKNOWN',
+  FLAG_FORBIDDEN = 'FEATURE_FLAG_FORBIDDEN',
+  FLAG_STORE_UNAVAILABLE = 'FEATURE_FLAG_STORE_UNAVAILABLE',
+  FLAG_CONFLICT = 'FEATURE_FLAG_CONFLICT',
+}
+```
 
-## Error codes
+Evaluation entrypoints:
 
-| Code | Meaning |
-| --- | --- |
-| `WALLET_ORCHESTRATOR_DISABLED` | Orchestrator flag resolved to disabled. |
-| `WALLET_ORCHESTRATOR_AA_DISABLED` | AA flag resolved to disabled. |
-| `WALLET_ORCHESTRATOR_PAYMENTS_DISABLED` | Payments flag resolved to disabled. |
-| `FEATURE_FLAG_RESOLUTION_FAILED` | Flag store unavailable or malformed; fail closed. |
+- `evaluate(name: FeatureFlagName, ctx: { correlationId: string }): FeatureFlagEvaluation`
+  returns `{ name, enabled, source, correlationId }`.
+- `evaluateAll(ctx)` returns a map of every known flag with the same envelope.
+- `setFlag(name, enabled, ctx)` mutates a flag and returns the new evaluation.
+
+Every response carries the caller-supplied `correlationId` (or a generated one) so
+logs, metrics, and error envelopes can be joined end-to-end.
+
+## Authorization (Deny-by-Default)
+
+All privileged flag surfaces are deny-by-default. A caller must present **one** of
+the following, and the role is checked against the flag's policy:
+
+| Principal        | Allowed operations                          |
+|------------------|---------------------------------------------|
+| `owner`          | read + mutate all flags                     |
+| `delegate`       | read + mutate flags explicitly delegated    |
+| `guardian`       | read all; mutate only safety/kill-switch    |
+| `api-key`        | read only, scoped to the key's flag set     |
+| `jwt`            | read only, scoped to the subject's claims   |
+
+Requests that fail authz return `FLAG_FORBIDDEN` with the correlation id — never a
+silent default. Revoked delegates and expired JWTs are rejected before evaluation.
+
+## Fail-Closed Behaviour
+
+- **Unknown or missing flag** → treated as **disabled** for money-path behaviour
+  (`PAYMENTS`, `MAINNET_PAYMENTS`, `KEY_MANAGEMENT`). The API returns 503 rather
+  than proceeding.
+- **Store outage (DB/RPC/Horizon)** → writes fail closed with
+  `FLAG_STORE_UNAVAILABLE`; reads fall back to the last known-good snapshot and
+  are marked `source: 'snapshot'` in the evaluation envelope.
+- **Testnet vs mainnet misconfig** → `MAINNET_PAYMENTS` is only honoured when the
+  network is mainnet; on testnet it is forced off and logged.
+
+## Idempotency
+
+Flag mutations accept an `Idempotency-Key` header. Replayed or concurrent
+requests with the same key return the original result and never double-apply.
+Conflicting payloads for the same key return `FLAG_CONFLICT`.
 
 ## Observability
 
-- Metrics: flag resolution outcome (enabled/disabled/failed) per flag, and
-  denied-request counts per error code.
-- Logs: include flag name, resolved value, correlation id, and actor role.
-  Redact secrets, keys, JWTs, and webhook secrets.
+- Metrics: `feature_flag_evaluations_total{name,enabled,source}` and
+  `feature_flag_mutations_total{name,result}`.
+- Logs include `correlationId`, flag name, and decision — never raw key material,
+  JWTs, or webhook secrets.
+- Errors use the shared error envelope with the stable codes above.
 
-## Kill-switch checklist
+## Rollback / Kill-Switch
 
-Before enabling any flag above on mainnet:
+Every money-path or mainnet-affecting change lands behind its `FEATURE_*` flag.
+To roll back, set the flag to `false` and redeploy; the API fails closed and no
+further writes are accepted. Document the flag and rollback step in the PR
+description for any change touching payments, key management, or mainnet.
 
-1. Confirm the readiness checklist in the PR is complete.
-2. Confirm authz (owner/delegate/guardian/API-key/JWT) is enforced and covered by
-   negative tests.
-3. Confirm idempotency/replay protection is active for the write path.
-4. Confirm fail-closed behavior on RPC/DB/Horizon outages.
-5. Confirm metrics/logs are wired and do not leak secrets or raw key material.
+## Security Notes
 
-## Rollback
-
-Disabling a flag (or engaging its kill-switch) is the rollback path. Rollback is
-safe and immediate; no data migration is required. Document the flag and
-kill-switch used in the PR description for any money-path or mainnet-affecting
-change.
-
+- `getAll()` returns only boolean flag states — it never contains secrets.
+- Flag state is logged at startup without exposing `WALLET_ENCRYPTION_KEY`, API keys, or seeds.
+- Disabling a flag prevents the API from operating; it does not create a fail-open path.
+- The server remains the source of truth for spends, recovery, and admin actions;
+  clients cannot bypass policy by spoofing flag state.

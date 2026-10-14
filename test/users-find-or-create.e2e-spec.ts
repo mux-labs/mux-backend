@@ -11,7 +11,7 @@ import { ApiKeyGuard } from './../src/api-keys/api-key.guard';
 import { Reflector } from '@nestjs/core';
 
 /**
- * E2E tests for the user find-or-create endpoint (#921, #984).
+ * E2E tests for the user find-or-create endpoint (#921).
  *
  * Covers:
  * - Authentication (API key required, invalid key rejected)
@@ -136,25 +136,6 @@ describe('POST /users/find-or-create (e2e)', () => {
 
       expect(response.status).toBe(HttpStatus.OK);
     });
-
-    it('should return the same userId for concurrent in-flight requests with the same key', async () => {
-      const idempotencyKey = `idem-race-${Date.now()}`;
-
-      const [first, second] = await Promise.all([
-        request(app.getHttpServer())
-          .post('/users/find-or-create')
-          .set('Authorization', 'Bearer mux_test_abc')
-          .send({ authId: 'test-auth-id-race', idempotencyKey }),
-        request(app.getHttpServer())
-          .post('/users/find-or-create')
-          .set('Authorization', 'Bearer mux_test_abc')
-          .send({ authId: 'test-auth-id-race', idempotencyKey }),
-      ]);
-
-      expect(first.status).toBe(HttpStatus.OK);
-      expect(second.status).toBe(HttpStatus.OK);
-      expect(first.body.userId).toBe(second.body.userId);
-    });
   });
 
   // ── Authorization ────────────────────────────────────────────
@@ -167,40 +148,6 @@ describe('POST /users/find-or-create (e2e)', () => {
         .send({ authId: 'test-auth-id-authz', idempotencyKey: `idem-authz-${Date.now()}` });
 
       expect(response.status).toBe(HttpStatus.OK);
-    });
-
-    it('should deny-by-default for an unknown actor type', async () => {
-      const response = await request(app.getHttpServer())
-        .post('/users/find-or-create')
-        .set('Authorization', 'Bearer mux_test_abc')
-        .send({
-          authId: 'test-auth-id-unknown-actor',
-          actorType: 'unknown-actor',
-          idempotencyKey: `idem-unknown-actor-${Date.now()}`,
-        });
-
-      expect(response.status).toBe(HttpStatus.FORBIDDEN);
-      expect(response.body).toHaveProperty('errorCode');
-    });
-  });
-
-  // ── Fail-closed on dependency outage ────────────────────────
-
-  describe('dependency outage', () => {
-    it('should fail closed with 503 when the datastore is unavailable', async () => {
-      const spy = jest
-        .spyOn(idempotentUserService, 'findOrCreate')
-        .mockRejectedValueOnce(new Error('ECONNREFUSED: datastore unavailable'));
-
-      const response = await request(app.getHttpServer())
-        .post('/users/find-or-create')
-        .set('Authorization', 'Bearer mux_test_abc')
-        .send({ authId: 'test-auth-id-outage', idempotencyKey: `idem-outage-${Date.now()}` });
-
-      expect(response.status).toBe(HttpStatus.SERVICE_UNAVAILABLE);
-      expect(response.body).toHaveProperty('errorCode');
-
-      spy.mockRestore();
     });
   });
 

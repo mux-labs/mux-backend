@@ -72,10 +72,7 @@ export class WalletCreationOrchestratorController {
   })
   @ApiResponse({
     status: 403,
-    description:
-      'Feature flag disabled, account suspended/disabled, or the API key is ' +
-      'scoped to a different network (FEATURE_FLAG_DISABLED / USER_SUSPENDED / ' +
-      'NETWORK_MISMATCH)',
+    description: 'Wallet orchestrator feature flag disabled',
   })
   @ApiResponse({
     status: 409,
@@ -104,15 +101,13 @@ export class WalletCreationOrchestratorController {
     assertValidNetwork(body.network);
 
     try {
-      return await this.walletCreationOrchestrator.createWallet({
-        ...body,
-        correlationId: requestId,
-      });
+      return await this.walletCreationOrchestrator.createWallet(body);
     } catch (err) {
       // Pass typed client-facing errors through unchanged so the caller keeps
-      // the stable status/code. This includes 403 (feature flag, suspended
-      // user, network scope) and 503 (dependency outage): masking either as a
-      // 500 would hide an actionable, retryable or policy-driven failure.
+      // the stable status/code. That covers 4xx policy refusals — notably the
+      // 429 sponsorship limits (#957) — as well as 503: a dependency outage is
+      // retryable, and masking it as a 500 would make the orchestrator give up
+      // on a request that would succeed on retry.
       if (err instanceof HttpException) {
         throw err;
       }

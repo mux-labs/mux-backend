@@ -1,38 +1,49 @@
+import { Injectable, NestMiddleware, Logger } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
-import { randomUUID } from 'crypto';
-import { REQUEST_ID_HEADER, resolveRequestId } from '../interceptors';
+import { REQUEST_ID_HEADER, getRequestId } from '../http/correlation';
 
 /**
- * Request logging middleware that:
- * - Generates/propagates X-Request-ID header
- * - Logs incoming requests with correlation IDs
- * - Measures request duration
+ * Middleware that ensures every request has a correlation id in the
+ * x-request-id header. If the client supplies one, it is validated and passed
+ * through; otherwise a server-generated id is set.
+ *
+ * The correlation id is also attached to the request object so
+ * downstream handlers can access it without re-reading headers.
+ *
+ * The id is resolved once through the shared `getRequestId()` helper
+ * (#927) rather than by re-implementing the length/character rules
+ * here. That keeps the accept/reject decision identical to the one the
+ * exception filter and the outbound webhook dispatcher use, so a single
+ * client-supplied header can never yield a different id in the access log
+ * than in the error envelope. `getRequestId()` re-validates the value, so a
+ * hostile header still cannot inject control characters into a log line.
  */
 @Injectable()
 export class RequestLoggingMiddleware implements NestMiddleware {
-  private readonly logger = new Logger('RequestLogger');
+  private readonly logger = new Logger('RequestLogging');
 
   use(req: Request, res: Response, next: NextFunction): void {
     const startTime = Date.now();
 
-    // Resolve or generate request ID
-    const requestId = resolveRequestId(req.headers[REQUEST_ID_HEADER]);
-    req.headers[REQUEST_ID_HEADER] = requestId;
-    (req as any).requestId = requestId;
+    const requestId = getRequestId(req as never);
 
-    // Set response header
+    // Attach to request for downstream use, and re-stamp the inbound header so
+    // interceptors, guards, and the exception filter all read the same id.
+    (req as Request & { requestId?: string }).requestId = requestId;
+    req.headers[REQUEST_ID_HEADER] = requestId;
+
+    // Set response header so the client can correlate
     res.setHeader(REQUEST_ID_HEADER, requestId);
 
-    // Log request
-    this.logger.log(
-      `${req.method} ${req.originalUrl} - Request ID: ${requestId}`,
-    );
+    this.logger.debug(`${req.method} ${req.url} requestId=${requestId}`);
 
-    // Log response when finished
+    // Log completion with the same correlation id, so a slow or failed
+    // request is visible in the access log. Metadata only — never a header
+    // value, body, or credential.
     res.on('finish', () => {
-      const duration = Date.now() - startTime;
-      this.logger.log(
-        `${req.method} ${req.originalUrl} - ${res.statusCode} - ${duration}ms - Request ID: ${requestId}`,
+      const durationMs = Date.now() - startTime;
+      this.logger.debug(
+        `${req.method} ${req.url} ${res.statusCode} ${durationMs}ms requestId=${requestId}`,
       );
     });
 
@@ -41,7 +52,11 @@ export class RequestLoggingMiddleware implements NestMiddleware {
 }
 
 // Export a function that creates the middleware instance
-export const requestLogger = (req: Request, res: Response, next: NextFunction) => {
+export const requestLogger = (
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) => {
   const middleware = new RequestLoggingMiddleware();
   middleware.use(req, res, next);
 };

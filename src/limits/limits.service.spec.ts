@@ -1,46 +1,97 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { EventEmitter2 } from '@nestjs/event-emitter';
 import { PrismaService } from '../prisma/prisma.service';
 import { LimitsService } from './limits.service';
+
+// These modules are imported by limits.service.ts but are not present on
+// main at the time of writing, so they are stubbed here to unit-test the
+// service in isolation. retryWithBackoff runs the operation once.
+jest.mock('./dto/create-limit.dto', () => ({}), { virtual: true });
+jest.mock('./dto/limits-response.dto', () => ({}), { virtual: true });
+jest.mock(
+  './events/limit-updated.event',
+  () => ({ LimitUpdatedEvent: class {} }),
+  { virtual: true },
+);
+jest.mock(
+  './events/limit-exceeded.event',
+  () => ({ LimitExceededEvent: class {} }),
+  { virtual: true },
+);
+jest.mock(
+  './events/limit-warning.event',
+  () => ({ LimitWarningEvent: class {} }),
+  { virtual: true },
+);
+jest.mock(
+  '../common/utils/retry',
+  () => ({ retryWithBackoff: (fn: () => unknown) => fn() }),
+  { virtual: true },
+);
+jest.mock('../metrics/metrics.service', () => ({ MetricsService: class {} }), {
+  virtual: true,
+});
 
 describe('LimitsService (#1102)', () => {
   const walletId = 'wallet-1';
   let service: LimitsService;
-  let prisma: {
-    walletLimit: {
-      upsert: jest.Mock;
-      findUnique: jest.Mock;
-      delete: jest.Mock;
-    };
+  let walletLimit: {
+    upsert: jest.Mock;
+    findUnique: jest.Mock;
+    update: jest.Mock;
   };
+  let prisma: { walletLimit: typeof walletLimit; $transaction: jest.Mock };
+  let eventEmitter: { emit: jest.Mock };
 
   beforeEach(() => {
-    prisma = {
-      walletLimit: {
-        upsert: jest.fn(),
-        findUnique: jest.fn(),
-        delete: jest.fn(),
-      },
+    walletLimit = {
+      upsert: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
     };
-
-    service = new LimitsService(prisma as unknown as PrismaService);
+    prisma = {
+      walletLimit,
+      $transaction: jest.fn((fn: (tx: unknown) => unknown) =>
+        fn({ walletLimit }),
+      ),
+    };
+    eventEmitter = { emit: jest.fn() };
+    service = new LimitsService(
+      prisma as unknown as PrismaService,
+      eventEmitter as unknown as EventEmitter2,
+      {} as never,
+      {} as never,
+    );
   });
 
   describe('setLimits', () => {
     it('upserts valid limits in both the update and create branches', async () => {
-      const row = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
-      prisma.walletLimit.upsert.mockResolvedValue(row);
+      walletLimit.findUnique.mockResolvedValue(null);
+      walletLimit.upsert.mockResolvedValue({
+        walletId,
+        dailyLimit: 100,
+        perTransactionLimit: 10,
+      });
 
-      await expect(service.setLimits(walletId, 100, 10)).resolves.toBe(row);
-      expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
+      await service.setLimits(walletId, 100, 10);
+
+      expect(walletLimit.upsert).toHaveBeenCalledWith({
         where: { walletId },
-        update: { dailyLimit: 100, perTransactionLimit: 10 },
+        update: { dailyLimit: 100, perTransactionLimit: 10, deletedAt: null },
         create: { walletId, dailyLimit: 100, perTransactionLimit: 10 },
       });
     });
 
     it('accepts zero limits', async () => {
+      walletLimit.findUnique.mockResolvedValue(null);
+      walletLimit.upsert.mockResolvedValue({
+        walletId,
+        dailyLimit: 0,
+        perTransactionLimit: 0,
+      });
+
       await service.setLimits(walletId, 0, 0);
-      expect(prisma.walletLimit.upsert).toHaveBeenCalledTimes(1);
+      expect(walletLimit.upsert).toHaveBeenCalledTimes(1);
     });
 
     it.each([
@@ -53,51 +104,77 @@ describe('LimitsService (#1102)', () => {
     ])(
       'rejects %s with BadRequestException before touching Prisma',
       async (_label, daily, perTx, field) => {
-        const call = service.setLimits(walletId, daily, perTx);
-        await expect(call).rejects.toBeInstanceOf(BadRequestException);
+        await expect(
+          service.setLimits(walletId, daily, perTx),
+        ).rejects.toBeInstanceOf(BadRequestException);
         await expect(service.setLimits(walletId, daily, perTx)).rejects.toThrow(
           field,
         );
-        expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
+        expect(prisma.$transaction).not.toHaveBeenCalled();
+        expect(walletLimit.upsert).not.toHaveBeenCalled();
       },
     );
   });
 
-  describe('getLimits', () => {
-    it('returns the stored row', async () => {
-      const row = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
-      prisma.walletLimit.findUnique.mockResolvedValue(row);
+  describe('updateLimits', () => {
+    it.each([
+      ['negative daily', -5, undefined],
+      ['NaN perTx', undefined, NaN],
+    ])('rejects %s before reading or writing', async (_label, daily, perTx) => {
+      await expect(
+        service.updateLimits(walletId, daily, perTx),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(walletLimit.findUnique).not.toHaveBeenCalled();
+      expect(walletLimit.update).not.toHaveBeenCalled();
+    });
+  });
 
-      await expect(service.getLimits(walletId)).resolves.toBe(row);
-      expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
+  describe('getLimits', () => {
+    it('returns the stored limits', async () => {
+      walletLimit.findUnique.mockResolvedValue({
+        walletId,
+        dailyLimit: 0,
+        perTransactionLimit: 10,
+      });
+
+      await expect(service.getLimits(walletId)).resolves.toMatchObject({
+        walletId,
+        dailyLimit: 0,
+        perTransactionLimit: 10,
+      });
+      expect(walletLimit.findUnique).toHaveBeenCalledWith({
         where: { walletId },
       });
     });
 
     it('returns null for an unknown wallet', async () => {
-      prisma.walletLimit.findUnique.mockResolvedValue(null);
+      walletLimit.findUnique.mockResolvedValue(null);
       await expect(service.getLimits('unknown')).resolves.toBeNull();
     });
   });
 
   describe('removeLimits', () => {
-    it('throws NotFoundException and does not delete when no row exists', async () => {
-      prisma.walletLimit.findUnique.mockResolvedValue(null);
+    it('throws NotFoundException and writes nothing when no row exists', async () => {
+      walletLimit.findUnique.mockResolvedValue(null);
 
       await expect(service.removeLimits(walletId)).rejects.toBeInstanceOf(
         NotFoundException,
       );
-      expect(prisma.walletLimit.delete).not.toHaveBeenCalled();
+      expect(walletLimit.update).not.toHaveBeenCalled();
     });
 
-    it('deletes the row when it exists', async () => {
-      const row = { walletId, dailyLimit: 100, perTransactionLimit: 10 };
-      prisma.walletLimit.findUnique.mockResolvedValue(row);
-      prisma.walletLimit.delete.mockResolvedValue(row);
+    it('soft-deletes the row when it exists', async () => {
+      walletLimit.findUnique.mockResolvedValue({
+        walletId,
+        dailyLimit: 0,
+        perTransactionLimit: 10,
+      });
+      walletLimit.update.mockResolvedValue({});
 
-      await expect(service.removeLimits(walletId)).resolves.toBe(row);
-      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
+      await service.removeLimits(walletId);
+      expect(walletLimit.update).toHaveBeenCalledWith({
         where: { walletId },
+        data: { deletedAt: expect.any(Date) },
       });
     });
   });

@@ -1,84 +1,114 @@
 import {
+  Body,
   Controller,
   Get,
+  Headers,
+  HttpCode,
+  HttpStatus,
   Post,
-  Body,
-  Patch,
-  Param,
-  Delete,
-  UseGuards,
   Req,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { PaymentsService } from './payments.service';
-import { CreatePaymentDto } from './dto/create-payment.dto';
-import { UpdatePaymentDto } from './dto/update-payment.dto';
-import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import {
-  RateLimitGuard,
-  SensitiveEndpoint,
-} from '../rate-limit/rate-limit.guard';
+import { resolveRequestId } from '../common/interceptors/request-id.interceptor';
+import { PaymentMoneyPathDto } from './dto/payment-money-path.dto';
+import type {
+  PaymentActor,
+  PaymentExecutionResult,
+  PaymentIntent,
+} from './payment-money-path.model';
+import { PaymentMoneyPathService } from './payment-money-path.service';
 
 /**
- * #972 — All mutations and queries are scoped to the authenticated developer's
- * namespace via the API key context injected by ApiKeyGuard.
+ * REST surface for the payment money path.
  *
- * Security invariants:
- *  - POST /payments:  developerOwnerId is stamped from the API key context,
- *    not from the request body, so callers cannot spoof ownership.
- *  - GET  /payments:  results are filtered to the authenticated developer.
- *  - GET  /payments/:id: 404 is returned for records outside the developer scope.
- *  - PATCH /payments/:id: ownership is re-verified before any mutation.
+ * Every route is a write-adjacent surface, so it is deny-by-default: the
+ * actor is resolved from the request context the auth guard populated
+ * (`paymentActor`, then `apiKeyContext`, then `apiKey`) — never from the body,
+ * query string, or headers, none of which a caller can be trusted to assert.
+ * If no server-resolved principal exists, `PaymentMoneyPathService` rejects
+ * the request with 401 before any dependency is touched.
  *
- * The body's developerOwnerId field is intentionally overwritten here; it is
- * kept in the DTO only to support back-compat callers during the migration period.
+ * `POST /v1/payments` is the documented payment entrypoint
+ * (`docs/PAYMENT-DRY-RUN.md`): pass `dry_run` in the body or `X-Dry-Run: true`
+ * to run the same policy without ever submitting to Horizon (#945).
  */
 @Controller('payments')
-@UseGuards(ApiKeyGuard, RateLimitGuard)
 export class PaymentsController {
-  constructor(private readonly paymentsService: PaymentsService) {}
+  constructor(private readonly payments: PaymentMoneyPathService) {}
 
   @Post()
-  @SensitiveEndpoint()
-  create(@Body() createPaymentDto: CreatePaymentDto, @Req() req: Request) {
-    // Stamp the developer owner from the authenticated API key — not from the
-    // request body — so callers cannot claim a different developer's namespace.
-    const developerOwnerId: string | undefined = (req as any).apiKeyContext
-      ?.developer?.id;
-
-    return this.paymentsService.create({
-      ...createPaymentDto,
-      developerOwnerId: developerOwnerId ?? createPaymentDto.developerOwnerId,
-    });
-  }
-
-  @Get()
-  findAll(@Req() req: Request) {
-    const developerOwnerId: string | undefined = (req as any).apiKeyContext
-      ?.developer?.id;
-    return this.paymentsService.findAll(developerOwnerId);
-  }
-
-  @Get(':id')
-  findOne(@Param('id') id: string, @Req() req: Request) {
-    const developerOwnerId: string | undefined = (req as any).apiKeyContext
-      ?.developer?.id;
-    return this.paymentsService.findOne(id, developerOwnerId);
-  }
-
-  @Patch(':id')
-  update(
-    @Param('id') id: string,
-    @Body() updatePaymentDto: UpdatePaymentDto,
+  @HttpCode(HttpStatus.OK)
+  async create(
+    @Body() body: PaymentMoneyPathDto,
     @Req() req: Request,
-  ) {
-    const developerOwnerId: string | undefined = (req as any).apiKeyContext
-      ?.developer?.id;
-    return this.paymentsService.update(Number(id), updatePaymentDto, developerOwnerId);
+    @Headers('x-dry-run') dryRunHeader?: string,
+    @Headers('idempotency-key') idempotencyKeyHeader?: string,
+    @Headers('x-request-id') requestIdHeader?: string,
+  ): Promise<PaymentExecutionResult> {
+    const intent: PaymentIntent = {
+      walletId: body?.walletId,
+      receiverWalletId: body?.receiverWalletId,
+      amount: body?.amount,
+      assetCode: body?.assetCode,
+      network: body?.network,
+      // Either spelling requests a dry-run; there is no way to turn one off
+      // via a header once the body asks for it.
+      dryRun: body?.dryRun === true || isTruthyHeader(dryRunHeader),
+      idempotencyKey: body?.idempotencyKey ?? idempotencyKeyHeader,
+    };
+
+    return this.payments.execute(intent, this.actor(req, requestIdHeader));
   }
 
-  @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.paymentsService.remove(id);
+  /**
+   * GET /v1/payments/policy
+   *
+   * The effective money-path flags (booleans and env var *names* only) so an
+   * operator can confirm what is actually in force. Never returns flag values,
+   * secrets, or key material.
+   */
+  @Get('policy')
+  policy(): Record<string, string | boolean> {
+    return this.payments.describe();
   }
+
+  /**
+   * Resolve the server-attested principal.
+   *
+   * Only properties set by a guard are consulted, in order of specificity.
+   * Client-controlled input (body, query, headers) is never read here, so a
+   * caller cannot assert a role, a subject, or an elevated identity.
+   */
+  private actor(req: Request, correlationIdHeader?: string): PaymentActor {
+    const correlationId = resolveRequestId(correlationIdHeader);
+    const scoped = req as Request & {
+      paymentActor?: PaymentActor;
+      apiKeyContext?: { id?: string; developerId?: string };
+      apiKey?: { apiKey?: { id?: string } };
+    };
+
+    if (scoped.paymentActor?.subjectId) {
+      return { ...scoped.paymentActor, correlationId };
+    }
+
+    const apiKeyContextId =
+      scoped.apiKeyContext?.developerId ??
+      scoped.apiKeyContext?.id ??
+      scoped.apiKey?.apiKey?.id;
+    if (apiKeyContextId) {
+      return { subjectId: apiKeyContextId, role: 'api-key', correlationId };
+    }
+
+    // No principal: hand an empty subject to the service, which rejects it
+    // with 401 (deny-by-default) before anything else runs.
+    return { subjectId: '', role: 'api-key', correlationId };
+  }
+}
+
+/** Accept only an explicit truthy header value (fail-closed on garbage). */
+function isTruthyHeader(value: string | undefined): boolean {
+  if (value === undefined || value.trim() === '') {
+    return false;
+  }
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 }

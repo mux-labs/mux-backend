@@ -1,66 +1,278 @@
 # Security Policy
 
-## Reporting a Vulnerability
+## Vulnerability Disclosure
 
-Please report suspected vulnerabilities privately to the Mux security team at
-`security@muxprotocol.io`. Do not open public issues for security reports.
-Include a description, reproduction steps, affected components, and any
-correlation ids observed. We aim to acknowledge reports within 72 hours.
+Mux Backend is a custody and blockchain relay platform that manages private keys, signs transactions, and handles sensitive financial operations. **Vulnerabilities must be reported privately** to prevent exploitation or public disclosure of attack vectors.
 
-## Scope
+### Reporting a Vulnerability
 
-This policy covers the `mux-backend` service, including the wallet
-orchestrator, account-abstraction entrypoints, and all external HTTP/RPC
-surfaces. The server and on-chain contracts remain the source of truth for
-spends, recovery, and admin actions; clients cannot bypass policy.
+**DO NOT file public GitHub issues for security vulnerabilities.**
 
-## Feature Flags and Kill Switches
+Instead, report security vulnerabilities privately via email:
 
-Money-path and mainnet-affecting behavior is gated behind feature flags and
-kill switches. The wallet orchestrator flag is documented in
-[`docs/FEATURE-FLAGS.md`](docs/FEATURE-FLAGS.md),
-[`docs/AUTH-FEATURE-FLAGS.md`](docs/AUTH-FEATURE-FLAGS.md), and
-[`docs/MAINNET-PAYMENT-FEATURE-FLAG.md`](docs/MAINNET-PAYMENT-FEATURE-FLAG.md).
-End-to-end coverage for the orchestrator flag lives in
-`test/wallet-orchestrator-feature-flag.e2e-spec.ts`.
+**📧 Email:** [security@mux.com](mailto:security@mux.com)
 
-Invariants enforced by the flag path:
+Include the following in your report:
+- Description of the vulnerability and its impact
+- Steps to reproduce (if applicable)
+- Affected components or endpoints
+- Suggested fix (if you have one)
+- Your name and contact information (optional)
 
-- **Deny-by-default.** New privileged surfaces are disabled unless explicitly
-  enabled for the target environment. Testnet and mainnet configuration are
-  evaluated independently; a testnet flag never enables mainnet behavior.
-- **Fail-closed on writes.** If the flag store, RPC, DB, or Horizon is
-  unavailable, money-path writes are rejected rather than allowed.
-- **Authz before effect.** Owner/delegate/guardian/API-key/JWT checks run
-  before any orchestrator action; revoked delegates and expired credentials
-  are rejected with stable error codes.
-- **Idempotency.** Concurrent or replayed requests are deduplicated so a flag
-  transition cannot double-apply a spend or recovery action.
+### Response SLA
 
-## Authorization
+We commit to the following security response times:
 
-Every external entrypoint is authenticated and authorized. Requests carry a
-correlation id that is propagated through logs and error responses to aid
-incident response. Stable error codes are returned for auth failures so
-clients can distinguish expiry, wrong role, and revoked delegate without
-leaking policy internals.
+| Severity | Initial Response | Resolution Target |
+|----------|------------------|-------------------|
+| **Critical** (e.g., key leakage, unauthorized transaction signing, custody breach) | 4 hours | 48 hours |
+| **High** (e.g., auth bypass, unencrypted keys at rest, privilege escalation) | 24 hours | 7 days |
+| **Medium** (e.g., timing attacks, rate limit bypass, data exposure) | 48 hours | 14 days |
+| **Low** (e.g., info disclosure, best practice violations) | 1 week | 30 days |
 
-## Secrets and Logging
+### Scope: Critical Security Domains
 
-- No secrets, tokens, or credentials are committed to this repository.
-- Logs and metrics redact raw key material, JWTs, API keys, and webhook
-  secrets. Never log full request bodies for privileged endpoints.
-- Observability is ops-safe: metrics and structured logs expose actionable
-  errors and money/realtime path signals without sensitive payloads.
+The following are considered **in scope** for private disclosure and will be treated as critical:
+
+1. **Wallet Encryption & Key Management**
+   - Private key exposure at any point
+   - Unencrypted key storage or transmission
+   - `WALLET_ENCRYPTION_KEY` compromise
+   - Key derivation or seed exposure
+
+2. **Custody & Transaction Signing**
+   - Unauthorized transaction signature generation
+   - Double-signing vulnerabilities
+   - Sponsored transaction authorization bypass
+   - Relayer funding account compromise
+
+3. **Internal Endpoint Access Control**
+   - Authentication bypass on cron/internal endpoints
+   - Missing or insufficient `CRON_SECRET` validation
+   - Unauthorized access to transaction polling or relayer funding
+   - Background job manipulation
+
+4. **API Key & Authentication**
+   - API key validation bypass
+   - Token reuse or replay attacks
+   - Session hijacking
+   - Privilege escalation to other projects/tenants
+
+5. **Data Integrity & Confidentiality**
+   - Unencrypted sensitive data (keys, seeds, private data)
+   - Cross-tenant data exposure
+   - Audit log tampering
+   - Unauthorized access to wallet balances or transaction history
+
+### Scope: Out of Scope
+
+The following are typically **out of scope** (though context matters):
+
+- Denial of service (unless critical to availability)
+- Brute force attacks on rate-limited endpoints
+- Social engineering or phishing
+- Third-party dependency vulnerabilities (report to upstream maintainers)
+- XSS in OpenAPI documentation (frontend concerns)
+- General best practice violations without security impact
+
+### Disclosure Timeline
+
+**Responsible Disclosure Window:** 90 days from confirmation
+
+1. **Day 0:** Vulnerability reported
+2. **Day 0-4:** Initial assessment and response (critical issues)
+3. **Day 1-7:** Patch development and testing
+4. **Day 7-14:** Release to production (staged rollout if needed)
+5. **Day 30:** Public disclosure via advisory (after fix is widely deployed)
+6. **Day 90:** Full public disclosure if unresolved (rare)
+
+### What to Expect
+
+1. **Confirmation:** We'll confirm receipt and provide a tracking reference
+2. **Assessment:** We'll evaluate severity and impact
+3. **Collaboration:** We may ask follow-up questions or request proof-of-concept code
+4. **Updates:** We'll provide regular status updates
+5. **Credit:** With your permission, we'll credit the reporter in the security advisory
+
+### Code of Conduct
+
+- **Do not exploit** the vulnerability beyond proof-of-concept
+- **Do not access** data beyond what's necessary to demonstrate the issue
+- **Do not share** the vulnerability with others until we've publicly disclosed
+- **Do not demand** payment or threaten disclosure (extortion is illegal)
+
+### Safe Harbor
+
+We commit to not taking legal action against researchers who:
+- Report vulnerabilities in good faith
+- Follow responsible disclosure practices
+- Avoid privacy violations or data exfiltration
+- Do not exploit the vulnerability for personal gain
+
+---
+
+## Production Security Requirements
+
+To safely custody Stellar keys, relay sponsored transactions, and expose a production `/v1` API to the dashboard/SDK, the following controls **must** be in place:
+
+### Required Environment Variables (Production)
+
+- ✅ `WALLET_ENCRYPTION_KEY` — AES-256-GCM key for encrypting private keys at rest
+- ✅ `CRON_SECRET` — Shared secret for internal cron/background job endpoints
+- ✅ `MAINTENANCE_ADMIN_SECRET` — Secret for maintenance mode authentication
+- ✅ `AUTH_PROVIDER` — Identity provider (CLERK, BETTER_AUTH, etc.)
+- ✅ `DATABASE_URL` — PostgreSQL connection string (must use SSL in production)
+- ✅ `HORIZON_URL` — Stellar Horizon endpoint URL
+- ✅ `STELLAR_NETWORK_PASSPHRASE` — Mainnet or Testnet passphrase
+
+### Deployment Checklist
+
+Before deploying to production:
+
+- [ ] All secrets are stored in secure environment (not hardcoded, not in .env file)
+- [ ] `WALLET_ENCRYPTION_KEY` is randomly generated and never logged
+- [ ] `CRON_SECRET` is randomly generated (e.g., `openssl rand -hex 32`)
+- [ ] `MAINTENANCE_ADMIN_SECRET` is set and validated at startup
+- [ ] Database uses TLS/SSL for all connections
+- [ ] API runs behind reverse proxy with rate limiting and WAF
+- [ ] Request logging does not include API keys, secrets, or private keys
+- [ ] Audit logs are enabled and immutable
+- [ ] Monitoring and alerting are configured for security events
+- [ ] Incident response plan is documented
+
+### Runtime Guardrails
+
+- **Fail-Closed:** Missing critical secrets (WALLET_ENCRYPTION_KEY, CRON_SECRET) cause startup failure, not silent degradation
+- **Logging:** Never log `WALLET_ENCRYPTION_KEY`, API keys, seeds, or secret tokens
+- **Error Messages:** Do not expose internal paths, stack traces, or secrets in error responses
+- **Request IDs:** All logs include request IDs for traceability and forensics
+- **Rate Limiting:** API key rate limits prevent brute force and abuse
+- **Tenant Scoping:** Data is isolated per project/tenant; cross-tenant access is impossible
+
+---
+
+## Security Contacts
+
+- **Security Email:** [security@mux.com](mailto:security@mux.com)
+- **PGP Key:** Available at [mux.com/security.pgp](https://mux.com/security.pgp) (coming soon)
+- **Response Time:** See SLA section above
+
+---
+
+## Cross-Origin Access Control (CORS)
+
+Browser access to this API is governed by the `CORS_ORIGINS` allowlist, matched
+**exactly** — no suffix, subdomain, or wildcard matching. Wildcard entries are
+rejected rather than honoured, and `Access-Control-Allow-Origin` is never `*`
+(credentials are enabled, so a wildcard would grant every origin access to
+authenticated responses). The effective policy is inspectable via the
+authenticated, read-only `GET /v1/internal/cors-allowlist` endpoint.
+
+- A request with no `Origin` header is allowed: CORS is browser-enforced and is
+  **not** an authentication layer. Server-to-server callers are authenticated by
+  API key / JWT as usual.
+- A request from a non-allowlisted origin is refused **without** an error: it is
+  served normally but receives no `Access-Control-Allow-Origin`, so the browser
+  blocks it. Refusing this way keeps the denial in the CORS layer instead of
+  surfacing a `5xx` for an expected policy outcome.
+- Contributors adding CORS behaviour must keep the exact-match rule. Do not
+  introduce suffix, regex, or subdomain matching to "simplify" configuration.
+- `src/common/http/cors.spec.ts` and `test/cors-allowlist.e2e-spec.ts` assert
+  the deny-by-default rules, including subdomain and credential-injection
+  lookalikes. See [README.md § Cross-origin browser access](README.md#cross-origin-browser-access-cors).
+
+## Security Response Headers
+
+Every HTTP response carries a baseline set of security headers (`nosniff`,
+`X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, a deny-all
+`Permissions-Policy`, and no `X-Powered-By`), applied before any route so error
+and 404 responses carry them too. `Strict-Transport-Security` is **opt-in** via
+`SECURITY_HEADERS_HSTS=true` and must be enabled in any deployment that
+terminates TLS. See [README.md § Security headers](README.md#security-headers).
+
+- Contributors changing middleware, proxies, or the bootstrap path in
+  `src/main.ts` must keep these headers applied and must not remove them for a
+  specific route. Narrow a header deliberately, never delete it.
+- No `Content-Security-Policy` is set here: this service returns JSON only, and
+  a CSP on a non-document response is a no-op that implies protection that does
+  not exist. Any HTML surface sets its own CSP.
+- `test/security-headers.e2e-spec.ts` and
+  `src/common/http/security-headers.spec.ts` assert the baseline, including on
+  404/500 responses. Treat a failure there as a regression, not a flake.
+
+---
+
+## Correlation IDs
+
+The correlation id (`X-Request-ID`) is resolved once per request by
+`getRequestId()` in `src/common/http/correlation.ts` and shared by the access
+log, the error envelope, and outbound webhooks, so one identifier traces a
+request end to end. A client-supplied id is honoured only when it is short and
+log-safe; anything else is replaced server-side, preventing log injection
+through a spoofed header. Every layer — including the global exception filter —
+reads the id through that one resolver rather than re-deriving it, so the access
+log and the error envelope cannot disagree about a request. (#927)
+
+## Secret Rotation
+
+Privileged secrets are rotated with an explicit overlap window so an operator is
+never locked out mid-rotation, and so a previous value cannot silently become a
+permanent second credential. A previous secret is accepted only while its
+expiry is in the future; a missing or unparseable expiry closes the window
+(fail-closed).
+
+| Secret | Runbook |
+|--------|---------|
+| `MAINTENANCE_ADMIN_SECRET` | [docs/MAINTENANCE-SECRET-ROTATION.md](docs/MAINTENANCE-SECRET-ROTATION.md) (#925) |
+
+`MaintenanceAdminGuard` is the only consumer of the maintenance admin secret
+and guards only `PATCH /v1/maintenance`. That route is exempt from the
+maintenance kill-switch so an operator can always unfreeze the deployment;
+every other mutating route is still frozen.
+| `WALLET_ENCRYPTION_KEY` | [docs/MIGRATION-KEY-MANAGEMENT.md](docs/MIGRATION-KEY-MANAGEMENT.md) |
+| Webhook signing key | [docs/webhook-secret-rotation-runbook.md](docs/webhook-secret-rotation-runbook.md) |
 
 ## Rate Limiting
 
-External entrypoints touched by the orchestrator flag are rate-limited and
-authorized. Oversized batches and griefing-style inputs are rejected before
-reaching money-path logic.
+External entrypoints are rate-limited and authorized. Oversized batches and
+griefing-style inputs are rejected before reaching money-path logic.
 
-## Rollback
+Requests are additionally classified into path-derived **tiers** (`auth`,
+`payments`, `default`) that are independent of tenant configuration, so a tenant
+cannot raise its own abuse ceiling. The `auth` tier is keyed by client IP
+because no API key exists at a credential endpoint. A malformed or non-positive
+limit falls back to the tier default rather than disabling it, and a strict tier
+can be tightened but never raised above the `default` ceiling. Refusals use the
+stable code `RATE_LIMITED`. The tiers are enforced by the global
+`RateLimitGuard`, which keys the `auth` tier on the client address and every
+other tier on the server-resolved API-key id — never on presented key
+material. See [docs/RATE-LIMITING.md](docs/RATE-LIMITING.md). (#926)
 
-Flag and kill-switch changes are reversible. Rollback steps and the readiness
-checklist for mainnet-affecting changes are documented in the PR description
-and the referenced runbooks.
+## Local Development Data
+
+The demo seed writes placeholder wallets and fabricated transactions. It
+refuses to run against production, mainnet, or a non-local database — with no
+override for the first two — so demo data cannot reach a real environment. The
+demo `MAINNET` wallet rows are opt-in. See
+[docs/SEED-SAFETY.md](docs/SEED-SAFETY.md). (#928)
+
+---
+
+## References
+
+- [OWASP: Vulnerability Disclosure Cheat Sheet](https://cheatsheetseries.owasp.org/cheatsheets/Vulnerability_Disclosure_Cheat_Sheet.html)
+- [Stellar Security Policy](https://developers.stellar.org/docs/learn/security)
+- [NestJS Security Checklist](https://docs.nestjs.com/security/helmet)
+
+---
+
+## Version History
+
+| Date | Version | Changes |
+|------|---------|---------|
+| 2026-08-30 | 1.0 | Initial security policy; private disclosure process and SLA |
+
+---
+
+**Last Updated:** 2026-08-30  
+**Status:** Active

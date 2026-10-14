@@ -50,23 +50,13 @@ model Payment {
   receiverWalletId String?
   transactionId    String? @unique
 
-  /// Client-supplied idempotency key to prevent duplicate submissions.
+  /// Client-supplied idempotency key to prevent duplicate submissions
   idempotencyKey String? @unique
-
-  /// #972 — Developer that owns this payment (authz scope boundary).
-  /// Cross-developer enumeration is blocked at the query layer by filtering on this field.
-  developerOwnerId String?
-
-  /// Correlation ID for distributed tracing across services.
-  correlationId String?
 
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
 
   @@index([idempotencyKey])
-  @@index([developerOwnerId])
-  @@index([developerOwnerId, id])
-  @@index([senderWalletId])
 }
 
 model UserLimit {
@@ -602,6 +592,14 @@ model WebhookEndpoint {
   /// there is no rotation in progress.
   secretGracePeriodEndsAt DateTime?
   
+  /// Pending (new) secret created during a dual-secret rotation window.
+  /// Both `secret` and `pendingSecret` are valid until `pendingSecretExpiresAt`.
+  pendingSecret           String?
+  
+  /// When the dual-secret rotation window expires.
+  /// After this timestamp only `secret` (the new one) is valid.
+  pendingSecretExpiresAt  DateTime?
+  
   /// Event types to listen for
   events      String[] // e.g., ["wallet.created", "transaction.confirmed"]
   
@@ -629,6 +627,7 @@ model WebhookEndpoint {
   @@index([projectId])
   @@index([status])
   @@index([deletedAt])
+  @@index([pendingSecretExpiresAt])
 }
 
 /// Webhook delivery attempt tracking
@@ -808,31 +807,6 @@ model KeyRotationAuditLog {
   @@index([operation, timestamp])
   @@index([keyId, operation])
   @@index([expiresAt])
-}
-
-/// Persistent cursor for Horizon balance import jobs.
-/// Enables crash-resume: on restart the import picks up from lastLedger / pagingToken
-/// rather than re-scanning from genesis (issue #975).
-model HorizonImportCursor {
-  id          String   @id @default(uuid())
-
-  /// Logical stream identifier — e.g. "wallet:<walletId>" or "network:TESTNET"
-  streamKey   String   @unique
-
-  /// Last Stellar ledger sequence number that was successfully imported
-  lastLedger  Int      @default(0)
-
-  /// Horizon paging token for the next page of operations (stellar-sdk cursor)
-  pagingToken String?
-
-  /// When this cursor was last successfully advanced
-  updatedAt   DateTime @updatedAt
-
-  /// When this cursor record was first created
-  createdAt   DateTime @default(now())
-
-  @@index([streamKey])
-  @@index([updatedAt])
 }
 
 /// Refresh token status lifecycle
