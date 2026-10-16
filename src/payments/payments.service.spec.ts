@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { PaymentsService } from './payments.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { WalletsService } from '../wallets/wallets.service';
@@ -21,6 +21,7 @@ describe('PaymentsService', () => {
   };
 
   const walletId = '11111111-1111-1111-1111-111111111111';
+  const receiverWalletId = '22222222-2222-2222-2222-222222222222';
   const fromId = 42;
 
   beforeEach(async () => {
@@ -31,11 +32,13 @@ describe('PaymentsService', () => {
     };
 
     walletsService = {
-      findWalletById: jest.fn().mockResolvedValue({
-        id: walletId,
-        status: WalletStatus.ACTIVE,
-        developerId: 'dev-1',
-      }),
+      findWalletById: jest.fn().mockImplementation((id: string) =>
+        Promise.resolve({
+          id,
+          status: WalletStatus.ACTIVE,
+          developerId: 'dev-1',
+        }),
+      ),
     };
 
     limitsService = {
@@ -96,5 +99,52 @@ describe('PaymentsService', () => {
     } as any);
 
     expect(prisma.payment.create).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a non-ACTIVE receiver wallet and does not create a payment row', async () => {
+    walletsService.findWalletById.mockImplementation((id: string) =>
+      Promise.resolve({
+        id,
+        status:
+          id === receiverWalletId
+            ? WalletStatus.DISABLED
+            : WalletStatus.ACTIVE,
+        developerId: 'dev-1',
+      }),
+    );
+
+    await expect(
+      service.create({
+        walletId,
+        receiverWalletId,
+        fromId,
+        amount: 100,
+        developerId: 'dev-1',
+      } as any),
+    ).rejects.toBeInstanceOf(BadRequestException);
+
+    expect(prisma.payment.create).not.toHaveBeenCalled();
+  });
+
+  it('rejects a receiver wallet owned by a different developer and does not create a payment row', async () => {
+    walletsService.findWalletById.mockImplementation((id: string) =>
+      Promise.resolve({
+        id,
+        status: WalletStatus.ACTIVE,
+        developerId: id === receiverWalletId ? 'dev-2' : 'dev-1',
+      }),
+    );
+
+    await expect(
+      service.create({
+        walletId,
+        receiverWalletId,
+        fromId,
+        amount: 100,
+        developerId: 'dev-1',
+      } as any),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(prisma.payment.create).not.toHaveBeenCalled();
   });
 });

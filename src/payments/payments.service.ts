@@ -32,6 +32,14 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
  *    cached response instead of re-executing on conflict.
  *  - Feature-flagged: if PAYMENT_ISOLATION_ENABLED !== 'true' the guard is bypassed
  *    in development to allow gradual rollout without breaking existing callers.
+ *
+ * #1104 – Receiver wallet validation.
+ *  - The receiver wallet must exist and be ACTIVE, mirroring the sender checks.
+ *  - Receiver ownership is intentionally NOT scoped to the calling developer:
+ *    payments are a transfer primitive and a developer may legitimately pay a
+ *    wallet owned by another developer (e.g. marketplace payouts, refunds to a
+ *    counterparty). Cross-developer receivers are therefore allowed by design;
+ *    only the sender wallet is subject to the developerOwnerId isolation guard.
  */
 @Injectable()
 export class PaymentsService {
@@ -95,8 +103,17 @@ export class PaymentsService {
       }
     }
 
-    // Validate receiver wallet exists (status not enforced for receiver)
-    await this.walletsService.findWalletById(receiverWalletId);
+    // ── Receiver wallet validation ─────────────────────────────────────────
+    // The receiver must exist and be ACTIVE, mirroring the sender checks.
+    // Ownership is intentionally not enforced here: cross-developer receivers
+    // are allowed by design (see class doc comment).
+    const receiverWallet =
+      await this.walletsService.findWalletById(receiverWalletId);
+    if (receiverWallet.status !== WalletStatus.ACTIVE) {
+      throw new BadRequestException(
+        `Receiver wallet is not active (status: ${receiverWallet.status})`,
+      );
+    }
 
     // Enforce wallet-scoped spending limits against the sender wallet UUID.
     // Runs after the ACTIVE-status and ownership checks and before the payment
