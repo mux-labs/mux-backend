@@ -28,6 +28,8 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
  *  - findAll() / findOne() always filter by developerOwnerId → no cross-developer leakage.
  *  - update() re-checks ownership before mutating; 404 is returned even if the record
  *    exists but belongs to a different developer (avoid enumeration).
+ *  - remove() re-checks ownership before deleting; a non-owned id yields 404 and
+ *    performs no mutation, matching findOne().
  *  - Idempotency key uniqueness is enforced at the DB level; the service returns the
  *    cached response instead of re-executing on conflict.
  *  - Feature-flagged: if PAYMENT_ISOLATION_ENABLED !== 'true' the guard is bypassed
@@ -223,7 +225,33 @@ export class PaymentsService {
     });
   }
 
-  remove(id: string) {
-    return `This action removes payment ${id}`;
+  /**
+   * Deletes a payment, asserting ownership when isolation is enabled.
+   * A non-owned id yields 404 (matching findOne) and performs no mutation,
+   * so a developer cannot delete another developer's payment by guessing ids.
+   */
+  async remove(id: string, developerOwnerId?: string) {
+    const payment = await this.prisma.payment.findUnique({
+      where: { id: Number(id) },
+    });
+
+    if (!payment) {
+      throw new NotFoundException(`Payment #${id} not found`);
+    }
+
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      payment.developerOwnerId &&
+      payment.developerOwnerId !== developerOwnerId
+    ) {
+      // Intentional 404 — do not reveal cross-developer record existence.
+      this.logger.warn(
+        `Cross-developer delete attempt on payment ${id} by developer ${developerOwnerId}`,
+      );
+      throw new NotFoundException(`Payment #${id} not found`);
+    }
+
+    return this.prisma.payment.delete({ where: { id: Number(id) } });
   }
 }

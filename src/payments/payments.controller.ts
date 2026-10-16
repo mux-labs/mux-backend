@@ -29,6 +29,7 @@ import {
  *  - GET  /payments:  results are filtered to the authenticated developer.
  *  - GET  /payments/:id: 404 is returned for records outside the developer scope.
  *  - PATCH /payments/:id: ownership is re-verified before any mutation.
+ *  - DELETE /payments/:id: ownership is re-verified before any mutation.
  *
  * The body's developerOwnerId field is intentionally overwritten here; it is
  * kept in the DTO only to support back-compat callers during the migration period.
@@ -78,7 +79,9 @@ export class PaymentsController {
   }
 
   @Delete(':id')
-  remove(@Param('id') id: string) {
-    return this.paymentsService.remove(id);
+  remove(@Param('id') id: string, @Req() req: Request) {
+    const developerOwnerId: string | undefined = (req as any).apiKeyContext
+      ?.developer?.id;
+    return this.paymentsService.remove(id, developerOwnerId);
   }
 }
