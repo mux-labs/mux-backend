@@ -1,0 +1,65 @@
+import { Test, TestingModule } from '@nestjs/testing';
+import { ForbiddenException } from '@nestjs/common';
+import { LimitsService } from './limits.service';
+import { PrismaService } from '../prisma/prisma.service';
+
+describe('LimitsService', () => {
+  let service: LimitsService;
+  let prisma: {
+    transaction: { findMany: jest.Mock };
+    wallet: { findUnique: jest.Mock };
+  };
+
+  beforeEach(async () => {
+    prisma = {
+      transaction: { findMany: jest.fn() },
+      wallet: { findUnique: jest.fn() },
+    };
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        LimitsService,
+        { provide: PrismaService, useValue: prisma },
+      ],
+    }).compile();
+
+    service = module.get<LimitsService>(LimitsService);
+  });
+
+  it('sums only parseable transaction amounts and skips unparseable rows', async () => {
+    prisma.transaction.findMany.mockResolvedValue([
+      { id: 'tx-1', amount: '10' },
+      { id: 'tx-2', amount: 'bogus' },
+      { id: 'tx-3', amount: '5' },
+    ]);
+
+    const warnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    const result = await service.checkLimits('wallet-1', 1, 100);
+
+    expect(result.dailyUsed).toBe(15);
+    expect(Number.isFinite(result.dailyUsed)).toBe(true);
+    expect(Number.isFinite(result.dailyRemaining)).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('tx-2'),
+    );
+  });
+
+  it('still throws ForbiddenException when valid rows plus proposed amount exceed the daily limit', async () => {
+    prisma.transaction.findMany.mockResolvedValue([
+      { id: 'tx-1', amount: '10' },
+      { id: 'tx-2', amount: 'bogus' },
+      { id: 'tx-3', amount: '5' },
+    ]);
+
+    jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(service.checkLimits('wallet-1', 10, 20)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+});
