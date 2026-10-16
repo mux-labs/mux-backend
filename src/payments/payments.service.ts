@@ -98,8 +98,10 @@ export class PaymentsService {
     // Validate receiver wallet exists (status not enforced for receiver)
     await this.walletsService.findWalletById(receiverWalletId);
 
-    // Scope limits check to the wallet owner (legacy userId)
-    await this.limitsService.checkLimits(fromId, amount);
+    // Enforce wallet-scoped spending limits against the sender wallet UUID.
+    // Runs after the ACTIVE-status and ownership checks and before the payment
+    // row is created, so a rejected payment leaves no row behind.
+    await this.limitsService.checkLimits(walletId, amount);
 
     const correlationId = crypto.randomUUID();
 

@@ -1,62 +1,51 @@
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
-  IsString,
-  IsNotEmpty,
-  IsNumber,
-  IsPositive,
-  IsOptional,
   IsInt,
-  MaxLength,
+  IsNumber,
+  IsOptional,
+  IsPositive,
+  IsString,
+  IsUUID,
+  Min,
 } from 'class-validator';
 
 export class CreatePaymentDto {
-  /** Sender wallet UUID — validated to exist and be ACTIVE before payment is created. */
-  @IsString()
-  @IsNotEmpty()
-  walletId: string;
-
-  /** Receiver wallet UUID — validated to exist before payment is created. */
-  @IsString()
-  @IsNotEmpty()
-  receiverWalletId: string;
-
-  @IsNumber()
-  @IsPositive()
-  amount: number;
-
-  @IsString()
-  @IsNotEmpty()
-  currency: string;
-
-  @IsString()
-  @IsOptional()
-  description?: string;
-
-  /** Legacy sender ID (LegacyUser.id) — required for payment record FK. */
+  @ApiProperty({
+    description: 'Legacy sender ID (LegacyUser.id) — required for payment record FK',
+    example: 42,
+  })
   @IsInt()
   fromId: number;
 
-  /** Legacy receiver ID (LegacyUser.id) — required for payment record FK. */
-  @IsInt()
-  toId: number;
+  @ApiProperty({
+    description: 'Sender wallet UUID — used for wallet-scoped limit checks',
+    example: '3f1c2b4a-5d6e-4f7a-8b9c-0d1e2f3a4b5c',
+  })
+  @IsUUID()
+  walletId: string;
 
-  /**
-   * #972 — Developer that owns this payment.
-   * Scopes the payment to a developer's namespace so that cross-developer
-   * enumeration and mutation are impossible. Required for new payments when
-   * PAYMENT_ISOLATION_ENABLED=true (default); optional during migration period.
-   */
-  @IsString()
+  @ApiPropertyOptional({
+    description: 'Recipient wallet UUID',
+    example: '9a8b7c6d-5e4f-3a2b-1c0d-9e8f7a6b5c4d',
+  })
   @IsOptional()
-  developerOwnerId?: string;
+  @IsUUID()
+  toWalletId?: string;
 
-  /**
-   * #972 — Client-supplied idempotency key (max 128 chars, UUID recommended).
-   * If a payment with this key already exists, the cached payment is returned
-   * without re-executing any side effects (idempotent POST).
-   * The uniqueness constraint is enforced at the database level.
-   */
-  @IsString()
+  @ApiProperty({
+    description: 'Payment amount',
+    example: 100,
+  })
+  @IsNumber()
+  @IsPositive()
+  @Min(0.000001)
+  amount: number;
+
+  @ApiPropertyOptional({
+    description: 'Currency code',
+    example: 'USD',
+  })
   @IsOptional()
-  @MaxLength(128)
-  idempotencyKey?: string;
+  @IsString()
+  currency?: string;
 }
