@@ -1,5 +1,6 @@
 import {
   Injectable,
+  BadRequestException,
   ForbiddenException,
   Logger,
 } from '@nestjs/common';
@@ -26,8 +27,19 @@ export class LimitsService {
    * malformed `Transaction.amount` row from poisoning the daily aggregation
    * into `NaN` and silently disabling the daily limit. `dailyUsed` and
    * `dailyRemaining` returned to callers are therefore always finite numbers.
+   *
+   * The requested `amount` must be a finite, positive number; anything else
+   * (NaN, Infinity, negative, zero, or an unparseable string) fails closed
+   * with a `BadRequestException` before any limit lookup occurs.
    */
   async checkLimits(walletId: string, amount: string): Promise<LimitCheckResult> {
+    const amountNum = Number(amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      throw new BadRequestException(
+        `Invalid amount: ${String(amount)} must be a finite, positive number`,
+      );
+    }
+
     const dailyLimit = await this.getDailyLimit(walletId);
 
     const startOfDay = new Date();
@@ -53,12 +65,9 @@ export class LimitsService {
       dailyUsed += parsed;
     }
 
-    const amountNum = Number(amount);
-    const proposed = Number.isFinite(amountNum) ? amountNum : 0;
-
-    if (dailyUsed + proposed > dailyLimit) {
+    if (dailyUsed + amountNum > dailyLimit) {
       throw new ForbiddenException(
-        `Daily limit exceeded: used ${dailyUsed} + ${proposed} > ${dailyLimit}`,
+        `Daily limit exceeded: used ${dailyUsed} + ${amountNum} > ${dailyLimit}`,
       );
     }
 

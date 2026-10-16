@@ -1,5 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { LimitsService } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -61,5 +61,46 @@ describe('LimitsService', () => {
     await expect(service.checkLimits('wallet-1', 10, 20)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+  });
+
+  describe('amount validation', () => {
+    it.each([
+      ['NaN', NaN],
+      ['unparseable string', 'abc'],
+      ['partially numeric string', '10abc'],
+      ['negative number', -1],
+      ['zero', 0],
+      ['Infinity', Infinity],
+    ])('rejects %s with BadRequestException and never queries Prisma', async (_label, amount) => {
+      await expect(
+        service.checkLimits('wallet-1', amount as number, 100),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    });
+
+    it('allows a valid numeric amount', async () => {
+      prisma.transaction.findMany.mockResolvedValue([]);
+
+      const result = await service.checkLimits('wallet-1', 10, 100);
+
+      expect(result.allowed).toBe(true);
+      expect(result.perTxLimit).toBe(100);
+      expect(result.dailyLimit).toBe(100);
+      expect(result.dailyUsed).toBe(0);
+      expect(result.dailyRemaining).toBe(100);
+    });
+
+    it('allows a valid numeric string amount', async () => {
+      prisma.transaction.findMany.mockResolvedValue([]);
+
+      const result = await service.checkLimits('wallet-1', '10.5' as unknown as number, 100);
+
+      expect(result.allowed).toBe(true);
+      expect(result.perTxLimit).toBe(100);
+      expect(result.dailyLimit).toBe(100);
+      expect(result.dailyUsed).toBe(0);
+      expect(result.dailyRemaining).toBe(100);
+    });
   });
 });
