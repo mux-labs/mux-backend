@@ -59,6 +59,11 @@ interface UserStatusStore {
  * other environment because the constructor treats `production` and `staging`
  * as strict.
  *
+ * A store that *exists* but throws on `findUnique` is a different case: it is
+ * a real failure (connection refused, bad column, malformed query) and is
+ * surfaced at error level and rethrown as a 503 even in `test`/`development`,
+ * so a local run against a broken database cannot silently pass the check.
+ *
  * Never logs or returns anything from the user row except its id and status.
  */
 @Injectable()
@@ -102,7 +107,7 @@ export class UserStatusService implements UserStatusPort {
     const store = this.resolveStore();
 
     if (!store) {
-      this.handleUnverifiable(userId, operation, correlationId, 'no store');
+      this.handleMissingStore(userId, operation, correlationId);
       return;
     }
 
@@ -118,7 +123,7 @@ export class UserStatusService implements UserStatusPort {
       if (error instanceof HttpException) {
         throw error;
       }
-      this.handleUnverifiable(
+      this.handleStoreError(
         userId,
         operation,
         correlationId,
@@ -131,27 +136,51 @@ export class UserStatusService implements UserStatusPort {
   }
 
   /**
-   * Handles "we could not verify the status".
+   * Handles the documented "no store configured" case.
    *
    * Strict environments fail closed with 503. Only `test`/`development` may
    * proceed, and even then the decision is logged so it is never silent.
    */
-  private handleUnverifiable(
+  private handleMissingStore(
     userId: string,
     operation: UserOperation,
     correlationId: string | undefined,
-    detail: string,
   ): void {
     if (this.allowWhenUnverifiable) {
       this.logger.warn(
         `user-status unverifiable event=user_status_unverified operation=${operation} ` +
-          `userId=${userId} correlationId=${correlationId ?? 'none'} detail=${detail}`,
+          `userId=${userId} correlationId=${correlationId ?? 'none'} detail=no store`,
       );
       return;
     }
 
     this.logger.error(
       `user-status unverifiable event=user_status_unavailable operation=${operation} ` +
+        `userId=${userId} correlationId=${correlationId ?? 'none'} detail=no store`,
+    );
+    throw new ServiceUnavailableException({
+      code: UserStatusErrorCode.USER_STATUS_UNAVAILABLE,
+      message: 'User status could not be verified',
+      correlationId,
+    });
+  }
+
+  /**
+   * Handles a store that exists but threw on `findUnique`.
+   *
+   * This is a real failure (connection refused, bad column, malformed query),
+   * not the documented "no store" e2e case, so it is always logged at error
+   * level and always rethrown as a 503 — including in `test`/`development`,
+   * where silently allowing would hide the failure from the caller.
+   */
+  private handleStoreError(
+    userId: string,
+    operation: UserOperation,
+    correlationId: string | undefined,
+    detail: string,
+  ): never {
+    this.logger.error(
+      `user-status unverifiable event=user_status_store_error operation=${operation} ` +
         `userId=${userId} correlationId=${correlationId ?? 'none'} detail=${detail}`,
     );
     throw new ServiceUnavailableException({

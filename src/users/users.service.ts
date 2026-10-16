@@ -1,26 +1,18 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { IdempotentUserService } from './idempotent-user.service';
-import { MetricsService } from '../common/metrics/metrics.service';
+import { ActorContext, RequestContext } from './types';
 
 @Injectable()
 export class UsersService {
-  private readonly logger = new Logger(UsersService.name);
+  constructor(private readonly idempotentUserService: IdempotentUserService) {}
 
-  constructor(
-    private readonly idempotentUserService: IdempotentUserService,
-    private readonly metricsService: MetricsService,
-  ) {}
-
-  /**
-   * Find an existing user by authId or create a new one.
-   * Delegates to IdempotentUserService for the actual logic.
-   */
   async findOrCreateUser(
     authId: string,
-    actorContext: any,
-    idempotencyKey?: string,
-    requestContext?: any,
+    actorContext: ActorContext,
+    idempotencyKey: string,
+    requestContext: RequestContext,
   ) {
+    this.assertAuthId(authId);
     return this.idempotentUserService.findOrCreateUser(
       authId,
       actorContext,
@@ -29,10 +21,14 @@ export class UsersService {
     );
   }
 
-  /**
-   * Find an existing user by authId.
-   */
   async findUserByAuthId(authId: string) {
+    this.assertAuthId(authId);
     return this.idempotentUserService.findUserByAuthId(authId);
+  }
+
+  private assertAuthId(authId: unknown): asserts authId is string {
+    if (typeof authId !== 'string' || authId.trim().length === 0) {
+      throw new BadRequestException('authId must be a non-empty string');
+    }
   }
 }

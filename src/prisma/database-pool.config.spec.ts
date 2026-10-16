@@ -107,4 +107,60 @@ describe('database pool config (#951)', () => {
     });
     expect(JSON.stringify(snapshot)).not.toContain('secret');
   });
+
+  describe('resolve path fails closed on invalid input (#1095)', () => {
+    it('throws naming the variable for a non-numeric pool size', () => {
+      expect(() =>
+        resolveDatabasePoolConfig({ [DATABASE_POOL_ENV.POOL_SIZE]: 'abc' }),
+      ).toThrow(/DATABASE_POOL_SIZE/);
+    });
+
+    it('throws naming the variable for a zero pool size', () => {
+      expect(() =>
+        resolveDatabasePoolConfig({ [DATABASE_POOL_ENV.POOL_SIZE]: '0' }),
+      ).toThrow(/DATABASE_POOL_SIZE/);
+    });
+
+    it('throws naming the variable for a negative pool size', () => {
+      expect(() =>
+        resolveDatabasePoolConfig({ [DATABASE_POOL_ENV.POOL_SIZE]: '-5' }),
+      ).toThrow(/DATABASE_POOL_SIZE/);
+    });
+
+    it('throws naming the variable for an over-max pool size instead of clamping', () => {
+      expect(() =>
+        resolveDatabasePoolConfig({
+          [DATABASE_POOL_ENV.POOL_SIZE]: String(MAX_DATABASE_POOL_SIZE + 1),
+        }),
+      ).toThrow(/DATABASE_POOL_SIZE/);
+    });
+
+    it('accepts a pool size exactly at MAX_DATABASE_POOL_SIZE unchanged', () => {
+      const config = resolveDatabasePoolConfig({
+        [DATABASE_POOL_ENV.POOL_SIZE]: String(MAX_DATABASE_POOL_SIZE),
+      });
+      expect(config.connectionLimit).toBe(MAX_DATABASE_POOL_SIZE);
+    });
+
+    it('never produces a clamped value from an invalid input', () => {
+      let resolved: unknown;
+      try {
+        resolved = resolveDatabasePoolConfig({
+          [DATABASE_POOL_ENV.POOL_SIZE]: String(MAX_DATABASE_POOL_SIZE + 1),
+        });
+      } catch {
+        resolved = undefined;
+      }
+      expect(resolved).toBeUndefined();
+    });
+
+    it('surfaces the offending variable through the runtime URL builder', () => {
+      expect(() =>
+        buildRuntimeDatabaseUrl({
+          DATABASE_URL: BASE_URL,
+          [DATABASE_POOL_ENV.POOL_SIZE]: '500',
+        }),
+      ).toThrow(/DATABASE_POOL_SIZE/);
+    });
+  });
 });

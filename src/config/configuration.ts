@@ -31,6 +31,23 @@ export interface MainnetPaymentFlag {
   denialCode: MainnetPaymentFlagErrorCode;
 }
 
+/**
+ * Typed, env-driven idempotency cleanup worker configuration.
+ *
+ * Defaults mirror the worker's documented behavior:
+ * - disabled by default (opt-in),
+ * - hourly cleanup interval,
+ * - batch size of 1000 rows per pass.
+ */
+export interface IdempotencyCleanupConfig {
+  /** Whether the cleanup worker runs. Defaults to false. */
+  enabled: boolean;
+  /** Cleanup interval in milliseconds. Defaults to 3_600_000. */
+  intervalMs: number;
+  /** Rows deleted per cleanup pass. Defaults to 1000. */
+  batchSize: number;
+}
+
 const parseBoolean = (value: string | undefined, fallback: boolean): boolean => {
   if (value === undefined || value === null || value === '') {
     return fallback;
@@ -43,6 +60,14 @@ const parseBoolean = (value: string | undefined, fallback: boolean): boolean => 
     return false;
   }
   return fallback;
+};
+
+const parseNumber = (value: string | undefined, fallback: number): number => {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
 };
 
 /**
@@ -79,6 +104,20 @@ export const resolveMainnetPaymentFlag = (
 };
 
 /**
+ * Resolve the idempotency cleanup worker configuration from the environment.
+ *
+ * Values are validated at boot by `env.validation.ts`; this factory only
+ * applies the documented defaults when a variable is absent.
+ */
+export const resolveIdempotencyCleanupConfig = (
+  env: NodeJS.ProcessEnv = process.env,
+): IdempotencyCleanupConfig => ({
+  enabled: parseBoolean(env.IDEMPOTENCY_CLEANUP_ENABLED, false),
+  intervalMs: parseNumber(env.IDEMPOTENCY_CLEANUP_INTERVAL_MS, 3_600_000),
+  batchSize: parseNumber(env.IDEMPOTENCY_CLEANUP_BATCH_SIZE, 1000),
+});
+
+/**
  * Ops-safe, secret-free snapshot of the flag for logs/metrics.
  * Never includes keys, JWTs, or webhook secrets.
  */
@@ -92,4 +131,5 @@ export const mainnetPaymentFlagSnapshot = (
 
 export default registerAs('configuration', () => ({
   mainnetPayment: resolveMainnetPaymentFlag(),
+  idempotencyCleanup: resolveIdempotencyCleanupConfig(),
 }));

@@ -4,6 +4,7 @@ import {
   IsNotEmpty,
   IsOptional,
   IsString,
+  IsUUID,
   MaxLength,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -24,6 +25,7 @@ export class CreateApiKeyDto {
   @ApiProperty({ description: 'Project the key belongs to' })
   @IsString()
   @IsNotEmpty()
+  @IsUUID()
   @MaxLength(128)
   projectId: string;
 

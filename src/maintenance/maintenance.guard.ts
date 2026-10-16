@@ -80,9 +80,12 @@ export class MaintenanceGuard implements CanActivate {
       
       return this.cachedState;
     } catch (error) {
-      this.logger.error('Failed to read maintenance state, failing open', error);
-      // Fail open for read errors - don't block requests if we can't read maintenance state
-      return { enabled: false };
+      this.logger.error('Failed to read maintenance state, failing closed', error);
+      // Fail closed: an unreadable persisted state must not be reported as disabled.
+      throw new ServiceUnavailableException({
+        code: 'MAINTENANCE_STATE_UNAVAILABLE',
+        message: 'Maintenance state is currently unavailable',
+      });
     }
   }
 }

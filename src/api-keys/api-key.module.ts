@@ -1,19 +1,12 @@
 import { Module } from '@nestjs/common';
-import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { ApiKeyService } from './api-key.service';
+import { PrismaModule } from '../prisma/prisma.module';
 import { ApiKeyController } from './api-key.controller';
 import { ApiKeyGuard } from './api-key.guard';
+import { ApiKeyService } from './api-key.service';
 
-/**
- * API key module (#942/#943).
- *
- * Provides the key lifecycle (create/validate/revoke) and the guard that every
- * protected surface uses. Exported so feature modules can import it instead of
- * re-declaring their own `ApiKeyService` provider.
- */
 @Module({
-  imports: [ConfigModule],
+  imports: [ConfigModule, PrismaModule],
   controllers: [ApiKeyController],
   providers: [ApiKeyService, ApiKeyGuard],
   exports: [ApiKeyService, ApiKeyGuard],

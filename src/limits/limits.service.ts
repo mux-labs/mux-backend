@@ -1,19 +1,22 @@
 import {
   Injectable,
-  NotFoundException,
+  BadRequestException,
   ForbiddenException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
-import { CreateLimitDto, LimitPeriod } from './dto/create-limit.dto';
-import { UpdateLimitDto } from './dto/update-limit.dto';
 
 export interface LimitCheckResult {
   allowed: boolean;
-  perTxLimit: number;
-  dailyLimit: number;
   dailyUsed: number;
   dailyRemaining: number;
+  dailyLimit: number;
+}
+
+export interface WalletLimits {
+  dailyLimit: number;
+  perTransactionLimit: number;
 }
 
 @Injectable()
@@ -22,100 +25,139 @@ export class LimitsService {
 
   constructor(private readonly prisma: PrismaService) {}
 
-  async setLimits(walletId: string, daily: number, perTx: number) {
-    return this.prisma.walletLimit.upsert({
-      where: { walletId },
-      update: { dailyLimit: daily, perTransactionLimit: perTx },
-      create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
-    });
-  }
-
-  async getLimits(walletId: string) {
-    return this.prisma.walletLimit.findUnique({ where: { walletId } });
-  }
-
   /**
-   * Enforces both per-transaction and daily spending limits for a wallet.
+   * Checks the daily spending limit for a wallet.
    *
-   * Invariants (fail-closed):
-   *  - Per-tx check runs first; if it fails the daily aggregation is never read.
-   *  - Daily total is computed from PENDING + SUBMITTED + CONFIRMED transactions
-   *    whose createdAt falls within the current UTC calendar day.
-   *  - Amount is parsed as a float; a non-numeric amount is treated as 0 so
-   *    callers must validate before reaching this method.
-   *  - Throws ForbiddenException (403) so callers get a typed, stable HTTP code.
+   * Policy: rows whose `amount` cannot be parsed into a finite number are
+   * skipped with a warning log (skip-with-warning). This prevents a single
+   * malformed `Transaction.amount` row from poisoning the daily aggregation
+   * into `NaN` and silently disabling the daily limit. `dailyUsed` and
+   * `dailyRemaining` returned to callers are therefore always finite numbers.
    *
-   * @param walletId  Sender wallet UUID
-   * @param amount    Transaction amount as a decimal string (e.g. "10.5")
+   * The requested `amount` must be a finite, positive number; anything else
+   * (NaN, Infinity, negative, zero, or an unparseable string) fails closed
+   * with a `BadRequestException` before any limit lookup occurs.
    */
-  async checkLimits(walletId: string, amount: number | string): Promise<LimitCheckResult> {
-    const amountNum = typeof amount === 'string' ? parseFloat(amount) : amount;
-
-    const limits = await this.getLimits(walletId);
-    if (!limits) {
-      // No limits configured — allow unconditionally
-      return {
-        allowed: true,
-        perTxLimit: Infinity,
-        dailyLimit: Infinity,
-        dailyUsed: 0,
-        dailyRemaining: Infinity,
-      };
-    }
-
-    const perTxLimit = Number(limits.perTransactionLimit);
-    const dailyLimit = Number(limits.dailyLimit);
-
-    // 1. Per-transaction check
-    if (amountNum > perTxLimit) {
-      this.logger.warn(
-        `Per-tx limit exceeded for wallet ${walletId}: amount=${amountNum}, limit=${perTxLimit}`,
-      );
-      throw new ForbiddenException(
-        `Transaction amount ${amountNum} exceeds per-transaction limit of ${perTxLimit}`,
+  async checkLimits(walletId: string, amount: string): Promise<LimitCheckResult> {
+    const amountNum = Number(amount);
+    if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      throw new BadRequestException(
+        `Invalid amount: ${String(amount)} must be a finite, positive number`,
       );
     }
 
-    // 2. Daily limit check — aggregate PENDING + SUBMITTED + CONFIRMED today
+    const dailyLimit = await this.getDailyLimit(walletId);
+
     const startOfDay = new Date();
     startOfDay.setUTCHours(0, 0, 0, 0);
 
     const txns = await this.prisma.transaction.findMany({
       where: {
-        senderWalletId: walletId,
+        walletId,
         createdAt: { gte: startOfDay },
-        status: { in: ['PENDING', 'SUBMITTED', 'CONFIRMED'] },
       },
-      select: { amount: true },
+      select: { id: true, amount: true },
     });
 
-    const dailyUsed = txns.reduce((sum, t) => sum + parseFloat(t.amount), 0);
-    const dailyRemaining = dailyLimit - dailyUsed;
+    let dailyUsed = 0;
+    for (const t of txns) {
+      const parsed = Number(t.amount);
+      if (!Number.isFinite(parsed)) {
+        this.logger.warn(
+          `Skipping transaction id=${t.id} with unparseable amount=${String(t.amount)}`,
+        );
+        continue;
+      }
+      dailyUsed += parsed;
+    }
 
     if (dailyUsed + amountNum > dailyLimit) {
-      this.logger.warn(
-        `Daily limit exceeded for wallet ${walletId}: used=${dailyUsed}, ` +
-          `proposed=${amountNum}, limit=${dailyLimit}`,
-      );
       throw new ForbiddenException(
-        `Daily spending limit of ${dailyLimit} would be exceeded. ` +
-          `Used today: ${dailyUsed.toFixed(7)}, requested: ${amountNum}`,
+        `Daily limit exceeded: used ${dailyUsed} + ${amountNum} > ${dailyLimit}`,
       );
     }
 
     return {
       allowed: true,
-      perTxLimit,
-      dailyLimit,
       dailyUsed,
-      dailyRemaining,
+      dailyRemaining: dailyLimit - dailyUsed,
+      dailyLimit,
     };
   }
 
-  async removeLimits(walletId: string) {
+  /**
+   * Persists the daily and per-transaction limits for a wallet.
+   *
+   * Both values must be finite and non-negative; anything else (NaN,
+   * Infinity, or a negative number) fails closed with a `BadRequestException`
+   * naming the offending field before Prisma is touched. A negative limit
+   * would otherwise make the corresponding guard true for every amount and
+   * permanently block the wallet.
+   */
+  async setLimits(
+    walletId: string,
+    daily: number,
+    perTx: number,
+  ): Promise<WalletLimits> {
+    if (!Number.isFinite(daily) || daily < 0) {
+      throw new BadRequestException(
+        `Invalid daily limit: ${String(daily)} must be a finite, non-negative number`,
+      );
+    }
+    if (!Number.isFinite(perTx) || perTx < 0) {
+      throw new BadRequestException(
+        `Invalid per-transaction limit: ${String(perTx)} must be a finite, non-negative number`,
+      );
+    }
+
+    const limits = await this.prisma.walletLimit.upsert({
+      where: { walletId },
+      update: { dailyLimit: daily, perTransactionLimit: perTx },
+      create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+    });
+
+    return {
+      dailyLimit: Number(limits.dailyLimit),
+      perTransactionLimit: Number(limits.perTransactionLimit),
+    };
+  }
+
+  /**
+   * Returns the persisted limits for a wallet, or `null` when no row exists.
+   */
+  async getLimits(walletId: string): Promise<WalletLimits | null> {
+    const limits = await this.prisma.walletLimit.findUnique({
+      where: { walletId },
+    });
+    if (!limits) {
+      return null;
+    }
+    return {
+      dailyLimit: Number(limits.dailyLimit),
+      perTransactionLimit: Number(limits.perTransactionLimit),
+    };
+  }
+
+  /**
+   * Deletes the persisted limits for a wallet.
+   *
+   * Throws `NotFoundException` when no row exists so callers can distinguish
+   * a missing wallet limit from a successful removal.
+   */
+  async removeLimits(walletId: string): Promise<void> {
     const existing = await this.getLimits(walletId);
-    if (!existing)
+    if (!existing) {
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
-    return this.prisma.walletLimit.delete({ where: { walletId } });
+    }
+    await this.prisma.walletLimit.delete({ where: { walletId } });
+  }
+
+  private async getDailyLimit(walletId: string): Promise<number> {
+    const wallet = await this.prisma.wallet.findUnique({
+      where: { id: walletId },
+      select: { dailyLimit: true },
+    });
+    const limit = Number(wallet?.dailyLimit);
+    return Number.isFinite(limit) ? limit : 0;
   }
 }

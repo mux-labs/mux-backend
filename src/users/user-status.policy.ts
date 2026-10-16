@@ -1,4 +1,8 @@
-import { ForbiddenException, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  NotFoundException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 
 /**
  * User-status policy for money paths (#941).
@@ -162,6 +166,30 @@ export function userNotFound(userId: string, correlationId?: string) {
   return new NotFoundException({
     code: UserStatusErrorCode.USER_NOT_FOUND,
     message: `User ${userId} not found`,
+    correlationId,
+  });
+}
+
+/**
+ * 503 for a status store that exists but could not be read (dependency
+ * outage, malformed query, connection refused).
+ *
+ * Distinct from `userNotFound` (404) and from a missing store: a store that
+ * throws is a real failure and must never be silently downgraded to an allow.
+ * The underlying error message is included so ops can tell a Prisma outage
+ * apart from "no store configured".
+ */
+export function userStatusUnavailable(
+  userId: string,
+  cause: unknown,
+  correlationId?: string,
+) {
+  const detail =
+    cause instanceof Error ? cause.message : String(cause ?? 'unknown error');
+
+  return new ServiceUnavailableException({
+    code: UserStatusErrorCode.USER_STATUS_UNAVAILABLE,
+    message: `User ${userId} status could not be read: ${detail}`,
     correlationId,
   });
 }

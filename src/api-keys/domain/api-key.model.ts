@@ -113,6 +113,14 @@ export const ApiKeyErrorCode = {
 
   /** The request targets a network the key is not scoped to (#943). */
   NETWORK_MISMATCH: 'NETWORK_MISMATCH',
+
+  /**
+   * The referenced project does not exist, or is not owned by the
+   * authenticated developer (#1108). Deliberately collapses "missing" and
+   * "not yours" so a caller cannot probe for the existence of another
+   * developer's project ids.
+   */
+  PROJECT_NOT_FOUND: 'API_KEY_PROJECT_NOT_FOUND',
 } as const;
 
 export type ApiKeyErrorCode =

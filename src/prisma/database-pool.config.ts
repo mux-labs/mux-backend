@@ -54,6 +54,23 @@ export interface DatabasePoolValidationIssue {
   message: string;
 }
 
+/**
+ * Error thrown when the pool env is invalid. Names every offending variable so
+ * a startup failure is actionable instead of a silent clamp (invariant 3).
+ */
+export class DatabasePoolConfigError extends Error {
+  readonly issues: DatabasePoolValidationIssue[];
+
+  constructor(issues: DatabasePoolValidationIssue[]) {
+    const detail = issues
+      .map((issue) => `${issue.variable} ${issue.message}`)
+      .join('; ');
+    super(`Invalid database pool configuration: ${detail}`);
+    this.name = 'DatabasePoolConfigError';
+    this.issues = issues;
+  }
+}
+
 /** Parse an optional integer, reporting malformed input instead of guessing. */
 function parseOptionalInt(raw: string | undefined): {
   value?: number;
@@ -115,28 +132,30 @@ export function validateDatabasePoolEnv(
 }
 
 /**
- * Resolve the pool configuration. Assumes {@link validateDatabasePoolEnv} was
- * run; out-of-range values are still clamped defensively.
+ * Resolve the pool configuration.
+ *
+ * Fails closed: when {@link validateDatabasePoolEnv} reports any issue the
+ * offending variable is surfaced via a thrown {@link DatabasePoolConfigError}
+ * rather than being silently clamped into a usable configuration (invariant 3).
+ * Valid values — including exactly `MAX_DATABASE_POOL_SIZE` — are returned
+ * unchanged.
  */
 export function resolveDatabasePoolConfig(
   env: NodeJS.ProcessEnv = process.env,
 ): DatabasePoolConfig {
-  const clamp = (value: number | undefined, max: number): number | undefined =>
-    value === undefined ? undefined : Math.min(value, max);
+  const issues = validateDatabasePoolEnv(env);
+  if (issues.length > 0) {
+    throw new DatabasePoolConfigError(issues);
+  }
 
   return {
-    connectionLimit: clamp(
-      parseOptionalInt(env[DATABASE_POOL_ENV.POOL_SIZE]).value,
-      MAX_DATABASE_POOL_SIZE,
-    ),
-    poolTimeoutSeconds: clamp(
-      parseOptionalInt(env[DATABASE_POOL_ENV.POOL_TIMEOUT_SECONDS]).value,
-      MAX_DATABASE_POOL_TIMEOUT_SECONDS,
-    ),
-    connectTimeoutSeconds: clamp(
-      parseOptionalInt(env[DATABASE_POOL_ENV.CONNECT_TIMEOUT_SECONDS]).value,
-      MAX_DATABASE_POOL_TIMEOUT_SECONDS,
-    ),
+    connectionLimit: parseOptionalInt(env[DATABASE_POOL_ENV.POOL_SIZE]).value,
+    poolTimeoutSeconds: parseOptionalInt(
+      env[DATABASE_POOL_ENV.POOL_TIMEOUT_SECONDS],
+    ).value,
+    connectTimeoutSeconds: parseOptionalInt(
+      env[DATABASE_POOL_ENV.CONNECT_TIMEOUT_SECONDS],
+    ).value,
   };
 }
 
@@ -189,7 +208,9 @@ export function applyDatabasePoolConfig(
  * Compute the runtime `DATABASE_URL` with pool parameters applied.
  *
  * Returns `undefined` when `DATABASE_URL` is unset so the caller keeps the
- * driver's default error path unchanged.
+ * driver's default error path unchanged. Throws a
+ * {@link DatabasePoolConfigError} naming the offending variable when the pool
+ * env is invalid, so a bad value fails startup instead of being clamped.
  */
 export function buildRuntimeDatabaseUrl(
   env: NodeJS.ProcessEnv = process.env,

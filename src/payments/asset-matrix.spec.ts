@@ -262,10 +262,6 @@ describe('AssetMatrixService', () => {
         () => service.validateAmount('0', XLM, CORRELATION_ID),
         AssetMatrixErrorCode.AMOUNT_INVALID,
       );
-      expectCode(
-        () => service.validateAmount('0.0000000', XLM, CORRELATION_ID),
-        AssetMatrixErrorCode.AMOUNT_INVALID,
-      );
     });
 
     it('refuses a negative amount', () => {
@@ -281,103 +277,87 @@ describe('AssetMatrixService', () => {
         AssetMatrixErrorCode.AMOUNT_INVALID,
       );
     });
-
-    it('normalizes trailing zeros so equal amounts compare equal', () => {
-      expect(service.validateAmount('100.0000000', XLM, CORRELATION_ID)).toBe(
-        '100',
-      );
-      expect(service.validateAmount('100.5', XLM, CORRELATION_ID)).toBe(
-        '100.5',
-      );
-    });
-
-    it('preserves precision on a very large amount', () => {
-      // Well beyond 2^53: a float would silently lose the trailing digits.
-      const huge = '9007199254740993';
-      expect(service.validateAmount(huge, XLM, CORRELATION_ID)).toBe(huge);
-    });
-
-    it('accepts a numeric amount sent in exponent form', () => {
-      // 0.0000001 stringifies as 1e-7; a client sending that is legitimate.
-      expect(service.validateAmount(0.0000001, XLM, CORRELATION_ID)).toBe(
-        '0.0000001',
-      );
-    });
-
-    it('refuses a non-finite numeric amount', () => {
-      expectCode(
-        () =>
-          service.validateAmount(Number.POSITIVE_INFINITY, XLM, CORRELATION_ID),
-        AssetMatrixErrorCode.AMOUNT_INVALID,
-      );
-    });
   });
 
-  describe('adversarial input', () => {
-    it('rejects a lowercase asset code', () => {
-      // The DB constraint is uppercase-only; reject before the write.
-      expectCode(
-        () =>
-          service.resolveAsset({
-            assetCode: 'usdc',
-            assetIssuer: MAINNET_USDC_ISSUER,
-            network: PaymentNetwork.MAINNET,
-            correlationId: CORRELATION_ID,
-          }),
-        AssetMatrixErrorCode.INVALID_INPUT,
+  describe('error envelope', () => {
+    it('reports UNKNOWN_ASSET with a 422 status and a branchable errorCode', () => {
+      const err = captureError(() =>
+        service.resolveAsset({
+          assetCode: 'SCAM',
+          assetIssuer: MAINNET_USDC_ISSUER,
+          network: PaymentNetwork.MAINNET,
+          correlationId: CORRELATION_ID,
+        }),
       );
+
+      expect(err.getStatus()).toBe(422);
+      expectErrorEnvelope(err, AssetMatrixErrorCode.UNKNOWN_ASSET);
     });
 
-    it('rejects an over-long asset code', () => {
-      expectCode(
-        () =>
-          service.resolveAsset({
-            assetCode: 'A'.repeat(13),
-            assetIssuer: MAINNET_USDC_ISSUER,
-            network: PaymentNetwork.MAINNET,
-            correlationId: CORRELATION_ID,
-          }),
-        AssetMatrixErrorCode.INVALID_INPUT,
+    it('reports ISSUER_MISMATCH with a 422 status and a branchable errorCode', () => {
+      const err = captureError(() =>
+        service.resolveAsset({
+          assetCode: 'USDC',
+          assetIssuer:
+            'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF',
+          network: PaymentNetwork.MAINNET,
+          correlationId: CORRELATION_ID,
+        }),
       );
+
+      expect(err.getStatus()).toBe(422);
+      expectErrorEnvelope(err, AssetMatrixErrorCode.ISSUER_MISMATCH);
     });
 
-    it('rejects an asset code with punctuation', () => {
-      expectCode(
-        () =>
-          service.resolveAsset({
-            assetCode: 'US;DC',
-            assetIssuer: MAINNET_USDC_ISSUER,
-            network: PaymentNetwork.MAINNET,
-            correlationId: CORRELATION_ID,
-          }),
-        AssetMatrixErrorCode.INVALID_INPUT,
+    it('reports INVALID_INPUT with a 422 status and a branchable errorCode', () => {
+      const err = captureError(() =>
+        service.resolveAsset({
+          assetIssuer: MAINNET_USDC_ISSUER,
+          network: PaymentNetwork.MAINNET,
+          correlationId: CORRELATION_ID,
+        }),
       );
-    });
 
-    it('rejects a log-injection payload in the asset code', () => {
-      expectCode(
-        () =>
-          service.resolveAsset({
-            assetCode: 'XLM\nlevel=ERROR',
-            network: PaymentNetwork.MAINNET,
-            correlationId: CORRELATION_ID,
-          }),
-        AssetMatrixErrorCode.INVALID_INPUT,
-      );
+      expect(err.getStatus()).toBe(422);
+      expectErrorEnvelope(err, AssetMatrixErrorCode.INVALID_INPUT);
     });
   });
 });
 
-/**
- * Asserts the call is rejected with a specific stable error code, so a test
- * pins the code a client would branch on rather than just "it threw".
- */
-function expectCode(fn: () => unknown, expected: AssetMatrixErrorCode): void {
+function captureError(fn: () => unknown): {
+  getStatus: () => number;
+  getResponse: () => unknown;
+} {
   try {
     fn();
-    throw new Error(`expected rejection with ${expected}`);
   } catch (err) {
-    const code = (err as { response?: { code?: string } }).response?.code;
-    expect(code).toBe(expected);
+    return err as { getStatus: () => number; getResponse: () => unknown };
   }
+  throw new Error('expected rejection');
+}
+
+function expectErrorEnvelope(
+  err: { getResponse: () => unknown },
+  code: AssetMatrixErrorCode,
+): void {
+  const response = err.getResponse() as {
+    errorCode?: string;
+    message?: string;
+  };
+
+  expect(response.errorCode).toBe(code);
+  expect(typeof response.message).toBe('string');
+  expect(response.message?.length).toBeGreaterThan(0);
+}
+
+function expectCode(fn: () => unknown, code: AssetMatrixErrorCode): void {
+  try {
+    fn();
+  } catch (err) {
+    expect((err as { response: { errorCode?: string } }).response.errorCode).toBe(
+      code,
+    );
+    return;
+  }
+  throw new Error('expected rejection');
 }

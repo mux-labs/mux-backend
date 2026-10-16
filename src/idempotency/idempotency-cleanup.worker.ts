@@ -19,7 +19,9 @@ import {
  * carries an idempotency key inserts a row that is never removed, so the
  * `@@index([expiresAt])` degrades and the table consumes storage indefinitely.
  *
- * Configuration (environment variables):
+ * Configuration (environment variables, validated at boot by
+ * `src/config/env.validation.ts` and exposed through
+ * `src/config/configuration.ts`):
  *   IDEMPOTENCY_CLEANUP_ENABLED          – set to "true" to run in-process
  *                                          (default: "false" / disabled)
  *   IDEMPOTENCY_CLEANUP_INTERVAL_MS      – polling interval in ms
@@ -55,18 +57,16 @@ export class IdempotencyCleanupWorker implements OnModuleInit, OnModuleDestroy {
     private readonly idempotencyService: IdempotencyService,
     private readonly configService: ConfigService,
   ) {
-    this.enabled =
-      String(
-        this.configService.get<string>('IDEMPOTENCY_CLEANUP_ENABLED', 'false'),
-      ).toLowerCase() === 'true';
-    this.intervalMs = this.configService.get<number>(
-      'IDEMPOTENCY_CLEANUP_INTERVAL_MS',
-      3_600_000,
-    );
-    this.batchSize = this.configService.get<number>(
-      'IDEMPOTENCY_CLEANUP_BATCH_SIZE',
-      DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
-    );
+    const cleanup = this.configService.get<{
+      enabled: boolean;
+      intervalMs: number;
+      batchSize: number;
+    }>('idempotencyCleanup');
+
+    this.enabled = cleanup?.enabled ?? false;
+    this.intervalMs = cleanup?.intervalMs ?? 3_600_000;
+    this.batchSize =
+      cleanup?.batchSize ?? DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE;
   }
 
   /** Whether the in-process worker is enabled for this deployment. */

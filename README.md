@@ -1384,3 +1384,14 @@ Query parameters: `userId`, `network`, `status`, `includeArchived` (default `fal
 
 <!-- handsoff-issue-990 -->
 - #990: Key management e2e
+
+<!-- handsoff-issue-1077 -->
+- #1077: KeyManagementService: reject unsupported KeyType values in generateKey before key material is produced
+
+<!-- handsoff-issue-1078 -->
+- #1078: KeyManagementService: add unit tests for the encrypt/decrypt failure paths and their stable error codes
+
+<!-- handsoff-issue-1067 -->
+- #1067: Add unit tests for rate-limit and developer-quota guard fail-closed behaviour
+<!-- handsoff-issue-1066 -->
+- #1066: Cover soroban-invoke service error paths in unit tests

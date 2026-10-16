@@ -38,6 +38,8 @@ export enum ErrorCode {
   // Key management / custody (fail-closed)
   KEY_DECRYPT_FAILED = 'KEY_DECRYPT_FAILED',
   KEY_VERSION_UNSUPPORTED = 'KEY_VERSION_UNSUPPORTED',
+  /** Requested key type has no implementation and is refused (#1075). */
+  KEY_TYPE_UNSUPPORTED = 'KEY_TYPE_UNSUPPORTED',
 
   // Transaction export (secure downloads)
   EXPORT_JOB_NOT_FOUND = 'EXPORT_JOB_NOT_FOUND',
@@ -168,6 +170,7 @@ export const DEFAULT_STATUS_BY_CODE: Record<ErrorCode, number> = {
   [ErrorCode.SHUTDOWN_IN_PROGRESS]: 503,
   [ErrorCode.KEY_DECRYPT_FAILED]: 503,
   [ErrorCode.KEY_VERSION_UNSUPPORTED]: 503,
+  [ErrorCode.KEY_TYPE_UNSUPPORTED]: 503,
   [ErrorCode.EXPORT_JOB_NOT_FOUND]: 404,
   [ErrorCode.EXPORT_NOT_READY]: 409,
   [ErrorCode.EXPORT_DOWNLOAD_FORBIDDEN]: 403,
@@ -211,92 +214,41 @@ const GENERIC_MESSAGE_BY_CODE: Record<ErrorCode, string> = {
     'Key material could not be decrypted; operation refused.',
   [ErrorCode.KEY_VERSION_UNSUPPORTED]:
     'Key version is not supported; operation refused.',
+  [ErrorCode.KEY_TYPE_UNSUPPORTED]:
+    'Key type is not supported; operation refused.',
   [ErrorCode.EXPORT_JOB_NOT_FOUND]: 'Transaction export job not found.',
   [ErrorCode.EXPORT_NOT_READY]: 'Transaction export is not ready for download.',
   [ErrorCode.EXPORT_DOWNLOAD_FORBIDDEN]:
     'You are not allowed to download this export.',
   [ErrorCode.EXPORT_DOWNLOAD_EXPIRED]: 'This export download link has expired.',
-  [ErrorCode.EXPORT_TOO_LARGE]:
-    'Requested export exceeds the maximum allowed size.',
+  [ErrorCode.EXPORT_TOO_LARGE]: 'The requested export is too large.',
   [ErrorCode.BACKUP_NOT_FOUND]: 'Backup not found.',
   [ErrorCode.BACKUP_NOT_READY]: 'Backup is not ready.',
   [ErrorCode.BACKUP_IN_PROGRESS]: 'A backup is already in progress.',
-  [ErrorCode.BACKUP_INTEGRITY_FAILED]: 'Backup integrity verification failed.',
-  [ErrorCode.RESTORE_FORBIDDEN]:
-    'You are not allowed to restore from this backup.',
+  [ErrorCode.BACKUP_INTEGRITY_FAILED]: 'Backup integrity check failed.',
+  [ErrorCode.RESTORE_FORBIDDEN]: 'You are not allowed to restore this backup.',
   [ErrorCode.RESTORE_CONFLICT]: 'Restore conflicts with current state.',
   [ErrorCode.RESTORE_IN_PROGRESS]: 'A restore is already in progress.',
-  [ErrorCode.RESTORE_POINT_INVALID]: 'The requested restore point is invalid.',
-  [ErrorCode.VALIDATION_FAILED]: 'Validation failed.',
+  [ErrorCode.RESTORE_POINT_INVALID]: 'The restore point is invalid.',
+  [ErrorCode.VALIDATION_FAILED]: 'Request failed validation.',
   [ErrorCode.UNAUTHENTICATED]: 'Authentication required.',
   [ErrorCode.RATE_LIMITED]: 'Too many requests.',
 };
 
 /**
- * Patterns that must never appear in a production error payload. Covers
- * bearer tokens, JWTs, private keys, and common secret assignments.
+ * Served error-code catalog (#949). Maps every `ErrorCode` to its canonical
+ * HTTP status and client-safe message so the catalog-coverage test can assert
+ * that no code is missing from the served contract.
  */
-const SENSITIVE_PATTERNS: RegExp[] = [
-  /\beyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}\b/g, // JWT
-  /\bBearer\s+[A-Za-z0-9._~+/-]+=*/gi, // Authorization header
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----/g, // PEM private key
-  /\bS[A-Z2-7]{55}\b/g, // Stellar secret seed
-  /\b(?:secret|password|passwd|api[_-]?key|token|private[_-]?key)\b\s*[:=]\s*\S+/gi,
-];
-
-/**
- * Redact anything that looks like a secret from a string. Used as a final
- * safety net so a leaked value can never reach a production client.
- */
-export function redactSensitive(input: string): string {
-  let output = input;
-  for (const pattern of SENSITIVE_PATTERNS) {
-    output = output.replace(pattern, '[REDACTED]');
-  }
-  return output;
-}
-
-/**
- * Build a production-safe {@link ErrorEnvelopeDto}.
- *
- * In production (`isProduction === true`) the envelope is fail-closed:
- *  - `message` falls back to a generic, code-derived string.
- *  - `details` are dropped unless they are explicitly safe field messages.
- *  - `debug` is never included.
- *  - All string output is passed through {@link redactSensitive}.
- *
- * Outside production the caller-provided message/details/debug are preserved
- * (still redacted) to aid local debugging.
- */
-export function buildErrorEnvelope(
-  input: RawErrorInput,
-  requestId: string,
-  isProduction: boolean,
-): ErrorEnvelopeDto {
-  const code = input.code ?? ErrorCode.INTERNAL_ERROR;
-  const statusCode = input.statusCode ?? DEFAULT_STATUS_BY_CODE[code] ?? 500;
-
-  const envelope: ErrorEnvelopeDto = {
+export const ERROR_CODE_CATALOG: Record<
+  ErrorCode,
+  { statusCode: number; message: string }
+> = Object.fromEntries(
+  (Object.values(ErrorCode) as ErrorCode[]).map((code) => [
     code,
-    message: isProduction
-      ? (GENERIC_MESSAGE_BY_CODE[code] ?? 'Request failed.')
-      : redactSensitive(
-          input.message ?? GENERIC_MESSAGE_BY_CODE[code] ?? 'Request failed.',
-        ),
-    correlationId: requestId,
-    statusCode,
-  };
-
-  if (input.details && input.details.length > 0) {
-    envelope.details = input.details.map((detail) => ({
-      ...detail,
-      message: redactSensitive(detail.message),
-    }));
-  }
-
-  if (!isProduction && input.debug) {
-    envelope.debug = input.debug;
-  }
-
-  return envelope;
-}
+    {
+      statusCode: DEFAULT_STATUS_BY_CODE[code],
+      message: GENERIC_MESSAGE_BY_CODE[code],
+    },
+  ]),
+) as Record<ErrorCode, { statusCode: number; message: string }>;

@@ -16,25 +16,7 @@ import {
 } from './api-key-audit.service';
 import { resolveRequestId } from '../common/interceptors/request-id.interceptor';
 import { ApiKeyErrorCode } from './domain/api-key.model';
-import { IS_PUBLIC_KEY, REQUIRE_API_KEY_KEY } from './api
-  ServiceUnavailableException,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { ApiKeyService } from './api-key.service';
-import {
-  Injectable,
-  CanActivate,
-  ExecutionContext,
-  Optional,
-  HttpException,
-  Logger,
-  ServiceUnavailableException,
-  UnauthorizedException,
-} from '@nestjs/common';
-import { Reflector } from '@nestjs/core';
-import { ApiKeyService } from './api-key.service';
-
+import { IS_PUBLIC_KEY, REQUIRE_API_KEY_KEY } from './api-key.constants';
 
 export const REQUIRE_API_KEY = 'requireApiKey';
 export const IS_PUBLIC = 'isPublic';
@@ -84,6 +66,11 @@ export class ApiKeyGuard implements CanActivate {
       [context.getHandler(), context.getClass()],
     );
 
+    // A route explicitly marked as not requiring a key skips validation.
+    if (requireApiKey === false) {
+      return true;
+    }
+
     const request = context.switchToHttp().getRequest();
     const authorization = request.headers?.authorization;
     const apiKeyHeader = request.headers?.['x-api-key'];
@@ -107,18 +94,13 @@ export class ApiKeyGuard implements CanActivate {
         request,
         correlationId,
       });
-      throw new UnauthorizedException('API key is required');
-    }
-    }
-
-    if (!apiKey) {
       throw new UnauthorizedException({
         code: ApiKeyErrorCode.UNAUTHORIZED,
         message: 'API key is required',
       });
     }
 
-    if (!apiKey) {
+    if (!isValidApiKeyFormat(apiKey)) {
       throw new UnauthorizedException({
         code: ApiKeyErrorCode.INVALID_FORMAT,
         message: 'Invalid API key format',
@@ -252,43 +234,74 @@ export class ApiKeyGuard implements CanActivate {
     };
 
     // Record usage when the response finishes so the recorded status code and
-    // duration are the real ones. Best-effort only — never block the request.
-    if (response && typeof response.on === 'function') {
-      response.on('finish', () => {
-        void this.apiKeyService.recordUsage(
-          validation.apiKey?.id,
-          validation.project?.id,
-          `${request.method ?? 'GET'} ${request.path ?? ''}`,
-          request.method ?? 'GET',
-          response.statusCode ?? 200,
-          request.ip ?? request.socket?.remoteAddress,
-          request.headers?.['user-agent'],
-          Date.now() - startedAt,
-        );
+    // duration are the real ones. Best-effort: a failure here must not affect
+    // the response.
+    if (response && typeof response.once === 'function') {
+      response.once('finish', () => {
+        try {
+          this.auditDecision({
+            action: ApiKeyAuditAction.ACCEPTED,
+            apiKey: undefined,
+            request,
+            correlationId: resolveRequestId(
+              request.requestId ?? request.headers?.['x-request-id'],
+            ),
+            apiKeyId: validation.apiKey?.id,
+            developerId: validation.developer?.id,
+            projectId: validation.project?.id,
+          });
+        } catch {
+          // Fail-soft.
+        }
       });
     }
   }
-
-  private extractApiKey(header: string): string | null {
-    if (header.startsWith('Bearer ')) {
-      return header.slice(7);
-    }
-    if (header.startsWith('ApiKey ')) {
-      return header.slice(7);
-    }
-    return null;
-  }
 }
-    }
-  }
 
-  private extractApiKey(header: string): string | null {
-    if (header.startsWith('Bearer ')) {
-      return header.slice(7);
-    }
-    if (header.startsWith('ApiKey ')) {
-      return header.slice(7);
-    }
-    return null;
+/**
+ * Validates the shape of a presented API key before it is looked up.
+ *
+ * Keys are opaque `prefix.secret` tokens; anything that does not match the
+ * expected shape is rejected as `INVALID_FORMAT` without touching the store.
+ */
+function isValidApiKeyFormat(apiKey: string): boolean {
+  return /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(apiKey);
+}
+
+/**
+ * Extracts the network a request targets, if any, from the query string or the
+ * `x-network` header. Absent means "no network constraint".
+ */
+function extractRequestedNetwork(request: any): string | null {
+  const fromQuery = request.query?.network;
+  if (typeof fromQuery === 'string' && fromQuery.length > 0) {
+    return fromQuery;
+  }
+  const fromHeader = request.headers?.['x-network'];
+  if (typeof fromHeader === 'string' && fromHeader.length > 0) {
+    return fromHeader;
+  }
+  return null;
+}
+
+/**
+ * Refuses the request when a network-scoped key is used against a different
+ * network (#943). A key with no scope, or a request with no requested network,
+ * is allowed through.
+ */
+function assertNetworkMatch(input: {
+  scope: string | null;
+  requested: string | null;
+  correlationId: string;
+  subject: string;
+}): void {
+  if (!input.scope || !input.requested) {
+    return;
+  }
+  if (input.scope !== input.requested) {
+    throw new UnauthorizedException({
+      code: ApiKeyErrorCode.NETWORK_MISMATCH,
+      message: `API key is scoped to ${input.scope} and cannot be used for ${input.requested}`,
+    });
   }
 }

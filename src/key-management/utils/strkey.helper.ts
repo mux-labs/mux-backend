@@ -167,11 +167,10 @@ export class StrKeyHelper {
    * @throws {Error} If the input is not a valid Ed25519 public key StrKey.
    */
   decodeEd25519PublicKey(encoded: string): Buffer {
-    return this.decodeWithExpectedPrefix(
+    return this.decodeWithVersion(
       encoded,
+      VERSION_BYTES.ED25519_PUBLIC_KEY,
       'G',
-      StrKeyType.ED25519_PUBLIC_KEY,
-      'decodeEd25519PublicKey',
     );
   }
 
@@ -183,11 +182,10 @@ export class StrKeyHelper {
    * @throws {Error} If the input is not a valid Ed25519 secret seed StrKey.
    */
   decodeEd25519SecretSeed(encoded: string): Buffer {
-    return this.decodeWithExpectedPrefix(
+    return this.decodeWithVersion(
       encoded,
+      VERSION_BYTES.ED25519_SECRET_SEED,
       'S',
-      StrKeyType.ED25519_SECRET_SEED,
-      'decodeEd25519SecretSeed',
     );
   }
 
@@ -199,12 +197,7 @@ export class StrKeyHelper {
    * @throws {Error} If the input is not a valid pre-auth tx StrKey.
    */
   decodePreAuthTx(encoded: string): Buffer {
-    return this.decodeWithExpectedPrefix(
-      encoded,
-      'T',
-      StrKeyType.PRE_AUTH_TX,
-      'decodePreAuthTx',
-    );
+    return this.decodeWithVersion(encoded, VERSION_BYTES.PRE_AUTH_TX, 'T');
   }
 
   /**
@@ -215,12 +208,146 @@ export class StrKeyHelper {
    * @throws {Error} If the input is not a valid SHA256 hash StrKey.
    */
   decodeSha256Hash(encoded: string): Buffer {
-    return this.decodeWithExpectedPrefix(
-      encoded,
-      'X',
-      StrKeyType.SHA256_HASH,
-      'decodeSha256Hash',
-    );
+    return this.decodeWithVersion(encoded, VERSION_BYTES.SHA256_HASH, 'X');
+  }
+
+  /**
+   * Decode a StrKey value with an expected version byte and prefix.
+   *
+   * Validates input type, prefix, length, alphabet membership and the
+   * trailing 2-byte little-endian CRC16-XModem checksum. Error messages
+   * never include the raw key material.
+   *
+   * @param value - The StrKey-encoded string to decode.
+   * @param expectedVersion - The expected version byte for this key type.
+   * @param expectedPrefix - The expected leading prefix character.
+   * @returns The raw 32-byte payload buffer.
+   */
+  private decodeWithVersion(
+    value: string,
+    expectedVersion: number,
+    expectedPrefix: string,
+  ): Buffer {
+    if (typeof value !== 'string') {
+      throw this.createError(
+        StrKeyErrorCode.INVALID_INPUT_TYPE,
+        'StrKey value must be a string',
+      );
+    }
+
+    if (value.length === 0 || value[0] !== expectedPrefix) {
+      throw this.createError(
+        StrKeyErrorCode.INVALID_PREFIX,
+        `StrKey value must start with the expected prefix`,
+      );
+    }
+
+    if (value.length !== 56) {
+      throw this.createError(
+        StrKeyErrorCode.INVALID_LENGTH,
+        'StrKey value must be exactly 56 characters long',
+      );
+    }
+
+    // Decode the base32 payload (everything after the prefix character).
+    const decoded = this.base32Decode(value.slice(1));
+
+    // The decoded bytes are: [version byte][32-byte payload][2-byte checksum].
+    if (decoded.length !== 35) {
+      throw this.createError(
+        StrKeyErrorCode.INVALID_LENGTH,
+        'StrKey value has an invalid decoded length',
+      );
+    }
+
+    if (decoded[0] !== expectedVersion) {
+      throw this.createError(
+        StrKeyErrorCode.INVALID_PREFIX,
+        'StrKey value has an unexpected version byte',
+      );
+    }
+
+    const payload = decoded.subarray(1, 33);
+    const checksum = decoded.readUInt16LE(33);
+    const expectedChecksum = this.crc16XModem(decoded.subarray(0, 33));
+
+    if (checksum !== expectedChecksum) {
+      throw this.createError(
+        StrKeyErrorCode.INVALID_CHECKSUM,
+        'StrKey value has an invalid checksum',
+      );
+    }
+
+    return Buffer.from(payload);
+  }
+
+  /**
+   * Decode a base32 string using the Stellar StrKey alphabet.
+   *
+   * @param input - The base32-encoded string (without prefix).
+   * @returns The decoded bytes.
+   * @throws {Error} With `INVALID_LENGTH` if an unknown character is found.
+   */
+  private base32Decode(input: string): Buffer {
+    let bits = 0;
+    let value = 0;
+    const output: number[] = [];
+
+    for (const char of input) {
+      const index = STRKEY_ALPHABET.indexOf(char);
+      if (index === -1) {
+        throw this.createError(
+          StrKeyErrorCode.INVALID_LENGTH,
+          'StrKey value contains an invalid character',
+        );
+      }
+
+      value = (value << 5) | index;
+      bits += 5;
+
+      if (bits >= 8) {
+        bits -= 8;
+        output.push((value >>> bits) & 0xff);
+      }
+    }
+
+    return Buffer.from(output);
+  }
+
+  /**
+   * Compute the CRC16-XModem checksum over the given bytes.
+   *
+   * @param data - The bytes to checksum.
+   * @returns The 16-bit checksum value.
+   */
+  private crc16XModem(data: Buffer): number {
+    let crc = 0x0000;
+
+    for (const byte of data) {
+      crc ^= byte << 8;
+      for (let i = 0; i < 8; i++) {
+        if ((crc & 0x8000) !== 0) {
+          crc = ((crc << 1) ^ 0x1021) & 0xffff;
+        } else {
+          crc = (crc << 1) & 0xffff;
+        }
+      }
+    }
+
+    return crc & 0xffff;
+  }
+
+  /**
+   * Create a typed StrKey error that never includes raw key material.
+   *
+   * @param code - The stable StrKey error code.
+   * @param message - A safe, key-material-free message.
+   * @returns The constructed error.
+   */
+  private createError(code: StrKeyErrorCode, message: string): Error {
+    const error = new Error(message);
+    (error as Error & { code?: StrKeyErrorCode }).code = code;
+    return error;
   }
 
   // -----------------------------------------------------------------------
@@ -260,326 +387,172 @@ export class StrKeyHelper {
   }
 
   /**
-   * Validate that a string is a well-formed pre-authorized transaction StrKey.
-   * Returns `false` for non-string inputs, wrong length, bad prefix, or
-   * invalid checksum — never throws.
+   * Validate a StrKey value against an expected prefix and type.
    *
    * @param value - The value to validate.
-   * @returns `true` if the value is a valid T... StrKey pre-auth tx.
+   * @param prefix - The expected leading prefix character.
+   * @param type - The expected StrKey type.
+   * @returns `true` if the value is a valid StrKey of the expected type.
    */
-  isValidPreAuthTx(value: unknown): boolean {
-    try {
-      return this.validateWithPrefix(value, 'T', StrKeyType.PRE_AUTH_TX);
-    } catch {
-      return false;
-    }
-  }
-
-  /**
-   * Validate that a string is a well-formed SHA256 hash StrKey.
-   * Returns `false` for non-string inputs, wrong length, bad prefix, or
-   * invalid checksum — never throws.
-   *
-   * @param value - The value to validate.
-   * @returns `true` if the value is a valid X... StrKey SHA256 hash.
-   */
-  isValidSha256Hash(value: unknown): boolean {
-    try {
-      return this.validateWithPrefix(value, 'X', StrKeyType.SHA256_HASH);
-    } catch {
-      return false;
-    }
-  }
-
-  // -----------------------------------------------------------------------
-  // Type detection
-  // -----------------------------------------------------------------------
-
-  /**
-   * Identify the type of a StrKey-formatted value.
-   *
-   * @param value - The StrKey string to inspect.
-   * @returns An object describing validity, type, and prefix.
-   */
-  getStrKeyType(value: unknown): StrKeyTypeInfo {
+  private validateWithPrefix(
+    value: unknown,
+    prefix: string,
+    type: StrKeyType,
+  ): boolean {
     if (typeof value !== 'string') {
-      return { isValid: false, type: null, prefix: null };
+      return false;
     }
 
-    if (value.length < 2) {
-      return { isValid: false, type: null, prefix: null };
+    if (value.length !== 56 || value[0] !== prefix) {
+      return false;
     }
 
-    const prefix = value.charAt(0);
-    const type = STRKEY_PREFIX_MAP[prefix];
-
-    if (!type) {
-      return { isValid: false, type: null, prefix };
+    const version = this.versionForType(type);
+    try {
+      this.decodeWithVersion(value, version, prefix);
+      return true;
+    } catch {
+      return false;
     }
-
-    // Verify checksum
-    const isValid = this.verifyChecksum(value, prefix);
-    return { isValid, type, prefix };
-  }
-
-  // -----------------------------------------------------------------------
-  // Security utilities
-  // -----------------------------------------------------------------------
-
-  /**
-   * Quick detection of whether a value looks like a secret seed (starts
-   * with 'S' and has the expected length). Does NOT validate the checksum.
-   * Useful for preventing accidental logging of secret seeds.
-   *
-   * @param value - The value to inspect.
-   * @returns `true` if the value superficially resembles a secret seed.
-   */
-  looksLikeSecretSeed(value: unknown): boolean {
-    if (typeof value !== 'string') return false;
-    return value.length === 56 && value.startsWith('S');
   }
 
   /**
-   * Mask a StrKey value for safe logging. Shows the first 6 and last 4
-   * characters, replacing the middle with asterisks.
+   * Resolve the version byte for a given StrKey type.
    *
-   * @param key - The StrKey string to mask.
-   * @param prefixLength - Number of characters to show at the start (default 6).
-   * @param suffixLength - Number of characters to show at the end (default 4).
-   * @returns The masked string, or '[INVALID]' if input is not a string.
-   *
-   * @example
-   * ```typescript
-   * StrKeyHelper.maskKey('GABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ1234');
-   * // => "GABCDE**********************34"
-   * ```
+   * @param type - The StrKey type.
+   * @returns The corresponding version byte.
    */
-  maskKey(key: unknown, prefixLength: number = 6, suffixLength: number = 4): string {
-    if (typeof key !== 'string') return '[INVALID]';
-    if (key.length <= prefixLength + suffixLength) return '[REDACTED]';
-
-    const prefix = key.slice(0, prefixLength);
-    const suffix = key.slice(-suffixLength);
-    const maskedLength = key.length - prefixLength - suffixLength;
-
-    return `${prefix}${'*'.repeat(maskedLength)}${suffix}`;
+  private versionForType(type: StrKeyType): number {
+    switch (type) {
+      case StrKeyType.ED25519_PUBLIC_KEY:
+        return VERSION_BYTES.ED25519_PUBLIC_KEY;
+      case StrKeyType.ED25519_SECRET_SEED:
+        return VERSION_BYTES.ED25519_SECRET_SEED;
+      case StrKeyType.PRE_AUTH_TX:
+        return VERSION_BYTES.PRE_AUTH_TX;
+      case StrKeyType.SHA256_HASH:
+        return VERSION_BYTES.SHA256_HASH;
+      default:
+        throw this.createError(
+          StrKeyErrorCode.INVALID_KEY_TYPE,
+          'Unknown StrKey type',
+        );
+    }
   }
 
-  // -----------------------------------------------------------------------
-  // Internal helpers
-  // -----------------------------------------------------------------------
-
-  private validateBufferInput(buffer: Buffer, methodName: string): void {
+  /**
+   * Validate that a buffer input is a Buffer of exactly 32 bytes.
+   *
+   * @param buffer - The buffer to validate.
+   * @param method - The calling method name (for safe error context).
+   */
+  private validateBufferInput(buffer: Buffer, method: string): void {
     if (!Buffer.isBuffer(buffer)) {
-      this.logger.error(
-        `${methodName} expects a Buffer input, received ${typeof buffer}`,
-      );
-      throw new Error(
-        `${StrKeyErrorCode.INVALID_INPUT_TYPE}: ${methodName} requires a Buffer`,
+      throw this.createError(
+        StrKeyErrorCode.INVALID_INPUT_TYPE,
+        `${method}: input must be a Buffer`,
       );
     }
 
     if (buffer.length !== 32) {
-      this.logger.error(
-        `${methodName} expects a 32-byte buffer, received ${buffer.length} bytes`,
+      throw this.createError(
+        StrKeyErrorCode.INVALID_LENGTH,
+        `${method}: input must be exactly 32 bytes`,
       );
-      throw new Error(
-        `${StrKeyErrorCode.INVALID_LENGTH}: ${methodName} requires exactly 32 bytes`,
-      );
-    }
-  }
-
-  private encodeWithVersion(buffer: Buffer, versionByte: number, prefix: string): string {
-    const payload = Buffer.alloc(1 + buffer.length);
-    payload[0] = versionByte;
-    buffer.copy(payload, 1);
-
-    const checksum = this.computeChecksum(payload);
-    const fullPayload = Buffer.concat([payload, checksum]);
-
-    return prefix + this.base32Encode(fullPayload);
-  }
-
-  private decodeWithExpectedPrefix(
-    encoded: string,
-    expectedPrefix: string,
-    expectedType: StrKeyType,
-    methodName: string,
-  ): Buffer {
-    if (typeof encoded !== 'string') {
-      throw new Error(
-        `${StrKeyErrorCode.DECODING_FAILED}: ${methodName} requires a string input`,
-      );
-    }
-
-    if (encoded.length !== 56) {
-      throw new Error(
-        `${StrKeyErrorCode.INVALID_LENGTH}: ${methodName} expects a 56-character StrKey`,
-      );
-    }
-
-    const prefix = encoded.charAt(0);
-    if (prefix !== expectedPrefix) {
-      throw new Error(
-        `${StrKeyErrorCode.INVALID_PREFIX}: ${methodName} expected prefix '${expectedPrefix}', got '${prefix}'`,
-      );
-    }
-
-    const decoded = this.base32Decode(encoded.slice(1));
-
-    // Verify checksum
-    if (!this.verifyChecksum(encoded, prefix)) {
-      throw new Error(
-        `${StrKeyErrorCode.INVALID_CHECKSUM}: ${methodName} checksum verification failed`,
-      );
-    }
-
-    // Extract payload (skip version byte)
-    const payload = decoded.slice(1, 33);
-
-    if (payload.length !== 32) {
-      throw new Error(
-        `${StrKeyErrorCode.DECODING_FAILED}: ${methodName} decoded payload is not 32 bytes`,
-      );
-    }
-
-    return payload;
-  }
-
-  private validateWithPrefix(
-    value: unknown,
-    expectedPrefix: string,
-    expectedType: StrKeyType,
-  ): boolean {
-    if (typeof value !== 'string') return false;
-    if (value.length !== 56) return false;
-    if (value.charAt(0) !== expectedPrefix) return false;
-    return this.verifyChecksum(value, expectedPrefix);
-  }
-
-  /**
-   * Verify the StrKey checksum (CRC16-XMODEM) for a given encoded string.
-   */
-  private verifyChecksum(encoded: string, prefix: string): boolean {
-    try {
-      const decoded = this.base32Decode(encoded.slice(1));
-      if (decoded.length < 3) return false;
-
-      const payload = decoded.slice(0, decoded.length - 2);
-      const storedChecksum = decoded.slice(decoded.length - 2);
-      const computedChecksum = this.computeChecksum(payload);
-
-      return (
-        storedChecksum[0] === computedChecksum[0] &&
-        storedChecksum[1] === computedChecksum[1]
-      );
-    } catch {
-      return false;
-    }
-  }
-
-  private getVersionByte(prefix: string): number {
-    switch (prefix) {
-      case 'G':
-        return VERSION_BYTES.ED25519_PUBLIC_KEY;
-      case 'S':
-        return VERSION_BYTES.ED25519_SECRET_SEED;
-      case 'T':
-        return VERSION_BYTES.PRE_AUTH_TX;
-      case 'X':
-        return VERSION_BYTES.SHA256_HASH;
-      default:
-        return 0;
     }
   }
 
   /**
-   * Compute the CRC16-XMODEM checksum of a buffer.
-   * This is the checksum algorithm used by Stellar StrKey (SEP-23).
+   * Encode a raw 32-byte buffer with the given version byte and prefix.
+   *
+   * @param buffer - Raw 32-byte payload.
+   * @param version - The version byte to prepend.
+   * @param prefix - The leading prefix character.
+   * @returns The StrKey-encoded string.
    */
-  private computeChecksum(data: Buffer): Buffer {
-    let crc = 0;
+  private encodeWithVersion(
+    buffer: Buffer,
+    version: number,
+    prefix: string,
+  ): string {
+    const versioned = Buffer.concat([Buffer.from([version]), buffer]);
+    const checksum = this.crc16XModem(versioned);
+    const checksumBytes = Buffer.alloc(2);
+    checksumBytes.writeUInt16LE(checksum, 0);
 
-    for (let i = 0; i < data.length; i++) {
-      crc ^= data[i] << 8;
-
-      for (let j = 0; j < 8; j++) {
-        if (crc & 0x8000) {
-          crc = (crc << 1) ^ 0x1021;
-        } else {
-          crc = crc << 1;
-        }
-        crc &= 0xffff;
-      }
-    }
-
-    return Buffer.from([(crc >> 8) & 0xff, crc & 0xff]);
+    const payload = Buffer.concat([versioned, checksumBytes]);
+    return prefix + this.base32Encode(payload);
   }
 
   /**
-   * Base32-encode a buffer using the Stellar StrKey alphabet.
+   * Encode bytes to a base32 string using the Stellar StrKey alphabet.
+   *
+   * @param data - The bytes to encode.
+   * @returns The base32-encoded string.
    */
-  private base32Encode(buffer: Buffer): string {
-    const alphabet = STRKEY_ALPHABET;
-    let result = '';
+  private base32Encode(data: Buffer): string {
     let bits = 0;
-    let accumulator = 0;
+    let value = 0;
+    let output = '';
 
-    for (let i = 0; i < buffer.length; i++) {
-      accumulator = (accumulator << 8) | buffer[i];
+    for (const byte of data) {
+      value = (value << 8) | byte;
       bits += 8;
 
       while (bits >= 5) {
         bits -= 5;
-        result += alphabet[(accumulator >> bits) & 0x1f];
+        output += STRKEY_ALPHABET[(value >>> bits) & 0x1f];
       }
     }
 
     if (bits > 0) {
-      result += alphabet[(accumulator << (5 - bits)) & 0x1f];
+      output += STRKEY_ALPHABET[(value << (5 - bits)) & 0x1f];
     }
 
-    return result;
+    return output;
   }
 
   /**
-   * Base32-decode a StrKey payload (without the prefix character) using
-   * the Stellar StrKey alphabet.
+   * Detect the StrKey type of a value.
+   *
+   * @param value - The value to inspect.
+   * @returns Type information including validity, type and prefix.
    */
-  private base32Decode(encoded: string): Buffer {
-    const alphabet = STRKEY_ALPHABET;
-    const lookup: Record<string, number> = {};
-
-    for (let i = 0; i < alphabet.length; i++) {
-      lookup[alphabet[i]] = i;
+  getStrKeyType(value: unknown): StrKeyTypeInfo {
+    if (typeof value !== 'string' || value.length === 0) {
+      return { isValid: false, type: null, prefix: null };
     }
 
-    const bits: number[] = [];
+    const prefix = value[0];
+    const type = STRKEY_PREFIX_MAP[prefix] ?? null;
 
-    for (let i = 0; i < encoded.length; i++) {
-      const char = encoded[i];
-      const value = lookup[char];
-
-      if (value === undefined) {
-        throw new Error(
-          `${StrKeyErrorCode.INVALID_INPUT_TYPE}: Invalid base32 character '${char}'`,
-        );
-      }
-
-      for (let j = 4; j >= 0; j--) {
-        bits.push((value >> j) & 1);
-      }
+    if (type === null) {
+      return { isValid: false, type: null, prefix };
     }
 
-    const bytes: number[] = [];
-    for (let i = 0; i + 8 <= bits.length; i += 8) {
-      let byte = 0;
-      for (let j = 0; j < 8; j++) {
-        byte = (byte << 1) | bits[i + j];
-      }
-      bytes.push(byte);
+    const isValid = this.validateWithPrefix(
+      value,
+      prefix,
+      type,
+    );
+
+    return { isValid, type: isValid ? type : null, prefix };
+  }
+
+  /**
+   * Mask a StrKey value for safe logging.
+   *
+   * @param value - The StrKey value to mask.
+   * @returns A masked representation that preserves the prefix and suffix.
+   */
+  maskKey(value: string): string {
+    if (typeof value !== 'string' || value.length <= 8) {
+      return '****';
     }
 
-    return Buffer.from(bytes);
+    const prefix = value.slice(0, 4);
+    const suffix = value.slice(-4);
+    const masked = '*'.repeat(Math.max(0, value.length - 8));
+    return `${prefix}${masked}${suffix}`;
   }
 }

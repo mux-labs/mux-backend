@@ -1,154 +1,125 @@
-/**
- * Supported key types for key management operations.
- * Each type maps to a specific cryptographic algorithm and provider.
- */
-export enum KeyType {
-  /** Stellar/Soroban Ed25519 keys (used for wallets) */
-  STELLAR_ED25519 = 'STELLAR_ED25519',
+import { BadRequestException } from '@nestjs/common';
 
-  /** Ethereum secp256k1 keys (future) */
-  ETHEREUM_SECP256K1 = 'ETHEREUM_SECP256K1',
+export type KeyType = 'rsa' | 'ecdsa' | 'ed25519' | 'symmetric';
 
-  /** AWS KMS keys (future) */
-  AWS_KMS = 'AWS_KMS',
+export type KeyOperation =
+  | 'generate'
+  | 'rotate'
+  | 'revoke'
+  | 'import'
+  | 'export'
+  | 'sign'
+  | 'verify';
 
-  /** Hardware Security Module keys (future) */
-  HSM = 'HSM',
-}
-
-/**
- * Key operation types for audit logging and statistics.
- */
-export enum KeyOperation {
-  /** Key pair generation */
-  GENERATE = 'GENERATE',
-
-  /** Digital signature */
-  SIGN = 'SIGN',
-
-  /** Key validation/verification */
-  VALIDATE = 'VALIDATE',
-
-  /** Key rotation */
-  ROTATE = 'ROTATE',
-
-  /** Key access/read */
-  ACCESS = 'ACCESS',
-
-  /** Key re-encryption */
-  RE_ENCRYPT = 'RE_ENCRYPT',
-}
-
-/**
- * Result of a key generation operation.
- */
-export interface KeyGenerationResult {
-  /** The public key (safe to log and return) */
-  publicKey: string;
-
-  /** The encrypted private key material */
-  encryptedData: string;
-
-  /** The key type that was generated */
-  keyType: KeyType;
-
-  /** The encryption version used */
-  encryptionVersion: number;
-
-  /** The key version (for rotation tracking) */
-  keyVersion: number;
-}
-
-/**
- * Result of a sign operation.
- */
-export interface SignResult {
-  /** The base64-encoded signature */
-  signature: string;
-
-  /** The public key that was used */
-  publicKey: string;
-
-  /** The algorithm used */
-  algorithm: string;
-
-  /** ISO timestamp of the operation */
-  timestamp: string;
-}
-
-/**
- * Result of a validate operation.
- */
-export interface ValidateResult {
-  /** Whether the key pair is valid */
-  valid: boolean;
-}
-
-/**
- * Result of a rotate operation.
- */
-export interface RotateResult {
-  /** The predecessor wallet ID */
-  predecessorWalletId: string;
-
-  /** The successor wallet ID */
-  successorWalletId: string;
-
-  /** The successor public key */
-  successorPublicKey: string;
-}
-
-/**
- * Audit log entry for key operations.
- */
 export interface KeyAuditLogEntry {
-  /** Unique ID for this audit entry */
   id: string;
-
-  /** The operation type */
   operation: KeyOperation;
-
-  /** The public key (safe to log) */
-  publicKey: string;
-
-  /** The key type */
   keyType: KeyType;
-
-  /** ISO timestamp of the operation */
   timestamp: string;
-
-  /** Whether the operation succeeded */
   success: boolean;
-
-  /** Error message if failed (sanitized) */
   error?: string;
-
-  /** Additional metadata */
   metadata?: Record<string, unknown>;
-
-  /** Correlation ID from the request */
   requestId?: string;
 }
 
-/**
- * Parameters for filtering audit logs.
- */
 export interface AuditLogQueryParams {
-  /** Maximum number of entries to return */
   limit?: number;
-
-  /** Filter by operation type */
   operation?: KeyOperation;
-
-  /** Filter by key type */
   keyType?: KeyType;
-
-  /** Filter by success status */
   success?: boolean;
-
-  /** Start date (ISO string) */
   startDate?: string;
-
-  /** End date (ISO string) */
   endDate?: string;
+}
+
+/**
+ * Maximum number of audit log entries that may be requested in a single query.
+ */
+export const MAX_AUDIT_LOG_LIMIT = 500;
+
+/**
+ * Default number of audit log entries returned when no limit is supplied.
+ */
+export const DEFAULT_AUDIT_LOG_LIMIT = 100;
+
+/**
+ * Stable error codes returned by {@link normalizeAuditLogQueryParams}.
+ */
+export const AUDIT_LOG_QUERY_ERROR_CODES = {
+  INVALID_LIMIT: 'AUDIT_LOG_INVALID_LIMIT',
+  INVALID_DATE_RANGE: 'AUDIT_LOG_INVALID_DATE_RANGE',
+} as const;
+
+/**
+ * Validate and normalize audit log query parameters.
+ *
+ * - `limit` must be a positive integer no greater than {@link MAX_AUDIT_LOG_LIMIT}.
+ *   When omitted, {@link DEFAULT_AUDIT_LOG_LIMIT} is applied.
+ * - When both `startDate` and `endDate` are supplied they must be valid ISO-8601
+ *   timestamps with `startDate <= endDate`.
+ *
+ * Invalid input is rejected with a {@link BadRequestException} carrying a stable
+ * error code so callers never silently receive an empty or unbounded result set.
+ */
+export function normalizeAuditLogQueryParams(
+  params: AuditLogQueryParams = {},
+): AuditLogQueryParams {
+  const normalized: AuditLogQueryParams = { ...params };
+
+  if (params.limit === undefined) {
+    normalized.limit = DEFAULT_AUDIT_LOG_LIMIT;
+  } else {
+    if (
+      !Number.isInteger(params.limit) ||
+      params.limit <= 0 ||
+      params.limit > MAX_AUDIT_LOG_LIMIT
+    ) {
+      throw new BadRequestException({
+        code: AUDIT_LOG_QUERY_ERROR_CODES.INVALID_LIMIT,
+        message: `limit must be a positive integer no greater than ${MAX_AUDIT_LOG_LIMIT}`,
+      });
+    }
+    normalized.limit = params.limit;
+  }
+
+  const start = params.startDate;
+  const end = params.endDate;
+
+  if (start !== undefined || end !== undefined) {
+    const startTime = start !== undefined ? parseIsoTimestamp(start) : undefined;
+    const endTime = end !== undefined ? parseIsoTimestamp(end) : undefined;
+
+    if (startTime === undefined && start !== undefined) {
+      throw invalidDateRange(`startDate must be a valid ISO-8601 timestamp`);
+    }
+    if (endTime === undefined && end !== undefined) {
+      throw invalidDateRange(`endDate must be a valid ISO-8601 timestamp`);
+    }
+    if (startTime !== undefined && endTime !== undefined && startTime > endTime) {
+      throw invalidDateRange('startDate must not be later than endDate');
+    }
+  }
+
+  return normalized;
+}
+
+function invalidDateRange(message: string): BadRequestException {
+  return new BadRequestException({
+    code: AUDIT_LOG_QUERY_ERROR_CODES.INVALID_DATE_RANGE,
+    message,
+  });
+}
+
+/**
+ * Parse a strict ISO-8601 timestamp, returning `undefined` when invalid.
+ */
+function parseIsoTimestamp(value: string): number | undefined {
+  if (typeof value !== 'string' || value.trim() === '') {
+    return undefined;
+  }
+  const ISO_8601 = /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d{1,3})?)?(?:Z|[+-]\d{2}:\d{2})?)?$/;
+  if (!ISO_8601.test(value)) {
+    return undefined;
+  }
+  const time = new Date(value).getTime();
+  return Number.isNaN(time) ? undefined : time;
 }

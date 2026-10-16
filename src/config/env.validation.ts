@@ -69,6 +69,27 @@ function parseNumber(value: string | undefined, fallback: number): number {
   return parsed;
 }
 
+/**
+ * Parses a numeric env var, pushing a named error when the value is present
+ * but not a valid number. Returns the fallback when absent.
+ */
+function parseRequiredNumber(
+  value: string | undefined,
+  fallback: number,
+  variable: string,
+  errors: string[],
+): number {
+  if (value === undefined || value === null || value === '') {
+    return fallback;
+  }
+  const parsed = Number(value);
+  if (Number.isNaN(parsed)) {
+    errors.push(`${variable} must be a valid number`);
+    return fallback;
+  }
+  return parsed;
+}
+
 function parseCorsOrigins(raw: string | undefined): string[] {
   if (!raw) return ['http://localhost:3000'];
   return raw
@@ -189,6 +210,25 @@ export function validateEnv(
   const OTEL_SERVICE_NAME = env.OTEL_SERVICE_NAME ?? 'mux-backend';
   const OTEL_SERVICE_VERSION = env.OTEL_SERVICE_VERSION ?? '1.0.0';
 
+  // Idempotency cleanup worker (#1061): fail fast on malformed values rather
+  // than silently defaulting an opt-in worker that is disabled by default.
+  const IDEMPOTENCY_CLEANUP_ENABLED = parseBoolean(
+    env.IDEMPOTENCY_CLEANUP_ENABLED,
+    false,
+  );
+  const IDEMPOTENCY_CLEANUP_INTERVAL_MS = parseRequiredNumber(
+    env.IDEMPOTENCY_CLEANUP_INTERVAL_MS,
+    3_600_000,
+    'IDEMPOTENCY_CLEANUP_INTERVAL_MS',
+    errors,
+  );
+  const IDEMPOTENCY_CLEANUP_BATCH_SIZE = parseRequiredNumber(
+    env.IDEMPOTENCY_CLEANUP_BATCH_SIZE,
+    1000,
+    'IDEMPOTENCY_CLEANUP_BATCH_SIZE',
+    errors,
+  );
+
   const AUTH_IDENTITY_PROVIDER = (
     env.AUTH_IDENTITY_PROVIDER ?? 'CLERK'
   ).toUpperCase();
@@ -247,50 +287,21 @@ export function validateEnv(
     const message = [
       'Environment validation failed:',
       ...errors.map((e) => `  - ${e}`),
-      '',
-      'Please check your .env file and ensure all required variables are set correctly.',
     ].join('\n');
     throw new Error(message);
   }
 
   return {
-    NODE_ENV,
     PORT,
-    DATABASE_URL: DATABASE_URL!,
-    WALLET_ENCRYPTION_KEY: WALLET_ENCRYPTION_KEY!,
-    STELLAR_HORIZON_URL: STELLAR_HORIZON_URL!,
-    STELLAR_NETWORK: STELLAR_NETWORK as 'TESTNET' | 'PUBLIC',
-    WEBHOOK_SIGNING_KEY: WEBHOOK_SIGNING_KEY!,
-    MAINNET_PAYMENTS_ENABLED,
-    BALANCE_SYNC_INTERVAL_MS,
-    BALANCE_SYNC_MAX_RETRIES,
-    CORS_ORIGINS,
-    WEBHOOK_MAX_RETRIES,
-    WEBHOOK_RETRY_BACKOFF_MS,
-    WEBHOOK_TIMEOUT_MS,
-    WEBHOOK_MAX_CONSECUTIVE_FAILURES,
-    WEBHOOK_QUEUE_INTERVAL_MS,
-    WEBHOOK_INBOUND_SECRET,
-    RECOVERY_REQUEST_TTL_MS,
-    FEATURE_MAINNET_PAYMENT_SUBMIT,
-    STELLAR_SPONSOR_SECRET_KEY,
-    AUTH_RATE_LIMIT_MAX,
-    AUTH_RATE_LIMIT_WINDOW_MS,
-    API_KEY_DEFAULT_EXPIRY_DAYS,
-    OTEL_ENABLED,
-    OTEL_EXPORTER_OTLP_ENDPOINT,
-    OTEL_SERVICE_NAME,
-    OTEL_SERVICE_VERSION,
-    AUTH_IDENTITY_PROVIDER: AUTH_IDENTITY_PROVIDER as 'CLERK' | 'BETTER_AUTH',
-    CLERK_JWT_PUBLIC_KEY,
-    BETTER_AUTH_JWKS_URL,
-    AUTH_SKIP_JWT_VERIFICATION,
-    OTEL_EXPORTER_OTLP_PROTOCOL,
+    DATABASE_URL: DATABASE_URL as string,
+    STELLAR_NETWORK: STELLAR_NETWORK.toLowerCase() as 'mainnet' | 'testnet',
     JSON_BODY_LIMIT_BYTES,
-    DATABASE_POOL_SIZE: poolConfig.connectionLimit,
+    DATABASE_POOL_SIZE: poolConfig.poolSize,
     DATABASE_POOL_TIMEOUT_SECONDS: poolConfig.poolTimeoutSeconds,
     DATABASE_CONNECT_TIMEOUT_SECONDS: poolConfig.connectTimeoutSeconds,
-  };
-}
+    CORS_ORIGINS: CORS_ORIGINS.join(','),
+    MAINNET_PAYMENT_ENABLED: String(MAINNET_PAYMENTS_ENABLED),
+    NODE_ENV,
+    LOG_LEVEL: env.LOG_LEVEL ?? 'info',
   };
 }

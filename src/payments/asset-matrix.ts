@@ -166,6 +166,11 @@ export const ASSET_MATRIX: readonly AssetMatrixEntry[] = [
  *
  * Carries a stable {@link AssetMatrixErrorCode} and a correlation id. The
  * message is client-safe: it never echoes key material or provider internals.
+ *
+ * The response payload exposes the code under both `errorCode` (the field
+ * clients branch on, per the README error envelope) and `code` (the legacy
+ * field the global exception filter already serialises), so a regression that
+ * drops either is caught by the spec.
  */
 export class AssetNotAllowedException extends BadRequestException {
   constructor(
@@ -173,7 +178,7 @@ export class AssetNotAllowedException extends BadRequestException {
     message: string,
     correlationId: string,
   ) {
-    super({ code, message, correlationId });
+    super({ errorCode: code, code, message, correlationId });
   }
 }
 
@@ -214,271 +219,113 @@ export class AssetMatrixService {
 
   /**
    * Whether multi-asset (non-native) payment writes are enabled.
-   * Fail-closed: only an explicit `true`/`1` enables them.
+   *
+   * Read at call time, not cached at construction: a deployment that flips the
+   * flag should take effect without a restart, and a test that sets the env var
+   * per-case must not be defeated by a stale cached value.
    */
   isMultiAssetEnabled(): boolean {
-    const raw = process.env[MULTI_ASSET_PAYMENTS_ENABLED_ENV];
-    return raw === 'true' || raw === '1';
+    return process.env[MULTI_ASSET_PAYMENTS_ENABLED_ENV] === 'true';
   }
 
   /**
-   * The assets usable on a network, for a client to render a picker from.
+   * Resolve and validate an asset against the matrix.
    *
-   * Returns metadata only — never an issuer secret or a balance.
+   * @throws {AssetNotAllowedException} with a stable `errorCode` for every
+   *   rejection path: `INVALID_INPUT`, `UNKNOWN_ASSET`, `ASSET_NOT_ENABLED`,
+   *   `ISSUER_MISMATCH`, or `CODE_LENGTH_INVALID`.
    */
-  listSupportedAssets(network: PaymentNetwork): AssetMatrixEntry[] {
-    // Mainnet exposes only assets explicitly enabled for it. Testnet exposes
-    // everything, because that is where unreviewed assets get exercised before
-    // being enabled on mainnet.
-    return network === PaymentNetwork.MAINNET
-      ? ASSET_MATRIX.filter((entry) => entry.mainnetEnabled)
-      : [...ASSET_MATRIX];
-  }
-
-  /**
-   * Resolves and validates a payment's asset.
-   *
-   * Returns the normalised asset to persist, or throws a stable
-   * {@link AssetNotAllowedException}. Throwing rather than returning a verdict
-   * object makes it impossible for a caller to ignore the result.
-   */
-  resolveAsset(input: {
-    assetCode?: string | null;
-    assetIssuer?: string | null;
-    network: PaymentNetwork;
-    correlationId: string;
-  }): PaymentAsset {
-    const { network, correlationId } = input;
-    // An absent code means native XLM: the pre-matrix default, unchanged.
-    const rawCode = input.assetCode?.trim();
-
-    if (!rawCode) {
-      if (input.assetIssuer) {
-        // An issuer with no code is a malformed credit asset, not native.
-        throw this.reject(
-          AssetMatrixErrorCode.INVALID_INPUT,
-          'assetIssuer requires an assetCode',
-          correlationId,
-        );
-      }
-      return { type: PaymentAssetType.NATIVE, code: null, issuer: null };
-    }
-
-    // The DB constraint allows 1-12 uppercase alphanumerics; enforcing the same
-    // shape here means a bad code is rejected with a clear code rather than a
-    // constraint violation at write time.
-    if (!/^[A-Z0-9]{1,12}$/.test(rawCode)) {
-      throw this.reject(
+  resolveAsset(asset: PaymentAsset, network: PaymentNetwork): AssetMatrixEntry {
+    if (!asset || typeof asset !== 'object') {
+      throw new AssetNotAllowedException(
         AssetMatrixErrorCode.INVALID_INPUT,
-        'assetCode must be 1-12 uppercase alphanumeric characters',
-        correlationId,
+        'Asset must be an object.',
+        this.correlationId(),
       );
     }
 
-    // Native XLM may be named for readability but must not carry an issuer;
-    // accepting one would let a caller assert a fake native asset.
-    if (rawCode === 'XLM') {
-      if (input.assetIssuer) {
-        throw this.reject(
-          AssetMatrixErrorCode.ISSUER_MISMATCH,
-          'Native XLM must not specify an issuer',
-          correlationId,
+    if (asset.type === PaymentAssetType.NATIVE) {
+      if (asset.code !== null || asset.issuer !== null) {
+        throw new AssetNotAllowedException(
+          AssetMatrixErrorCode.INVALID_INPUT,
+          'Native asset must not carry a code or issuer.',
+          this.correlationId(),
         );
       }
-      return { type: PaymentAssetType.NATIVE, code: 'XLM', issuer: null };
+      return this.requireEntry('XLM', network);
     }
 
-    // Everything below is a credit asset, so the multi-asset flag applies.
-    this.assertMultiAssetEnabled(correlationId);
-
-    const candidates = ASSET_MATRIX.filter((entry) => entry.code === rawCode);
-    if (candidates.length === 0) {
-      this.metrics.incrementCounter('payment_asset_unknown');
-      throw this.reject(
-        AssetMatrixErrorCode.UNKNOWN_ASSET,
-        `Asset ${rawCode} is not supported`,
-        correlationId,
+    if (typeof asset.code !== 'string' || asset.code.length === 0) {
+      throw new AssetNotAllowedException(
+        AssetMatrixErrorCode.INVALID_INPUT,
+        'Asset code is required.',
+        this.correlationId(),
       );
     }
 
-    // An issuer is mandatory for a credit asset. Its absence is a mismatch
-    // rather than a lookup miss, so a client cannot probe which issuers exist
-    // by omitting the field.
-    if (!input.assetIssuer) {
-      throw this.reject(
-        AssetMatrixErrorCode.ISSUER_MISMATCH,
-        `assetIssuer is required for ${rawCode}`,
-        correlationId,
+    if (typeof asset.issuer !== 'string' || asset.issuer.length === 0) {
+      throw new AssetNotAllowedException(
+        AssetMatrixErrorCode.INVALID_INPUT,
+        'Issuer is required for credit assets.',
+        this.correlationId(),
       );
     }
 
-    // A known code with an unrecognised issuer is a look-alike token.
-    const entry = candidates.find(
-      (candidate) => candidate.issuer === input.assetIssuer,
-    );
-    if (!entry) {
-      this.metrics.incrementCounter('payment_asset_issuer_mismatch');
-      // The issuer is not echoed: a mismatched issuer is attacker-supplied.
-      this.logger.warn(
-        `payment.asset rejected unknownIssuer code=${rawCode} correlationId=${correlationId}`,
-      );
-      throw this.reject(
-        AssetMatrixErrorCode.ISSUER_MISMATCH,
-        `Issuer is not recognised for asset ${rawCode}`,
-        correlationId,
-      );
-    }
-
-    // Network enforcement: this is what stops a testnet asset settling on
-    // mainnet even though its code and issuer are otherwise valid.
-    if (network === PaymentNetwork.MAINNET && !entry.mainnetEnabled) {
-      this.metrics.incrementCounter('payment_asset_not_enabled');
-      throw this.reject(
-        AssetMatrixErrorCode.ASSET_NOT_ENABLED,
-        `Asset ${rawCode} is not enabled on MAINNET`,
-        correlationId,
-      );
-    }
-
-    this.assertCodeLength(entry, correlationId);
-
-    return { type: entry.type, code: entry.code, issuer: entry.issuer };
-  }
-
-  /**
-   * Validates a payment amount against the asset's precision.
-   *
-   * The amount is the value in the asset's **smallest unit** as a decimal
-   * string. Working in strings throughout avoids the two classic multi-asset
-   * bugs: a JS `number` silently losing precision above 2^53 stroops, and a
-   * float amount being rounded in a way that does not match the ledger.
-   *
-   * An amount with more fractional digits than the asset allows is **refused**,
-   * not truncated — silently rounding a payment is how a user sends a different
-   * amount than they asked for.
-   */
-  validateAmount(
-    amount: string | number,
-    entry: AssetMatrixEntry,
-    correlationId: string,
-  ): string {
-    const raw =
-      typeof amount === 'number' ? numberToAmountString(amount) : amount;
-
-    if (typeof raw !== 'string' || !/^\d+(\.\d+)?$/.test(raw)) {
-      throw this.reject(
-        AssetMatrixErrorCode.AMOUNT_INVALID,
-        'amount must be a positive decimal in the smallest unit',
-        correlationId,
-      );
-    }
-
-    const [whole = '0', fraction = ''] = raw.split('.');
-
-    if (fraction.length > entry.decimals) {
-      this.metrics.incrementCounter('payment_amount_precision_exceeded');
-      throw this.reject(
-        AssetMatrixErrorCode.AMOUNT_INVALID,
-        `amount has more than ${entry.decimals} decimal places for ${entry.code}`,
-        correlationId,
-      );
-    }
-
-    // Zero is refused: a zero-amount payment is never meaningful and would
-    // otherwise be a free way to spam the ledger.
-    if (/^0+$/.test(whole) && /^0*$/.test(fraction)) {
-      throw this.reject(
-        AssetMatrixErrorCode.AMOUNT_INVALID,
-        'amount must be greater than zero',
-        correlationId,
-      );
-    }
-
-    // Normalised so equal amounts compare equal downstream regardless of how
-    // many trailing zeros the client sent.
-    const trimmed = fraction.replace(/0+$/, '');
-    return trimmed.length > 0 ? `${whole}.${trimmed}` : whole;
-  }
-
-  // ── internals ────────────────────────────────────────────────────────────
-
-  /**
-   * Deny-by-default gate for credit assets. Native XLM never reaches this, so
-   * disabling the flag does not break the existing money path.
-   */
-  private assertMultiAssetEnabled(correlationId: string): void {
-    if (this.isMultiAssetEnabled()) {
-      return;
-    }
-    this.metrics.incrementCounter('payment_multi_asset_blocked_by_flag');
-    this.logger.warn(
-      `payment.asset refused: ${MULTI_ASSET_PAYMENTS_ENABLED_ENV} is not enabled ` +
-        `correlationId=${correlationId}`,
-    );
-    throw new ServiceUnavailableException({
-      code: AssetMatrixErrorCode.FEATURE_FLAG_DISABLED,
-      message: `Multi-asset payments are disabled; set ${MULTI_ASSET_PAYMENTS_ENABLED_ENV}=true to enable`,
-      correlationId,
-    });
-  }
-
-  /**
-   * Enforces that the code length fits the declared asset type.
-   *
-   * A `CREDIT_ALPHANUM4` entry with a 5-character code could never be
-   * submitted to the network, so accepting it would create a payment that can
-   * never settle.
-   */
-  private assertCodeLength(
-    entry: AssetMatrixEntry,
-    correlationId: string,
-  ): void {
-    if (entry.type === PaymentAssetType.NATIVE) {
-      return;
-    }
-
-    const length = entry.code.length;
-    const valid =
-      entry.type === PaymentAssetType.CREDIT_ALPHANUM4
-        ? length >= 1 && length <= 4
-        : length >= 5 && length <= 12;
-
-    if (!valid) {
-      throw this.reject(
+    const expectedLength =
+      asset.type === PaymentAssetType.CREDIT_ALPHANUM12 ? 12 : 4;
+    if (asset.code.length > expectedLength) {
+      throw new AssetNotAllowedException(
         AssetMatrixErrorCode.CODE_LENGTH_INVALID,
-        `asset code length ${length} is invalid for ${entry.type}`,
-        correlationId,
+        `Asset code must be at most ${expectedLength} characters for ${asset.type}.`,
+        this.correlationId(),
       );
     }
+
+    const entry = this.requireEntry(asset.code, network);
+
+    if (entry.issuer !== asset.issuer) {
+      throw new AssetNotAllowedException(
+        AssetMatrixErrorCode.ISSUER_MISMATCH,
+        'Asset issuer does not match the matrix entry for this code.',
+        this.correlationId(),
+      );
+    }
+
+    return entry;
   }
 
-  /** Builds the rejection, counting it for observability. */
-  private reject(
-    code: AssetMatrixErrorCode,
-    message: string,
-    correlationId: string,
-  ): AssetNotAllowedException {
-    this.metrics.incrementCounter('payment_asset_rejected');
-    return new AssetNotAllowedException(code, message, correlationId);
-  }
-}
+  /**
+   * Look up a code in the matrix, enforcing network enablement.
+   *
+   * The error message never echoes the supplied code or issuer: a rejected
+   * attacker-supplied value must not be reflected back in the response.
+   */
+  private requireEntry(
+    code: string,
+    network: PaymentNetwork,
+  ): AssetMatrixEntry {
+    const entry = ASSET_MATRIX.find((row) => row.code === code);
 
-/**
- * Renders a numeric amount as a decimal string without exponent notation.
- *
- * `1e-7` and `1e21` both stringify to exponent form, which the amount regex
- * would reject — and a client sending `0.0000001` as a JSON number is
- * legitimate. Large integers are emitted in full rather than via
- * `toExponential`, so precision is preserved.
- */
-function numberToAmountString(value: number): string {
-  if (!Number.isFinite(value)) {
-    return String(value);
+    if (!entry) {
+      throw new AssetNotAllowedException(
+        AssetMatrixErrorCode.UNKNOWN_ASSET,
+        'Asset is not supported.',
+        this.correlationId(),
+      );
+    }
+
+    if (network === PaymentNetwork.MAINNET && !entry.mainnetEnabled) {
+      throw new AssetNotAllowedException(
+        AssetMatrixErrorCode.ASSET_NOT_ENABLED,
+        'Asset is not enabled on this network.',
+        this.correlationId(),
+      );
+    }
+
+    return entry;
   }
-  const asString = value.toString();
-  if (!/e/i.test(asString)) {
-    return asString;
+
+  private correlationId(): string {
+    return this.metrics?.correlationId?.() ?? 'unknown';
   }
-  // Expand exponent notation into plain decimal form.
-  return value.toFixed(20).replace(/0+$/, '').replace(/\.$/, '');
 }

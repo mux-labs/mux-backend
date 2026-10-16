@@ -3,6 +3,7 @@ import { IdempotencyModule } from './idempotency.module';
 import { IdempotencyService } from './idempotency.service';
 import { IdempotencyCleanupWorker } from './idempotency-cleanup.worker';
 import { PrismaService } from '../prisma/prisma.service';
+import { PrismaModule } from '../prisma/prisma.module';
 import { MetricsService } from '../common/metrics/metrics.service';
 
 /**
@@ -48,12 +49,16 @@ describe('IdempotencyModule (wiring)', () => {
     );
   });
 
-  it('wires PrismaService and MetricsService as providers', () => {
-    // Both are constructor dependencies of IdempotencyService; their presence
-    // in the module metadata is what makes the container resolve it.
+  it('imports PrismaModule and does not re-provide PrismaService', () => {
+    // PrismaService is owned by PrismaModule; re-declaring it here would
+    // create a second database client instance in the container.
+    const imports = (Reflect.getMetadata('imports', IdempotencyModule) ??
+      []) as unknown[];
+    expect(imports).toContain(PrismaModule);
+
     const providers = (Reflect.getMetadata('providers', IdempotencyModule) ??
       []) as unknown[];
-    expect(providers).toContain(PrismaService);
+    expect(providers).not.toContain(PrismaService);
     expect(providers).toContain(MetricsService);
   });
 

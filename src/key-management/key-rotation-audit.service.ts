@@ -1,5 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { KeyAuditLogEntry, AuditLogQueryParams, KeyOperation, KeyType } from './domain/key-types';
+import {
+  KeyAuditLogEntry,
+  AuditLogQueryParams,
+  KeyOperation,
+  KeyType,
+  normalizeAuditLogQueryParams,
+} from './domain/key-types';
 import { AuditEntry } from './domain/key-statistics';
 
 /**
@@ -37,28 +43,29 @@ export class KeyRotationAuditService {
    * Get audit logs with optional filtering.
    */
   getAuditLogs(params: AuditLogQueryParams = {}): KeyAuditLogEntry[] {
+    const normalized = normalizeAuditLogQueryParams(params);
     let logs = [...this.auditLog];
 
-    if (params.operation) {
-      logs = logs.filter((l) => l.operation === params.operation);
+    if (normalized.operation) {
+      logs = logs.filter((l) => l.operation === normalized.operation);
     }
-    if (params.keyType) {
-      logs = logs.filter((l) => l.keyType === params.keyType);
+    if (normalized.keyType) {
+      logs = logs.filter((l) => l.keyType === normalized.keyType);
     }
-    if (params.success !== undefined) {
-      logs = logs.filter((l) => l.success === params.success);
+    if (normalized.success !== undefined) {
+      logs = logs.filter((l) => l.success === normalized.success);
     }
-    if (params.startDate) {
-      const start = new Date(params.startDate).getTime();
+    if (normalized.startDate) {
+      const start = new Date(normalized.startDate).getTime();
       logs = logs.filter((l) => new Date(l.timestamp).getTime() >= start);
     }
-    if (params.endDate) {
-      const end = new Date(params.endDate).getTime();
+    if (normalized.endDate) {
+      const end = new Date(normalized.endDate).getTime();
       logs = logs.filter((l) => new Date(l.timestamp).getTime() <= end);
     }
 
-    if (params.limit && params.limit > 0) {
-      logs = logs.slice(0, params.limit);
+    if (normalized.limit && normalized.limit > 0) {
+      logs = logs.slice(0, normalized.limit);
     }
 
     return logs;
