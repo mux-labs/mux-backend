@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Logger,
+  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -11,6 +12,11 @@ export interface LimitCheckResult {
   dailyUsed: number;
   dailyRemaining: number;
   dailyLimit: number;
+}
+
+export interface WalletLimits {
+  dailyLimit: number;
+  perTransactionLimit: number;
 }
 
 @Injectable()
@@ -77,6 +83,73 @@ export class LimitsService {
       dailyRemaining: dailyLimit - dailyUsed,
       dailyLimit,
     };
+  }
+
+  /**
+   * Persists the daily and per-transaction limits for a wallet.
+   *
+   * Both values must be finite and non-negative; anything else (NaN,
+   * Infinity, or a negative number) fails closed with a `BadRequestException`
+   * naming the offending field before Prisma is touched. A negative limit
+   * would otherwise make the corresponding guard true for every amount and
+   * permanently block the wallet.
+   */
+  async setLimits(
+    walletId: string,
+    daily: number,
+    perTx: number,
+  ): Promise<WalletLimits> {
+    if (!Number.isFinite(daily) || daily < 0) {
+      throw new BadRequestException(
+        `Invalid daily limit: ${String(daily)} must be a finite, non-negative number`,
+      );
+    }
+    if (!Number.isFinite(perTx) || perTx < 0) {
+      throw new BadRequestException(
+        `Invalid per-transaction limit: ${String(perTx)} must be a finite, non-negative number`,
+      );
+    }
+
+    const limits = await this.prisma.walletLimit.upsert({
+      where: { walletId },
+      update: { dailyLimit: daily, perTransactionLimit: perTx },
+      create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+    });
+
+    return {
+      dailyLimit: Number(limits.dailyLimit),
+      perTransactionLimit: Number(limits.perTransactionLimit),
+    };
+  }
+
+  /**
+   * Returns the persisted limits for a wallet, or `null` when no row exists.
+   */
+  async getLimits(walletId: string): Promise<WalletLimits | null> {
+    const limits = await this.prisma.walletLimit.findUnique({
+      where: { walletId },
+    });
+    if (!limits) {
+      return null;
+    }
+    return {
+      dailyLimit: Number(limits.dailyLimit),
+      perTransactionLimit: Number(limits.perTransactionLimit),
+    };
+  }
+
+  /**
+   * Deletes the persisted limits for a wallet.
+   *
+   * Throws `NotFoundException` when no row exists so callers can distinguish
+   * a missing wallet limit from a successful removal.
+   */
+  async removeLimits(walletId: string): Promise<void> {
+    const existing = await this.getLimits(walletId);
+    if (!existing) {
+      throw new NotFoundException(`No limits found for wallet ${walletId}`);
+    }
+    await this.prisma.walletLimit.delete({ where: { walletId } });
   }
 
   private async getDailyLimit(walletId: string): Promise<number> {
