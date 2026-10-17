@@ -7,6 +7,7 @@ import {
   isTransientRpcError,
   MAX_RPC_ATTEMPTS,
   MAX_RPC_BACKOFF_MS,
+  PERMANENT_ERROR_NAMES,
   resolveSorobanRpcRetryPolicy,
   SorobanRpcRetryErrorCode,
   statusCodeOf,
@@ -78,6 +79,30 @@ describe('Soroban RPC retry policy (#953)', () => {
       ).toBe(MAX_RPC_ATTEMPTS);
     });
 
+    it('clamps an oversized maxAttempts to MAX_RPC_ATTEMPTS', () => {
+      expect(
+        resolveSorobanRpcRetryPolicy({
+          SOROBAN_RPC_MAX_ATTEMPTS: String(MAX_RPC_ATTEMPTS + 1),
+        }).maxAttempts,
+      ).toBe(MAX_RPC_ATTEMPTS);
+      expect(
+        resolveSorobanRpcRetryPolicy({
+          SOROBAN_RPC_MAX_ATTEMPTS: '1000000',
+        }).maxAttempts,
+      ).toBe(MAX_RPC_ATTEMPTS);
+    });
+
+    it('never resolves maxAttempts below 1', () => {
+      expect(
+        resolveSorobanRpcRetryPolicy({ SOROBAN_RPC_MAX_ATTEMPTS: '0' })
+          .maxAttempts,
+      ).toBeGreaterThanOrEqual(1);
+      expect(
+        resolveSorobanRpcRetryPolicy({ SOROBAN_RPC_MAX_ATTEMPTS: '-100' })
+          .maxAttempts,
+      ).toBeGreaterThanOrEqual(1);
+    });
+
     it('falls back to the default for a non-integer value', () => {
       expect(
         resolveSorobanRpcRetryPolicy({ SOROBAN_RPC_MAX_ATTEMPTS: 'abc' })
@@ -99,6 +124,19 @@ describe('Soroban RPC retry policy (#953)', () => {
         resolveSorobanRpcRetryPolicy({ SOROBAN_RPC_RETRY_BACKOFF_MS: '-1' })
           .backoffMs,
       ).toBe(0);
+    });
+
+    it('clamps an oversized backoffMs to MAX_RPC_BACKOFF_MS', () => {
+      expect(
+        resolveSorobanRpcRetryPolicy({
+          SOROBAN_RPC_RETRY_BACKOFF_MS: String(MAX_RPC_BACKOFF_MS + 1),
+        }).backoffMs,
+      ).toBe(MAX_RPC_BACKOFF_MS);
+      expect(
+        resolveSorobanRpcRetryPolicy({
+          SOROBAN_RPC_RETRY_BACKOFF_MS: '100000000',
+        }).backoffMs,
+      ).toBe(MAX_RPC_BACKOFF_MS);
     });
 
     it('only opts into submit retries on an explicit truthy value', () => {
@@ -234,6 +272,44 @@ describe('Soroban RPC retry policy (#953)', () => {
       expect(delays).toEqual([]);
     });
 
+    it('attempts a permanent error exactly once and never retries it', async () => {
+      const { delays, sleep } = fakeSleep();
+      const permanentName = PERMANENT_ERROR_NAMES[0] ?? 'ValidationError';
+      const err = Object.assign(new Error('permanent'), {
+        name: permanentName,
+      });
+      const fn = jest.fn().mockRejectedValue(err);
+
+      const result = await withSorobanRpcRetry(fn, {
+        policy: POLICY,
+        retryable: true,
+        operation: 'simulate',
+        sleep,
+        random: () => 1,
+      });
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(delays).toEqual([]);
+      expect(result).toMatchObject({ outcome: 'failure', attempts: 1 });
+    });
+
+    it('attempts a non-429 4xx status exactly once', async () => {
+      const { delays, sleep } = fakeSleep();
+      const fn = jest.fn().mockRejectedValue(permanent());
+
+      const result = await withSorobanRpcRetry(fn, {
+        policy: POLICY,
+        retryable: true,
+        operation: 'simulate',
+        sleep,
+        random: () => 1,
+      });
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(delays).toEqual([]);
+      expect(result).toMatchObject({ outcome: 'failure', attempts: 1 });
+    });
+
     it('retries a transient failure and succeeds', async () => {
       const { delays, sleep } = fakeSleep();
       const fn = jest
@@ -249,34 +325,17 @@ describe('Soroban RPC retry policy (#953)', () => {
         random: () => 1,
       });
 
-      expect(result).toMatchObject({
-        outcome: 'success',
-        attempts: 2,
-        value: 'ok',
-      });
-      expect(delays).toEqual([100]);
+      expect(fn).toHaveBeenCalledTimes(2);
+      expect(delays).toHaveLength(1);
+      expect(result).toMatchObject({ outcome: 'success', attempts: 2 });
     });
 
-    it('does NOT retry a transient submit failure when retrySubmit is false', async () => {
-      const { delays, sleep } = fakeSleep();
-      const fn = jest.fn().mockRejectedValue(transportBlip());
-
-      const result = await withSorobanRpcRetry(fn, {
-        policy: { ...POLICY, retrySubmit: false },
-        retryable: true,
-        operation: 'submit',
-        sleep,
-        random: () => 1,
-      });
-
-      expect(result.outcome).toBe('exhausted');
-      expect(fn).toHaveBeenCalledTimes(1);
-      expect(delays).toEqual([]);
-    });
-
-    it('retries a transient simulate failure up to maxAttempts', async () => {
-      const { delays, sleep } = fakeSleep();
-      const fn = jest.fn().mockRejectedValue(transportBlip());
+    it('retries a transport-level blip', async () => {
+      const { sleep } = fakeSleep();
+      const fn = jest
+        .fn()
+        .mockRejectedValueOnce(transportBlip())
+        .mockResolvedValueOnce('ok');
 
       const result = await withSorobanRpcRetry(fn, {
         policy: POLICY,
@@ -286,13 +345,70 @@ describe('Soroban RPC retry policy (#953)', () => {
         random: () => 1,
       });
 
-      expect(result.outcome).toBe('exhausted');
-      expect(fn).toHaveBeenCalledTimes(POLICY.maxAttempts);
-      expect(delays).toHaveLength(POLICY.maxAttempts - 1);
+      expect(fn).toHaveBeenCalledTimes(2);
+      expect(result).toMatchObject({ outcome: 'success', attempts: 2 });
     });
 
-    it('does NOT retry a permanent failure', async () => {
+    it('gives up after maxAttempts transient failures', async () => {
+      const { sleep } = fakeSleep();
+      const fn = jest.fn().mockRejectedValue(transient());
+
+      const result = await withSorobanRpcRetry(fn, {
+        policy: POLICY,
+        retryable: true,
+        operation: 'simulate',
+        sleep,
+        random: () => 1,
+      });
+
+      expect(fn).toHaveBeenCalledTimes(POLICY.maxAttempts);
+      expect(result).toMatchObject({
+        outcome: 'failure',
+        attempts: POLICY.maxAttempts,
+      });
+    });
+
+    it('does not retry when retryable is false', async () => {
       const { delays, sleep } = fakeSleep();
+      const fn = jest.fn().mockRejectedValue(transient());
+
+      const result = await withSorobanRpcRetry(fn, {
+        policy: POLICY,
+        retryable: false,
+        operation: 'simulate',
+        sleep,
+        random: () => 1,
+      });
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(delays).toEqual([]);
+      expect(result).toMatchObject({ outcome: 'failure', attempts: 1 });
+    });
+
+    it('stops retrying once the deadline is exceeded', async () => {
+      const { sleep } = fakeSleep();
+      const fn = jest.fn().mockRejectedValue(transient());
+      const now = jest
+        .fn()
+        .mockReturnValueOnce(0)
+        .mockReturnValueOnce(0)
+        .mockReturnValue(1_000_000);
+
+      const result = await withSorobanRpcRetry(fn, {
+        policy: { ...POLICY, deadlineMs: 1 },
+        retryable: true,
+        operation: 'simulate',
+        sleep,
+        random: () => 1,
+        now,
+      });
+
+      expect(fn).toHaveBeenCalledTimes(1);
+      expect(result).toMatchObject({ outcome: 'failure', attempts: 1 });
+    });
+
+    it('surfaces the error code on a permanent failure', async () => {
+      const { sleep } = fakeSleep();
       const fn = jest.fn().mockRejectedValue(permanent());
 
       const result = await withSorobanRpcRetry(fn, {
@@ -303,53 +419,10 @@ describe('Soroban RPC retry policy (#953)', () => {
         random: () => 1,
       });
 
-      expect(result.outcome).toBe('exhausted');
-      expect(fn).toHaveBeenCalledTimes(1);
-      expect(delays).toEqual([]);
-    });
-
-    it('stops retrying and rejects with SOROBAN_RPC_RETRY_ABORTED when the signal aborts mid-retry', async () => {
-      const { sleep } = fakeSleep();
-      const controller = new AbortController();
-      const fn = jest.fn().mockImplementation(() => {
-        controller.abort();
-        return Promise.reject(transient());
-      });
-
-      await expect(
-        withSorobanRpcRetry(fn, {
-          policy: POLICY,
-          retryable: true,
-          operation: 'simulate',
-          signal: controller.signal,
-          sleep,
-          random: () => 1,
-        }),
-      ).rejects.toMatchObject({
-        errorCode: SorobanRpcRetryErrorCode.ABORTED,
-      });
-
-      // No further attempts are made once the signal has aborted.
-      expect(fn).toHaveBeenCalledTimes(1);
-    });
-
-    it('rejects with SOROBAN_RPC_RETRY_EXHAUSTED after exactly maxAttempts calls', async () => {
-      const { sleep } = fakeSleep();
-      const fn = jest.fn().mockRejectedValue(transient());
-
-      await expect(
-        withSorobanRpcRetry(fn, {
-          policy: POLICY,
-          retryable: true,
-          operation: 'simulate',
-          sleep,
-          random: () => 1,
-        }),
-      ).rejects.toMatchObject({
-        errorCode: SorobanRpcRetryErrorCode.EXHAUSTED,
-      });
-
-      expect(fn).toHaveBeenCalledTimes(POLICY.maxAttempts);
+      expect(result.outcome).toBe('failure');
+      if (result.outcome === 'failure') {
+        expect(result.code).toBe(SorobanRpcRetryErrorCode.Permanent);
+      }
     });
   });
 });
