@@ -58,6 +58,10 @@ export enum ErrorCode {
   RESTORE_IN_PROGRESS = 'RESTORE_IN_PROGRESS',
   RESTORE_POINT_INVALID = 'RESTORE_POINT_INVALID',
 
+  // Transactions
+  /** Sender and receiver resolve to the same wallet; a self-payment is refused. */
+  TRANSACTION_SELF_PAYMENT = 'TRANSACTION_SELF_PAYMENT',
+
   // Validation
   /** Request failed validation (bad/oversized payload, malformed input). */
   VALIDATION_FAILED = 'VALIDATION_FAILED',

@@ -113,6 +113,7 @@ the catalog documents every member of `ErrorCode` exactly once and that its
 | `RESTORE_CONFLICT` | 409 | backup | no | CONTACT_SUPPORT |
 | `RESTORE_IN_PROGRESS` | 409 | backup | yes | WAIT_AND_RETRY |
 | `RESTORE_POINT_INVALID` | 422 | backup | no | FIX_REQUEST |
+| `TRANSACTION_SELF_PAYMENT` | 400 | client | no | FIX_REQUEST |
 | `VALIDATION_FAILED` | 422 | client | no | FIX_REQUEST |
 | `UNAUTHENTICATED` | 401 | auth | no | REAUTHENTICATE |
 | `RATE_LIMITED` | 429 | rate_limit | yes | RETRY_WITH_BACKOFF |

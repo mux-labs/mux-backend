@@ -312,6 +312,13 @@ const SEED: CatalogSeed = {
     action: 'FIX_REQUEST',
     message: 'The requested restore point is invalid.',
   },
+  [ErrorCode.TRANSACTION_SELF_PAYMENT]: {
+    httpStatus: 400,
+    category: 'client',
+    retryable: false,
+    action: 'FIX_REQUEST',
+    message: 'The sender and receiver wallet must be different.',
+  },
   [ErrorCode.VALIDATION_FAILED]: {
     httpStatus: 422,
     category: 'client',

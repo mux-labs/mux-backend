@@ -10,6 +10,7 @@ import {
   canTransitionTransactionStatus,
 } from './domain/transaction.model';
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
+import { ErrorCode } from '../common/dto/error-envelope.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 
@@ -84,6 +85,15 @@ export class TransactionsService {
           `Receiver wallet ${receiverWalletId} not found`,
         );
       }
+    }
+
+    // A self-payment can never settle, so reject it before any balance,
+    // limit or write side effect
+    if (receiverWalletId && receiverWalletId === senderWalletId) {
+      throw new BadRequestException({
+        message: 'Sender and receiver wallet must differ',
+        errorCode: ErrorCode.TRANSACTION_SELF_PAYMENT,
+      });
     }
 
     // Check sender has sufficient balance
