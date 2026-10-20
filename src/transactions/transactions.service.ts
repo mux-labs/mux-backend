@@ -1,4 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { LimitsService } from '../limits/limits.service';
@@ -38,8 +44,10 @@ export class TransactionsService {
    *
    * Enforces per-transaction and daily spending limits (fail-closed: 403)
    * before creating the record.  If an idempotencyKey is supplied and a
-   * transaction with that key already exists, the existing transaction is
-   * returned without side-effects.
+   * transaction with that key already exists for the same sender wallet, the
+   * existing transaction is returned without side-effects. A key already used
+   * by a different sender wallet is rejected with 409 (IDEMPOTENCY_CONFLICT)
+   * so another wallet's transaction is never exposed.
    */
   async create(
     createTransactionDto: CreateTransactionDto,
@@ -59,6 +67,13 @@ export class TransactionsService {
         where: { idempotencyKey },
       });
       if (existing) {
+        if (existing.senderWalletId !== senderWalletId) {
+          throw new ConflictException({
+            message:
+              'Idempotency key is already used by another sender wallet',
+            errorCode: 'IDEMPOTENCY_CONFLICT',
+          });
+        }
         this.logger.log(
           `Idempotency hit for key ${idempotencyKey}, returning existing transaction ${existing.id}`,
         );
