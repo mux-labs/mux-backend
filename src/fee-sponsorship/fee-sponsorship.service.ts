@@ -194,14 +194,20 @@ export class FeeSponsorshipService {
       });
     }
 
-    // Validate remainingAmount if provided
-    if (dto.remainingAmount !== undefined) {
-      const remaining = parseFloat(dto.remainingAmount);
-      const limit = parseFloat(existing.limitAmount);
-      if (remaining > limit) {
+    // Invariant: remainingAmount <= limitAmount on the effective (merged) budget
+    if (dto.limitAmount !== undefined || dto.remainingAmount !== undefined) {
+      const effectiveLimit = this.parseAmount(
+        dto.limitAmount ?? existing.limitAmount,
+        correlationId,
+      );
+      const effectiveRemaining = this.parseAmount(
+        dto.remainingAmount ?? existing.remainingAmount,
+        correlationId,
+      );
+      if (effectiveRemaining > effectiveLimit) {
         throw new BadRequestException({
-          code: FeeSponsorshipErrorCode.BUDGET_EXCEEDED,
-          message: `Remaining amount ${dto.remainingAmount} exceeds limit ${existing.limitAmount}`,
+          code: FeeSponsorshipErrorCode.REMAINING_EXCEEDS_LIMIT,
+          message: `Remaining amount ${effectiveRemaining} exceeds limit ${effectiveLimit}`,
           correlationId,
         });
       }
@@ -447,6 +453,20 @@ export class FeeSponsorshipService {
       },
     });
     return budget ? this.toDomainModel(budget) : null;
+  }
+
+  /**
+   * Parse a smallest-unit amount string for exact integer comparison.
+   */
+  private parseAmount(value: string, correlationId: string): bigint {
+    if (!/^\d+$/.test(value)) {
+      throw new BadRequestException({
+        code: FeeSponsorshipErrorCode.INVALID_INPUT,
+        message: 'Amounts must be non-negative integer strings',
+        correlationId,
+      });
+    }
+    return BigInt(value);
   }
 
   /**
