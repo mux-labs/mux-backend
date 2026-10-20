@@ -162,13 +162,19 @@ function isTransportFailure(err: unknown): boolean {
   return candidate.isAxiosError === true && candidate.response === undefined;
 }
 
-/** Extract the HTTP status from an axios-style error, when present. */
+/**
+ * Extract the HTTP status from an axios-style error (`response.status`) or a
+ * {@link HorizonRequestError}-style error (`statusCode`), when present.
+ */
 export function horizonErrorStatus(err: unknown): number | undefined {
   if (typeof err !== 'object' || err === null) {
     return undefined;
   }
-  const response = (err as { response?: { status?: unknown } }).response;
-  const status = response?.status;
+  const candidate = err as {
+    response?: { status?: unknown };
+    statusCode?: unknown;
+  };
+  const status = candidate.response?.status ?? candidate.statusCode;
   return typeof status === 'number' ? status : undefined;
 }
 
