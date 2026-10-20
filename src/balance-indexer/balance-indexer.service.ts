@@ -674,7 +674,13 @@ export class BalanceIndexerService {
     return rows as WalletBalanceRecord[];
   }
 
-  /** Cached balance for a single asset of a wallet. */
+  /**
+   * Cached balance for a single asset of a wallet.
+   *
+   * A stale row is returned as-is and a background refresh is started. The
+   * refresh is not awaited (reads stay fast), but its outcome is recorded via
+   * metrics and logs so it can be observed and asserted.
+   */
   async getBalance(
     walletId: string,
     asset: AssetSelector,
@@ -692,6 +698,12 @@ export class BalanceIndexerService {
           },
         }),
     );
+
+    if (row && this.isBalanceStale(row)) {
+      this.metrics.incrementCounter('balance_read_stale');
+      void this.refreshStaleBalance(walletId);
+    }
+
     return (row as WalletBalanceRecord) ?? null;
   }
 
@@ -1217,6 +1229,32 @@ export class BalanceIndexerService {
       code: BalanceIndexerErrorCode.FEATURE_FLAG_DISABLED,
       message: `Balance writes are disabled; set ${BALANCE_SYNC_ENABLED_ENV}=true to enable`,
     });
+  }
+
+  /** A row never synced, or synced before the staleness budget, is stale. */
+  private isBalanceStale(row: { lastSyncedAt: Date | null }): boolean {
+    if (!row.lastSyncedAt) {
+      return true;
+    }
+    return row.lastSyncedAt.getTime() < Date.now() - this.staleThresholdMs();
+  }
+
+  /**
+   * Background refresh started by a stale read. Never rejects: success and
+   * failure are both recorded (metrics + log), so a failed refresh is visible
+   * without leaking into the read path.
+   */
+  private async refreshStaleBalance(walletId: string): Promise<void> {
+    this.metrics.incrementCounter('balance_refresh_started');
+    try {
+      await this.syncWalletBalances({ walletId });
+      this.metrics.incrementCounter('balance_refresh_succeeded');
+    } catch (err) {
+      this.metrics.incrementCounter('balance_refresh_failed');
+      this.logger.error(
+        `balances.refresh failed wallet=${walletId} reason=${this.errorName(err)}`,
+      );
+    }
   }
 
   /** True when at least one asset was synced within the staleness budget. */
