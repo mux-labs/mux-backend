@@ -19,6 +19,10 @@ import {
 } from './domain/fee-sponsorship-budget.model';
 import { CreateFeeSponsorshipBudgetDto } from './dto/create-fee-sponsorship-budget.dto';
 import { UpdateFeeSponsorshipBudgetDto } from './dto/update-fee-sponsorship-budget.dto';
+import {
+  FEE_SPONSORSHIP_LIST_DEFAULT_LIMIT,
+  FEE_SPONSORSHIP_LIST_MAX_LIMIT,
+} from './dto/list-fee-sponsorship-budgets-query.dto';
 import { FeeSponsorshipErrorCode } from './fee-sponsorship-error-codes';
 import { SponsorshipActor } from './domain/fee-sponsorship-budget.model';
 import { randomUUID } from 'crypto';
@@ -28,6 +32,13 @@ import { randomUUID } from 'crypto';
  * Clients should branch on these codes, not on human-readable messages.
  */
 export const FeeSponsorshipErrorCodeMap = FeeSponsorshipErrorCode;
+
+/** Cursor-based page of fee sponsorship budgets */
+export interface FeeSponsorshipBudgetPage {
+  items: FeeSponsorshipBudget[];
+  /** Pass as `cursor` on the next request; null when there are no more pages */
+  nextCursor: string | null;
+}
 
 /**
  * Env var that gates fee sponsorship writes. Default OFF (fail-closed):
@@ -271,29 +282,66 @@ export class FeeSponsorshipService {
   }
 
   /**
-   * List fee sponsorship budgets for a wallet.
+   * List fee sponsorship budgets for a wallet, newest first.
+   *
+   * Cursor pagination on (createdAt DESC, id DESC): pass the previous page's
+   * `nextCursor` as `pagination.cursor` to fetch the next page.
    */
   async listBudgets(
     walletId: string,
     actor: SponsorshipActor,
     network?: FeeSponsorshipNetwork,
-  ): Promise<FeeSponsorshipBudget[]> {
+    pagination?: { limit?: number; cursor?: string },
+  ): Promise<FeeSponsorshipBudgetPage> {
     const correlationId = actor.correlationId ?? randomUUID();
 
     // Authz: deny-by-default
     this.enforceAuthorization(walletId, actor, correlationId);
 
+    const pageSize = Math.min(
+      pagination?.limit ?? FEE_SPONSORSHIP_LIST_DEFAULT_LIMIT,
+      FEE_SPONSORSHIP_LIST_MAX_LIMIT,
+    );
+
     try {
+      const pivot = pagination?.cursor
+        ? await this.prisma.feeSponsorshipBudget.findFirst({
+            where: { id: pagination.cursor, walletId },
+            select: { createdAt: true, id: true },
+          })
+        : null;
+      if (pagination?.cursor && !pivot) {
+        throw new BadRequestException({
+          code: FeeSponsorshipErrorCode.INVALID_INPUT,
+          message: 'cursor does not reference a budget for this wallet',
+          correlationId,
+        });
+      }
+
+      // Fetch one extra row to detect whether another page exists.
       const budgets = await this.prisma.feeSponsorshipBudget.findMany({
         where: {
           walletId,
           ...(network ? { network } : {}),
           deletedAt: null,
+          ...(pivot && {
+            OR: [
+              { createdAt: { lt: pivot.createdAt } },
+              { createdAt: pivot.createdAt, id: { lt: pivot.id } },
+            ],
+          }),
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: pageSize + 1,
       });
 
-      return budgets.map((b) => this.toDomainModel(b));
+      const hasMore = budgets.length > pageSize;
+      const items = budgets
+        .slice(0, pageSize)
+        .map((b) => this.toDomainModel(b));
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return { items, nextCursor };
     } catch (err) {
       if (this.isDependencyError(err)) {
         this.logger.error(

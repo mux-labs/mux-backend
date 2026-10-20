@@ -17,3 +17,13 @@ export interface FeeSponsorshipBudgetResponse {
   createdAt: Date;
   updatedAt: Date;
 }
+
+/**
+ * Cursor-paginated envelope for fee sponsorship budget listings.
+ *
+ * Pass `nextCursor` as `cursor` on the next request; `null` means the last page.
+ */
+export interface FeeSponsorshipBudgetPageResponse {
+  items: FeeSponsorshipBudgetResponse[];
+  nextCursor: string | null;
+}
