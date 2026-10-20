@@ -1063,6 +1063,10 @@ model FeeSponsorshipBudget {
   /// Optional note set by the sponsor or admin.
   note String?
 
+  /// Client-supplied idempotency key. Replaying a create with the same key
+  /// for the same wallet+network returns this budget instead of a new row.
+  idempotencyKey String?
+
   /// Operational metadata
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -1071,6 +1075,7 @@ model FeeSponsorshipBudget {
   deletedAt DateTime?
 
   @@unique([walletId, network])
+  @@unique([walletId, network, idempotencyKey])
   @@index([sponsorId])
   @@index([status])
   @@index([network])

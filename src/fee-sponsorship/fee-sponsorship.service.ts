@@ -108,6 +108,21 @@ export class FeeSponsorshipService {
     // Validate input
     this.validateCreateDto(dto);
 
+    // Replay: the same idempotency key for this wallet+network returns the stored budget
+    if (dto.idempotencyKey) {
+      const replayed = await this.findBudgetByIdempotencyKey(
+        dto.walletId,
+        network,
+        dto.idempotencyKey,
+      );
+      if (replayed) {
+        this.logger.log(
+          `fee.sponsorship.create replay budget=${replayed.id} wallet=${dto.walletId} network=${network} correlationId=${correlationId}`,
+        );
+        return replayed;
+      }
+    }
+
     // Check for existing active budget for this wallet+network
     const existing = await this.findActiveBudget(dto.walletId, network);
     if (existing) {
@@ -130,6 +145,7 @@ export class FeeSponsorshipService {
           network,
           status: FeeSponsorshipBudgetStatus.ACTIVE,
           note: dto.note ?? null,
+          idempotencyKey: dto.idempotencyKey ?? null,
         },
       });
 
@@ -140,6 +156,21 @@ export class FeeSponsorshipService {
 
       return this.toDomainModel(budget);
     } catch (err) {
+      if (this.isUniqueConstraintError(err)) {
+        // Lost a concurrent race. If the winner carries our key, it is the replay answer;
+        // otherwise a budget already exists for this wallet+network.
+        const winner = dto.idempotencyKey
+          ? await this.findBudgetByIdempotencyKey(dto.walletId, network, dto.idempotencyKey)
+          : null;
+        if (winner) {
+          return winner;
+        }
+        throw new ConflictException({
+          code: FeeSponsorshipErrorCode.BUDGET_ALREADY_EXISTS,
+          message: `An active fee sponsorship budget already exists for wallet ${dto.walletId} on ${network}`,
+          correlationId,
+        });
+      }
       if (this.isDependencyError(err)) {
         this.logger.error(
           `fee.sponsorship.create dependency failure wallet=${dto.walletId} correlationId=${correlationId}`,
@@ -450,6 +481,23 @@ export class FeeSponsorshipService {
   }
 
   /**
+   * Find a budget created with the given idempotency key for a wallet+network.
+   * Matches regardless of lifecycle status so replays return the stored budget.
+   */
+  private async findBudgetByIdempotencyKey(
+    walletId: string,
+    network: FeeSponsorshipNetwork,
+    idempotencyKey: string,
+  ): Promise<FeeSponsorshipBudget | null> {
+    const budget = await this.prisma.feeSponsorshipBudget.findUnique({
+      where: {
+        walletId_network_idempotencyKey: { walletId, network, idempotencyKey },
+      },
+    });
+    return budget ? this.toDomainModel(budget) : null;
+  }
+
+  /**
    * Convert a Prisma record to a domain model.
    */
   private toDomainModel(record: any): FeeSponsorshipBudget {
@@ -478,6 +526,15 @@ export class FeeSponsorshipService {
       return '***';
     }
     return `${sponsorId.slice(0, 6)}…${sponsorId.slice(-4)}`;
+  }
+
+  /**
+   * Detect unique-constraint violations (concurrent duplicate inserts).
+   */
+  private isUniqueConstraintError(err: unknown): boolean {
+    return (
+      err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+    );
   }
 
   /**
