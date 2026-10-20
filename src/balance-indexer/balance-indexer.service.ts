@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   HttpException,
   Inject,
   Injectable,
@@ -105,12 +106,28 @@ export class BalanceIndexerService {
   /**
    * Advance the import cursor after a successful sync batch.
    * Uses upsert so the first call creates the row.
+   * Rejects non-integer or negative ledgers and never moves lastLedger backwards.
    */
   async advanceImportCursor(
     streamKey: string,
     ledger: number,
     pagingToken: string | null,
   ): Promise<void> {
+    if (!Number.isInteger(ledger) || ledger < 0) {
+      throw new BadRequestException({
+        code: BalanceIndexerErrorCode.INVALID_INPUT,
+        message: `Cursor ledger must be a non-negative integer, got ${ledger}`,
+      });
+    }
+
+    const current = await this.getImportCursor(streamKey);
+    if (ledger < current.lastLedger) {
+      throw new ConflictException({
+        code: BalanceIndexerErrorCode.CURSOR_REGRESSION,
+        message: `Cursor for ${streamKey} cannot move backwards (${ledger} < ${current.lastLedger})`,
+      });
+    }
+
     await this.prisma.horizonImportCursor.upsert({
       where: { streamKey },
       create: {
