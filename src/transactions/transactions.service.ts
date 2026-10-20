@@ -1,4 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { LimitsService } from '../limits/limits.service';
@@ -92,7 +93,14 @@ export class TransactionsService {
       code: asset.code ?? undefined,
       issuer: asset.issuer ?? undefined,
     };
+    // The precheck runs as the sender wallet's owner, taken from the stored row
+    // rather than the request, so the indexer's ownership check still applies.
     const walletBalance = await this.balanceIndexer.getBalance(
+      {
+        subjectId: senderWallet.userId,
+        role: 'owner',
+        correlationId: randomUUID(),
+      },
       senderWalletId,
       balanceAsset,
     );

@@ -8,11 +8,16 @@ import {
   Param,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { BalanceIndexerService } from './balance-indexer.service';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import type { BalanceAssetType } from './balance-indexer.model';
+import type {
+  BalanceActor,
+  BalanceAssetType,
+} from './balance-indexer.model';
 
 /**
  * REST surface for Horizon balance reads, sync and reconciliation.
@@ -40,17 +45,19 @@ export class BalanceIndexerController {
   @UseGuards(ApiKeyGuard)
   async getWalletBalances(
     @Param('walletId') walletId: string,
-    @Query('assetType') assetType?: BalanceAssetType,
-    @Query('assetCode') assetCode?: string,
-    @Query('assetIssuer') assetIssuer?: string,
+    @Query('assetType') assetType: BalanceAssetType | undefined,
+    @Query('assetCode') assetCode: string | undefined,
+    @Query('assetIssuer') assetIssuer: string | undefined,
+    @Req() request: any,
   ) {
+    const actor = this.actorFrom(request);
     // With no assetType the caller wants the whole set; with one, scope the read.
     if (!assetType) {
-      const balances = await this.balanceIndexer.getAllBalances(walletId);
+      const balances = await this.balanceIndexer.getAllBalances(actor, walletId);
       return { walletId, balances };
     }
 
-    const balance = await this.balanceIndexer.getBalance(walletId, {
+    const balance = await this.balanceIndexer.getBalance(actor, walletId, {
       type: assetType,
       code: assetCode,
       issuer: assetIssuer,
@@ -70,8 +77,9 @@ export class BalanceIndexerController {
   async syncWalletBalances(
     @Param('walletId') walletId: string,
     @Body() body: { forceRefresh?: boolean } = {},
+    @Req() request: any,
   ) {
-    return this.balanceIndexer.syncWalletBalances({
+    return this.balanceIndexer.syncWalletBalances(this.actorFrom(request), {
       walletId,
       forceRefresh: body?.forceRefresh === true,
     });
@@ -88,8 +96,9 @@ export class BalanceIndexerController {
   async syncWalletBalancesWithRetry(
     @Param('walletId') walletId: string,
     @Body() body: { forceRefresh?: boolean; maxAttempts?: number } = {},
+    @Req() request: any,
   ) {
-    return this.balanceIndexer.syncWalletBalancesWithRetry({
+    return this.balanceIndexer.syncWalletBalancesWithRetry(this.actorFrom(request), {
       walletId,
       forceRefresh: body?.forceRefresh === true,
       maxAttempts: body?.maxAttempts,
@@ -113,8 +122,9 @@ export class BalanceIndexerController {
       assetCode?: string;
       assetIssuer?: string;
     },
+    @Req() request: any,
   ) {
-    return this.balanceIndexer.reconcileBalance(walletId, {
+    return this.balanceIndexer.reconcileBalance(this.actorFrom(request), walletId, {
       type: body?.assetType,
       code: body?.assetCode,
       issuer: body?.assetIssuer,
@@ -125,16 +135,16 @@ export class BalanceIndexerController {
   @Post('reconcile-all')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ApiKeyGuard)
-  async reconcileAllBalances() {
-    return this.balanceIndexer.reconcileAllBalances();
+  async reconcileAllBalances(@Req() request: any) {
+    return this.balanceIndexer.reconcileAllBalances(this.actorFrom(request));
   }
 
   /** POST /v1/balances/sync-all — refresh every active wallet. */
   @Post('sync-all')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ApiKeyGuard)
-  async syncAllWallets() {
-    return this.balanceIndexer.syncAllWallets();
+  async syncAllWallets(@Req() request: any) {
+    return this.balanceIndexer.syncAllWallets(this.actorFrom(request));
   }
 
   /**
@@ -144,8 +154,11 @@ export class BalanceIndexerController {
    */
   @Get('wallet/:walletId/stale')
   @UseGuards(ApiKeyGuard)
-  async detectStaleBalances(@Param('walletId') walletId: string) {
-    return this.balanceIndexer.detectStaleBalances(walletId);
+  async detectStaleBalances(
+    @Param('walletId') walletId: string,
+    @Req() request: any,
+  ) {
+    return this.balanceIndexer.detectStaleBalances(this.actorFrom(request), walletId);
   }
 
   /**
@@ -157,8 +170,22 @@ export class BalanceIndexerController {
   @Post('scheduled-sync')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ApiKeyGuard)
-  async runScheduledSync() {
-    await this.balanceIndexer.runScheduledSync();
+  async runScheduledSync(@Req() request: any) {
+    await this.balanceIndexer.runScheduledSync(this.actorFrom(request));
     return { status: 'scheduled sync triggered' };
+  }
+
+  /**
+   * Builds the actor from the API-key guard's context. The subject is the key's
+   * developer's owning user, read from the authenticated key, never from the
+   * request body or query, so a caller cannot assert ownership of a wallet.
+   */
+  private actorFrom(request: any): BalanceActor {
+    return {
+      subjectId: request.apiKeyContext?.developer?.userId,
+      role: 'api-key',
+      correlationId:
+        request.requestId ?? request.headers?.['x-request-id'] ?? randomUUID(),
+    };
   }
 }
