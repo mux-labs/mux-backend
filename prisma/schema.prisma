@@ -1070,7 +1070,10 @@ model FeeSponsorshipBudget {
   /// Soft-delete timestamp (null = active)
   deletedAt DateTime?
 
-  @@unique([walletId, network])
+  // At most one ACTIVE, non-deleted budget per (walletId, network) is enforced
+  // by a partial unique index added in the migration
+  // 20261020000000_add_fee_sponsorship_active_budget_unique (Prisma cannot
+  // express partial indexes in the schema).
   @@index([sponsorId])
   @@index([status])
   @@index([network])

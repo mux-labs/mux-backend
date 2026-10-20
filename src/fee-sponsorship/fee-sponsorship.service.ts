@@ -140,6 +140,18 @@ export class FeeSponsorshipService {
 
       return this.toDomainModel(budget);
     } catch (err) {
+      // Concurrent creates that pass the findActiveBudget check race on the
+      // partial unique index; the loser gets P2002 and is reported as a conflict.
+      if (this.isActiveBudgetUniqueViolation(err)) {
+        this.logger.warn(
+          `fee.sponsorship.create duplicate active budget wallet=${dto.walletId} network=${network} correlationId=${correlationId}`,
+        );
+        throw new ConflictException({
+          code: FeeSponsorshipErrorCode.BUDGET_ALREADY_EXISTS,
+          message: `An active fee sponsorship budget already exists for wallet ${dto.walletId} on ${network}`,
+          correlationId,
+        });
+      }
       if (this.isDependencyError(err)) {
         this.logger.error(
           `fee.sponsorship.create dependency failure wallet=${dto.walletId} correlationId=${correlationId}`,
@@ -478,6 +490,17 @@ export class FeeSponsorshipService {
       return '***';
     }
     return `${sponsorId.slice(0, 6)}…${sponsorId.slice(-4)}`;
+  }
+
+  /**
+   * Detect a unique-constraint violation (P2002) from creating a budget.
+   * The only unique key on this model besides the uuid primary key is the
+   * partial index on ACTIVE (walletId, network) rows.
+   */
+  private isActiveBudgetUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+    );
   }
 
   /**
