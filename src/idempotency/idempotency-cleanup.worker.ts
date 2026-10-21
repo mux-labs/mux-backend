@@ -8,7 +8,18 @@ import { ConfigService } from '@nestjs/config';
 import {
   IdempotencyService,
   DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
+  MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
 } from './idempotency.service';
+
+/** Default polling interval (1 h). */
+const DEFAULT_IDEMPOTENCY_CLEANUP_INTERVAL_MS = 3_600_000;
+
+/**
+ * Largest delay `setInterval` accepts (2^31 - 1 ms, about 24.8 days). Larger
+ * values overflow and Node fires the callback immediately, which would turn
+ * the prune into a hot loop.
+ */
+const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
  * IdempotencyCleanupWorker
@@ -64,14 +75,53 @@ export class IdempotencyCleanupWorker implements OnModuleInit, OnModuleDestroy {
     }>('idempotencyCleanup');
 
     this.enabled = cleanup?.enabled ?? false;
-    this.intervalMs = cleanup?.intervalMs ?? 3_600_000;
-    this.batchSize =
-      cleanup?.batchSize ?? DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE;
+    this.intervalMs = this.resolveIntervalMs(cleanup?.intervalMs);
+    this.batchSize = this.resolveBatchSize(cleanup?.batchSize);
   }
 
   /** Whether the in-process worker is enabled for this deployment. */
   isEnabled(): boolean {
     return this.enabled;
+  }
+
+  /**
+   * Returns a timer delay that is finite, positive and within `setInterval`'s
+   * range; anything else falls back to the default.
+   */
+  private resolveIntervalMs(raw: unknown): number {
+    const value = Number(raw);
+    if (Number.isFinite(value) && value > 0 && value <= MAX_TIMER_DELAY_MS) {
+      return value;
+    }
+    this.logger.warn(
+      `Invalid IDEMPOTENCY_CLEANUP_INTERVAL_MS=${String(raw)}; ` +
+        `falling back to ${DEFAULT_IDEMPOTENCY_CLEANUP_INTERVAL_MS}ms`,
+    );
+    return DEFAULT_IDEMPOTENCY_CLEANUP_INTERVAL_MS;
+  }
+
+  /**
+   * Returns a positive integer batch size no larger than
+   * `MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE`, so `run()` never hands the service a
+   * value it would reject.
+   */
+  private resolveBatchSize(raw: unknown): number {
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value <= 0) {
+      this.logger.warn(
+        `Invalid IDEMPOTENCY_CLEANUP_BATCH_SIZE=${String(raw)}; ` +
+          `falling back to ${DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE}`,
+      );
+      return DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE;
+    }
+    if (value > MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE) {
+      this.logger.warn(
+        `IDEMPOTENCY_CLEANUP_BATCH_SIZE=${value} exceeds ` +
+          `${MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE}; clamping to the maximum`,
+      );
+      return MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE;
+    }
+    return value;
   }
 
   onModuleInit(): void {
