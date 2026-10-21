@@ -5,7 +5,27 @@
 Please report suspected vulnerabilities privately to the Mux security team at
 `security@muxprotocol.io`. Do not open public issues for security reports.
 Include a description, reproduction steps, affected components, and any
-correlation ids observed. We aim to acknowledge reports within 72 hours.
+correlation ids observed.
+
+## Response SLA
+
+We triage every report against the following response targets:
+
+| Severity | Response time |
+| -------- | ------------- |
+| Critical | 4 hours |
+| High     | 24 hours |
+| Medium   | 72 hours |
+| Low      | 7 days |
+
+Critical reports are acknowledged within 4 hours, matching the commitment in
+[`README.md`](README.md).
+
+## Safe Harbor
+
+We will not pursue or support legal action against researchers who act in
+good faith, follow this policy, and avoid privacy violations, data
+destruction, or service disruption while investigating.
 
 ## Scope
 
