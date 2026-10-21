@@ -19,6 +19,10 @@ import {
 } from './domain/fee-sponsorship-budget.model';
 import { CreateFeeSponsorshipBudgetDto } from './dto/create-fee-sponsorship-budget.dto';
 import { UpdateFeeSponsorshipBudgetDto } from './dto/update-fee-sponsorship-budget.dto';
+import {
+  FEE_SPONSORSHIP_LIST_DEFAULT_LIMIT,
+  FEE_SPONSORSHIP_LIST_MAX_LIMIT,
+} from './dto/list-fee-sponsorship-budgets-query.dto';
 import { FeeSponsorshipErrorCode } from './fee-sponsorship-error-codes';
 import { SponsorshipActor } from './domain/fee-sponsorship-budget.model';
 import { randomUUID } from 'crypto';
@@ -28,6 +32,13 @@ import { randomUUID } from 'crypto';
  * Clients should branch on these codes, not on human-readable messages.
  */
 export const FeeSponsorshipErrorCodeMap = FeeSponsorshipErrorCode;
+
+/** Cursor-based page of fee sponsorship budgets */
+export interface FeeSponsorshipBudgetPage {
+  items: FeeSponsorshipBudget[];
+  /** Pass as `cursor` on the next request; null when there are no more pages */
+  nextCursor: string | null;
+}
 
 /**
  * Env var that gates fee sponsorship writes. Default OFF (fail-closed):
@@ -108,6 +119,21 @@ export class FeeSponsorshipService {
     // Validate input
     this.validateCreateDto(dto);
 
+    // Replay: the same idempotency key for this wallet+network returns the stored budget
+    if (dto.idempotencyKey) {
+      const replayed = await this.findBudgetByIdempotencyKey(
+        dto.walletId,
+        network,
+        dto.idempotencyKey,
+      );
+      if (replayed) {
+        this.logger.log(
+          `fee.sponsorship.create replay budget=${replayed.id} wallet=${dto.walletId} network=${network} correlationId=${correlationId}`,
+        );
+        return replayed;
+      }
+    }
+
     // Check for existing active budget for this wallet+network
     const existing = await this.findActiveBudget(dto.walletId, network);
     if (existing) {
@@ -130,6 +156,7 @@ export class FeeSponsorshipService {
           network,
           status: FeeSponsorshipBudgetStatus.ACTIVE,
           note: dto.note ?? null,
+          idempotencyKey: dto.idempotencyKey ?? null,
         },
       });
 
@@ -140,12 +167,22 @@ export class FeeSponsorshipService {
 
       return this.toDomainModel(budget);
     } catch (err) {
-      // Concurrent creates that pass the findActiveBudget check race on the
-      // partial unique index; the loser gets P2002 and is reported as a conflict.
-      if (this.isActiveBudgetUniqueViolation(err)) {
-        this.logger.warn(
-          `fee.sponsorship.create duplicate active budget wallet=${dto.walletId} network=${network} correlationId=${correlationId}`,
-        );
+      if (this.isUniqueConstraintError(err)) {
+        // Lost a concurrent race. If the winner carries our key, it is the replay answer;
+        // otherwise a budget already exists for this wallet+network.
+        const winner = dto.idempotencyKey
+          ? await this.findBudgetByIdempotencyKey(dto.walletId, network, dto.idempotencyKey)
+          : null;
+        if (winner) {
+          return winner;
+        }
+        // Concurrent creates that pass the findActiveBudget check race on the
+        // partial unique index; the loser gets P2002 and is reported as a conflict.
+        if (this.isActiveBudgetUniqueViolation(err)) {
+          this.logger.warn(
+            `fee.sponsorship.create duplicate active budget wallet=${dto.walletId} network=${network} correlationId=${correlationId}`,
+          );
+        }
         throw new ConflictException({
           code: FeeSponsorshipErrorCode.BUDGET_ALREADY_EXISTS,
           message: `An active fee sponsorship budget already exists for wallet ${dto.walletId} on ${network}`,
@@ -206,14 +243,20 @@ export class FeeSponsorshipService {
       });
     }
 
-    // Validate remainingAmount if provided
-    if (dto.remainingAmount !== undefined) {
-      const remaining = parseFloat(dto.remainingAmount);
-      const limit = parseFloat(existing.limitAmount);
-      if (remaining > limit) {
+    // Invariant: remainingAmount <= limitAmount on the effective (merged) budget
+    if (dto.limitAmount !== undefined || dto.remainingAmount !== undefined) {
+      const effectiveLimit = this.parseAmount(
+        dto.limitAmount ?? existing.limitAmount,
+        correlationId,
+      );
+      const effectiveRemaining = this.parseAmount(
+        dto.remainingAmount ?? existing.remainingAmount,
+        correlationId,
+      );
+      if (effectiveRemaining > effectiveLimit) {
         throw new BadRequestException({
-          code: FeeSponsorshipErrorCode.BUDGET_EXCEEDED,
-          message: `Remaining amount ${dto.remainingAmount} exceeds limit ${existing.limitAmount}`,
+          code: FeeSponsorshipErrorCode.REMAINING_EXCEEDS_LIMIT,
+          message: `Remaining amount ${effectiveRemaining} exceeds limit ${effectiveLimit}`,
           correlationId,
         });
       }
@@ -283,29 +326,66 @@ export class FeeSponsorshipService {
   }
 
   /**
-   * List fee sponsorship budgets for a wallet.
+   * List fee sponsorship budgets for a wallet, newest first.
+   *
+   * Cursor pagination on (createdAt DESC, id DESC): pass the previous page's
+   * `nextCursor` as `pagination.cursor` to fetch the next page.
    */
   async listBudgets(
     walletId: string,
     actor: SponsorshipActor,
     network?: FeeSponsorshipNetwork,
-  ): Promise<FeeSponsorshipBudget[]> {
+    pagination?: { limit?: number; cursor?: string },
+  ): Promise<FeeSponsorshipBudgetPage> {
     const correlationId = actor.correlationId ?? randomUUID();
 
     // Authz: deny-by-default
     this.enforceAuthorization(walletId, actor, correlationId);
 
+    const pageSize = Math.min(
+      pagination?.limit ?? FEE_SPONSORSHIP_LIST_DEFAULT_LIMIT,
+      FEE_SPONSORSHIP_LIST_MAX_LIMIT,
+    );
+
     try {
+      const pivot = pagination?.cursor
+        ? await this.prisma.feeSponsorshipBudget.findFirst({
+            where: { id: pagination.cursor, walletId },
+            select: { createdAt: true, id: true },
+          })
+        : null;
+      if (pagination?.cursor && !pivot) {
+        throw new BadRequestException({
+          code: FeeSponsorshipErrorCode.INVALID_INPUT,
+          message: 'cursor does not reference a budget for this wallet',
+          correlationId,
+        });
+      }
+
+      // Fetch one extra row to detect whether another page exists.
       const budgets = await this.prisma.feeSponsorshipBudget.findMany({
         where: {
           walletId,
           ...(network ? { network } : {}),
           deletedAt: null,
+          ...(pivot && {
+            OR: [
+              { createdAt: { lt: pivot.createdAt } },
+              { createdAt: pivot.createdAt, id: { lt: pivot.id } },
+            ],
+          }),
         },
-        orderBy: { createdAt: 'desc' },
+        orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+        take: pageSize + 1,
       });
 
-      return budgets.map((b) => this.toDomainModel(b));
+      const hasMore = budgets.length > pageSize;
+      const items = budgets
+        .slice(0, pageSize)
+        .map((b) => this.toDomainModel(b));
+      const nextCursor = hasMore ? items[items.length - 1].id : null;
+
+      return { items, nextCursor };
     } catch (err) {
       if (this.isDependencyError(err)) {
         this.logger.error(
@@ -462,6 +542,37 @@ export class FeeSponsorshipService {
   }
 
   /**
+   * Find a budget created with the given idempotency key for a wallet+network.
+   * Matches regardless of lifecycle status so replays return the stored budget.
+   */
+  private async findBudgetByIdempotencyKey(
+    walletId: string,
+    network: FeeSponsorshipNetwork,
+    idempotencyKey: string,
+  ): Promise<FeeSponsorshipBudget | null> {
+    const budget = await this.prisma.feeSponsorshipBudget.findUnique({
+      where: {
+        walletId_network_idempotencyKey: { walletId, network, idempotencyKey },
+      },
+    });
+    return budget ? this.toDomainModel(budget) : null;
+  }
+
+  /**
+   * Parse a smallest-unit amount string for exact integer comparison.
+   */
+  private parseAmount(value: string, correlationId: string): bigint {
+    if (!/^\d+$/.test(value)) {
+      throw new BadRequestException({
+        code: FeeSponsorshipErrorCode.INVALID_INPUT,
+        message: 'Amounts must be non-negative integer strings',
+        correlationId,
+      });
+    }
+    return BigInt(value);
+  }
+
+  /**
    * Convert a Prisma record to a domain model.
    */
   private toDomainModel(record: any): FeeSponsorshipBudget {
@@ -498,6 +609,10 @@ export class FeeSponsorshipService {
    * partial index on ACTIVE (walletId, network) rows.
    */
   private isActiveBudgetUniqueViolation(err: unknown): boolean {
+    return (
+      err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
+    );
+  }
     return (
       err instanceof Prisma.PrismaClientKnownRequestError && err.code === 'P2002'
     );
