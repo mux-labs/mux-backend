@@ -25,6 +25,7 @@ import {
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
 import { ErrorCode } from '../common/dto/error-envelope.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
+import { compareDecimalStrings } from './domain/decimal-amount';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 
@@ -160,7 +161,7 @@ export class TransactionsService {
       balanceAsset,
     );
     const available = walletBalance?.balance ?? '0';
-    if (parseFloat(available) < parseFloat(amount)) {
+    if (compareDecimalStrings(available, amount) < 0) {
       throw new InsufficientBalanceException(
         senderWalletId,
         amount,
