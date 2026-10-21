@@ -27,8 +27,11 @@ export interface MainnetPaymentFlag {
   enabled: boolean;
   /** Network this flag applies to. */
   network: 'mainnet' | 'testnet';
-  /** Stable error code to surface when a mainnet payment is denied. */
-  denialCode: MainnetPaymentFlagErrorCode;
+  /**
+   * Stable error code to surface when a mainnet payment is denied.
+   * Absent when the flag is enabled (no denial applies).
+   */
+  denialCode?: MainnetPaymentFlagErrorCode;
 }
 
 /**
@@ -94,12 +97,17 @@ export const resolveMainnetPaymentFlag = (
 
   const enabled = parseBoolean(env.MAINNET_PAYMENT_ENABLED, false);
 
+  if (!enabled) {
+    return {
+      enabled: false,
+      network: 'mainnet',
+      denialCode: MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED,
+    };
+  }
+
   return {
-    enabled,
+    enabled: true,
     network: 'mainnet',
-    denialCode: enabled
-      ? MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED
-      : MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED,
   };
 };
 
@@ -123,7 +131,7 @@ export const resolveIdempotencyCleanupConfig = (
  */
 export const mainnetPaymentFlagSnapshot = (
   flag: MainnetPaymentFlag,
-): Record<string, string | boolean> => ({
+): Record<string, string | boolean | undefined> => ({
   mainnetPaymentEnabled: flag.enabled,
   network: flag.network,
   denialCode: flag.denialCode,
