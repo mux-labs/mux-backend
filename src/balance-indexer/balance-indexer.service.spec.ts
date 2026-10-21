@@ -10,10 +10,16 @@ import {
   BALANCE_SYNC_ENABLED_ENV,
 } from './balance-indexer.error-codes';
 import type { HorizonAccountBalances } from './balance-indexer.error-codes';
+import type { BalanceActor } from './balance-indexer.model';
 import { MetricsService } from '../common/metrics/metrics.service';
 
 const WALLET = 'wallet-1';
 const ACCOUNT = 'GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF';
+const OPERATOR: BalanceActor = {
+  subjectId: 'ops-1',
+  role: 'operator',
+  correlationId: 'test-correlation',
+};
 
 function snapshot(
   balances: HorizonAccountBalances['balances'],
@@ -92,7 +98,7 @@ describe('BalanceIndexerService', () => {
       delete process.env[BALANCE_SYNC_ENABLED_ENV];
 
       await expect(
-        service.syncWalletBalances({ walletId: WALLET }),
+        service.syncWalletBalances(OPERATOR, { walletId: WALLET }),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
       // Nothing may be persisted when the kill-switch is off.
       expect(prisma.walletBalance.upsert).not.toHaveBeenCalled();
@@ -109,7 +115,7 @@ describe('BalanceIndexerService', () => {
         { ...native('5'), walletId: WALLET },
       ] as never);
 
-      await expect(service.getAllBalances(WALLET)).resolves.toHaveLength(1);
+      await expect(service.getAllBalances(OPERATOR, WALLET)).resolves.toHaveLength(1);
     });
   });
 
@@ -118,7 +124,7 @@ describe('BalanceIndexerService', () => {
       horizon.fetchAccountBalances.mockRejectedValue(new Error('ECONNREFUSED'));
 
       await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
+        service.syncWalletBalances(OPERATOR, { walletId: WALLET, forceRefresh: true }),
       ).rejects.toMatchObject({
         response: { code: BalanceIndexerErrorCode.DEPENDENCY_UNAVAILABLE },
       });
@@ -134,7 +140,7 @@ describe('BalanceIndexerService', () => {
       });
 
       await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
+        service.syncWalletBalances(OPERATOR, { walletId: WALLET, forceRefresh: true }),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
 
       expect(prisma.walletBalance.upsert).not.toHaveBeenCalled();
@@ -146,7 +152,7 @@ describe('BalanceIndexerService', () => {
       );
 
       await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
+        service.syncWalletBalances(OPERATOR, { walletId: WALLET, forceRefresh: true }),
       ).rejects.toMatchObject({
         response: { code: BalanceIndexerErrorCode.DEPENDENCY_UNAVAILABLE },
       });
@@ -160,7 +166,7 @@ describe('BalanceIndexerService', () => {
         balance: '100.0000000',
       });
 
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      const result = await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
 
       expect(result.matches).toBe(true);
       expect(result.indexedBalance).toBe('100.0000000');
@@ -174,7 +180,7 @@ describe('BalanceIndexerService', () => {
         balance: '100.0',
       });
 
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      const result = await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
       expect(result.matches).toBe(true);
     });
 
@@ -191,7 +197,7 @@ describe('BalanceIndexerService', () => {
         balance: '50',
       });
 
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      const result = await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
 
       expect(result.matches).toBe(false);
       expect(result.indexedBalance).toBe('50');
@@ -220,7 +226,7 @@ describe('BalanceIndexerService', () => {
         balance: '7',
       });
 
-      const result = await service.reconcileBalance(WALLET, {
+      const result = await service.reconcileBalance(OPERATOR, WALLET, {
         type: 'CREDIT_ALPHANUM4',
         code: 'USDC',
         issuer: 'GISSUER',
@@ -240,7 +246,7 @@ describe('BalanceIndexerService', () => {
       );
       prisma.walletBalance.findUnique.mockResolvedValue(null);
 
-      const result = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      const result = await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
 
       expect(result.matches).toBe(false);
       const createArg = createArgs[0] as { data: Record<string, unknown> };
@@ -252,7 +258,7 @@ describe('BalanceIndexerService', () => {
       prisma.wallet.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.reconcileBalance('missing', { type: 'NATIVE' }),
+        service.reconcileBalance(OPERATOR, 'missing', { type: 'NATIVE' }),
       ).rejects.toBeInstanceOf(NotFoundException);
       expect(horizon.fetchAccountBalances).not.toHaveBeenCalled();
     });
@@ -262,18 +268,18 @@ describe('BalanceIndexerService', () => {
     it('skips the Horizon round-trip when the balance is already fresh', async () => {
       prisma.walletBalance.count.mockResolvedValue(1);
 
-      const result = await service.syncWalletBalances({ walletId: WALLET });
+      const result = await service.syncWalletBalances(OPERATOR, { walletId: WALLET });
 
       expect(result.balancesUpdated).toBe(0);
       expect(horizon.fetchAccountBalances).not.toHaveBeenCalled();
     });
 
     it('is idempotent: repeating a forced sync converges on the same state', async () => {
-      const first = await service.syncWalletBalances({
+      const first = await service.syncWalletBalances(OPERATOR, {
         walletId: WALLET,
         forceRefresh: true,
       });
-      const second = await service.syncWalletBalances({
+      const second = await service.syncWalletBalances(OPERATOR, {
         walletId: WALLET,
         forceRefresh: true,
       });
@@ -289,8 +295,8 @@ describe('BalanceIndexerService', () => {
         balance: '100',
       });
 
-      const first = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
-      const second = await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      const first = await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
+      const second = await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
 
       expect(first).toEqual(second);
     });
@@ -302,7 +308,7 @@ describe('BalanceIndexerService', () => {
         .mockRejectedValueOnce(new Error('timeout'))
         .mockResolvedValueOnce(snapshot([native('100')]));
 
-      const result = await service.syncWalletBalancesWithRetry({
+      const result = await service.syncWalletBalancesWithRetry(OPERATOR, {
         walletId: WALLET,
         forceRefresh: true,
       });
@@ -315,7 +321,7 @@ describe('BalanceIndexerService', () => {
       horizon.fetchAccountBalances.mockRejectedValue(new Error('timeout'));
 
       await expect(
-        service.syncWalletBalancesWithRetry({
+        service.syncWalletBalancesWithRetry(OPERATOR, {
           walletId: WALLET,
           forceRefresh: true,
           maxAttempts: 2,
@@ -330,7 +336,7 @@ describe('BalanceIndexerService', () => {
       prisma.wallet.findUnique.mockResolvedValue(null);
 
       await expect(
-        service.syncWalletBalancesWithRetry({
+        service.syncWalletBalancesWithRetry(OPERATOR, {
           walletId: 'missing',
           maxAttempts: 3,
         }),
@@ -343,14 +349,14 @@ describe('BalanceIndexerService', () => {
   describe('adversarial input', () => {
     it('rejects a wallet id that could be used for log injection', async () => {
       await expect(
-        service.getAllBalances('wallet\nlevel=ERROR'),
+        service.getAllBalances(OPERATOR, 'wallet\nlevel=ERROR'),
       ).rejects.toBeInstanceOf(BadRequestException);
       expect(prisma.walletBalance.findMany).not.toHaveBeenCalled();
     });
 
     it('rejects an oversized wallet id', async () => {
       await expect(
-        service.getAllBalances('a'.repeat(129)),
+        service.getAllBalances(OPERATOR, 'a'.repeat(129)),
       ).rejects.toBeInstanceOf(BadRequestException);
     });
 
@@ -362,7 +368,7 @@ describe('BalanceIndexerService', () => {
         })),
       );
 
-      await expect(service.syncAllWallets()).rejects.toBeInstanceOf(
+      await expect(service.syncAllWallets(OPERATOR)).rejects.toBeInstanceOf(
         PayloadTooLargeException,
       );
     });
@@ -379,7 +385,7 @@ describe('BalanceIndexerService', () => {
         },
       ] as never);
 
-      const report = await service.detectStaleBalances(WALLET);
+      const report = await service.detectStaleBalances(OPERATOR, WALLET);
       expect(report.staleAssets).toHaveLength(1);
       expect(report.staleSince).toBeNull();
     });
@@ -395,7 +401,7 @@ describe('BalanceIndexerService', () => {
         },
       ] as never);
 
-      const report = await service.detectStaleBalances(WALLET);
+      const report = await service.detectStaleBalances(OPERATOR, WALLET);
       expect(report.staleAssets).toHaveLength(1);
       expect(report.staleSince).toBeInstanceOf(Date);
     });
@@ -411,7 +417,7 @@ describe('BalanceIndexerService', () => {
         },
       ] as never);
 
-      const report = await service.detectStaleBalances(WALLET);
+      const report = await service.detectStaleBalances(OPERATOR, WALLET);
       expect(report.staleAssets).toHaveLength(0);
     });
   });
@@ -429,7 +435,7 @@ describe('BalanceIndexerService', () => {
           ),
       );
 
-      await expect(service.runScheduledSync()).resolves.toBeUndefined();
+      await expect(service.runScheduledSync(OPERATOR)).resolves.toBeUndefined();
 
       expect(metrics.incrementCounter).toHaveBeenCalledWith(
         'balance_scheduled_sync_failed',
@@ -449,7 +455,7 @@ describe('BalanceIndexerService', () => {
       horizon.fetchAccountBalances.mockRejectedValue(new Error('down'));
 
       await expect(
-        service.syncWalletBalances({ walletId: WALLET, forceRefresh: true }),
+        service.syncWalletBalances(OPERATOR, { walletId: WALLET, forceRefresh: true }),
       ).rejects.toBeInstanceOf(ServiceUnavailableException);
 
       const logged = logSpy.mock.calls.flat().join(' ');
@@ -462,7 +468,7 @@ describe('BalanceIndexerService', () => {
         balance: '1',
       });
 
-      await service.reconcileBalance(WALLET, { type: 'NATIVE' });
+      await service.reconcileBalance(OPERATOR, WALLET, { type: 'NATIVE' });
 
       expect(metrics.incrementCounter).toHaveBeenCalledWith(
         'balance_reconcile_mismatch',

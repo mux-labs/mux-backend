@@ -1,4 +1,10 @@
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
 import { LimitsService } from '../limits/limits.service';
@@ -44,6 +50,8 @@ export class TransactionsService {
   async create(
     createTransactionDto: CreateTransactionDto,
   ): Promise<TransactionEntity> {
+    this.assertValidAmount(createTransactionDto.amount);
+
     const {
       amount,
       asset,
@@ -92,7 +100,14 @@ export class TransactionsService {
       code: asset.code ?? undefined,
       issuer: asset.issuer ?? undefined,
     };
+    // The precheck runs as the sender wallet's owner, taken from the stored row
+    // rather than the request, so the indexer's ownership check still applies.
     const walletBalance = await this.balanceIndexer.getBalance(
+      {
+        subjectId: senderWallet.userId,
+        role: 'owner',
+        correlationId: randomUUID(),
+      },
       senderWalletId,
       balanceAsset,
     );
@@ -365,6 +380,26 @@ export class TransactionsService {
   }
 
   // ─── Private helpers ────────────────────────────────────────────────────────
+
+  /**
+   * Reject amounts that are not a finite, strictly positive decimal string with
+   * at most 7 decimal places (Stellar precision). Runs before any balance or
+   * limit work so malformed values never reach those checks or the database.
+   */
+  private assertValidAmount(amount: string): void {
+    const value = Number(amount);
+    if (
+      typeof amount !== 'string' ||
+      !/^\d+(\.\d{1,7})?$/.test(amount) ||
+      !Number.isFinite(value) ||
+      value <= 0
+    ) {
+      throw new BadRequestException({
+        message: `Invalid transaction amount: ${amount}`,
+        errorCode: 'TRANSACTION_AMOUNT_INVALID',
+      });
+    }
+  }
 
   private async emitStatusWebhook(tx: any): Promise<void> {
     const status = tx.status as TransactionStatus;

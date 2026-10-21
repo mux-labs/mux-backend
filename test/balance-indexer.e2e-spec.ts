@@ -108,7 +108,10 @@ describe('BalanceIndexerController (e2e)', () => {
     expect(res.body).toHaveProperty('walletId', 'wallet-123');
     expect(res.body).toHaveProperty('balances');
     expect(res.body.balances[0].balance).toBe('100.0000000');
-    expect(mockBalanceIndexerService.getAllBalances).toHaveBeenCalledWith('wallet-123');
+    expect(mockBalanceIndexerService.getAllBalances).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'api-key' }),
+      'wallet-123'
+    );
   });
 
   it('GET /v1/balances/wallet/:walletId/asset should return asset balance', async () => {
@@ -120,7 +123,10 @@ describe('BalanceIndexerController (e2e)', () => {
 
     expect(res.body).toHaveProperty('walletId', 'wallet-123');
     expect(res.body).toHaveProperty('balances');
-    expect(mockBalanceIndexerService.getAllBalances).toHaveBeenCalledWith('wallet-123');
+    expect(mockBalanceIndexerService.getAllBalances).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'api-key' }),
+      'wallet-123'
+    );
   });
 
   it('POST /v1/balances/wallet/:walletId/sync should trigger manual sync', async () => {
@@ -132,10 +138,10 @@ describe('BalanceIndexerController (e2e)', () => {
 
     expect(res.body).toHaveProperty('walletId', 'wallet-123');
     expect(res.body).toHaveProperty('balancesUpdated', 1);
-    expect(mockBalanceIndexerService.syncWalletBalances).toHaveBeenCalledWith({
-      walletId: 'wallet-123',
-      forceRefresh: true
-    });
+    expect(mockBalanceIndexerService.syncWalletBalances).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'api-key' }),
+      { walletId: 'wallet-123', forceRefresh: true }
+    );
   });
 
   it('POST /v1/balances/sync-all should sync all wallets', async () => {
@@ -157,7 +163,7 @@ describe('BalanceIndexerController (e2e)', () => {
 
     expect(res.body).toHaveProperty('walletId', 'wallet-123');
     expect(res.body).toHaveProperty('matches', true);
-    expect(mockBalanceIndexerService.reconcileBalance).toHaveBeenCalledWith('wallet-123', {
+    expect(mockBalanceIndexerService.reconcileBalance).toHaveBeenCalledWith(expect.objectContaining({ role: 'api-key' }), 'wallet-123', {
       type: 'NATIVE',
       code: undefined,
       issuer: undefined
@@ -183,10 +189,10 @@ describe('BalanceIndexerController (e2e)', () => {
       .expect(HttpStatus.OK);
 
     expect(res.body).toHaveProperty('walletId', 'wallet-123');
-    expect(mockBalanceIndexerService.syncWalletBalancesWithRetry).toHaveBeenCalledWith({
-      walletId: 'wallet-123',
-      forceRefresh: true
-    });
+    expect(mockBalanceIndexerService.syncWalletBalancesWithRetry).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'api-key' }),
+      { walletId: 'wallet-123', forceRefresh: true }
+    );
   });
 
   it('GET /v1/balances/wallet/:walletId/stale should detect stale balances', async () => {
@@ -196,7 +202,10 @@ describe('BalanceIndexerController (e2e)', () => {
       .expect(HttpStatus.OK);
 
     expect(res.body).toHaveProperty('staleAssets');
-    expect(mockBalanceIndexerService.detectStaleBalances).toHaveBeenCalledWith('wallet-123');
+    expect(mockBalanceIndexerService.detectStaleBalances).toHaveBeenCalledWith(
+      expect.objectContaining({ role: 'api-key' }),
+      'wallet-123'
+    );
   });
 
   it('POST /v1/balances/scheduled-sync should manually trigger scheduled sync', async () => {

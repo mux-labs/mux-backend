@@ -11,6 +11,9 @@ export const BalanceIndexerErrorCode = {
   INVALID_INPUT: 'BALANCE_INVALID_INPUT',
   WALLET_NOT_FOUND: 'BALANCE_WALLET_NOT_FOUND',
 
+  /** A cursor write would move a stream's lastLedger backwards; nothing was written. */
+  CURSOR_REGRESSION: 'BALANCE_CURSOR_REGRESSION',
+
   // Authz (deny-by-default)
   NOT_AUTHORIZED: 'BALANCE_NOT_AUTHORIZED',
   INSUFFICIENT_ROLE: 'BALANCE_INSUFFICIENT_ROLE',
@@ -156,8 +159,8 @@ export interface BalanceStore {
   wallet: {
     findUnique(args: {
       where: { id: string };
-      select?: { id: true; publicKey: true };
-    }): Promise<{ id: string; publicKey: string } | null>;
+      select?: { id: true; publicKey: true; userId: true };
+    }): Promise<{ id: string; publicKey: string; userId: string } | null>;
     findMany(args: {
       where: { status: string };
       select?: { id: true; publicKey: true };
@@ -213,58 +216,6 @@ export interface AssetKey {
   assetCode: string | null;
   assetIssuer: string | null;
 }
-
-/**
- * Minimal Horizon surface the indexer depends on.
- *
- * Kept as an explicit port so the reconciliation logic can be unit-tested
- * against a fake, and so a Horizon outage can be simulated deterministically
- * rather than depending on a live network in tests.
- */
-export interface HorizonBalanceClient {
-  /**
-   * Fetch the on-chain balances for an account.
-   *
-   * Implementations MUST throw on transport failure, timeout, or a non-2xx
-   * response — never resolve with a partial or empty list, because the caller
-   * treats a resolved value as authoritative and would then overwrite good
-   * indexed data with zeroes.
-   */
-  fetchAccountBalances(accountId: string): Promise<HorizonAccountBalances>;
-}
-
-/** Network-scoped view of an account's balances as returned by Horizon. */
-export interface HorizonAccountBalances {
-  accountId: string;
-  /** Ledger sequence the snapshot was taken at. */
-  ledger: number;
-  balances: Array<{
-    assetType: BalanceAssetType;
-    assetCode: string | null;
-    assetIssuer: string | null;
-    /** Balance in the asset's smallest unit, as a string. */
-    balance: string;
-  }>;
-}
-
-/**
- * Env var that gates balance writes (sync/reconcile). Default OFF
- * (fail-closed): without an explicit opt-in, no indexed balance is ever
- * mutated, so a misconfigured deploy cannot corrupt the index.
- */
-export const BALANCE_SYNC_ENABLED_ENV = 'BALANCE_SYNC_ENABLED';
-
-/**
- * How long a balance may go without a refresh before `detectStaleBalances`
- * reports it. Configurable so testnet (fast blocks) and mainnet can differ.
- */
-export const DEFAULT_BALANCE_STALE_THRESHOLD_MS = 300_000;
-
-/**
- * Upper bound on wallets processed in a single `syncAll`/`reconcileAll` sweep.
- * Bounds the blast radius of a bad deploy and the memory held by one batch.
- */
-export const MAX_SWEEP_WALLETS = 500;
 
 /**
  * Minimal Horizon surface the indexer depends on.
