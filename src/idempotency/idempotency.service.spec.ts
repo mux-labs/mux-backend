@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
-import { ConfigService } from '@nestjs/config';
 import { MetricsService } from '../common/metrics/metrics.service';
 import {
   IdempotencyService,
@@ -22,7 +21,11 @@ const makeStore = (deleteMany: jest.Mock): IdempotencyRecordStore => ({
 
 async function buildService(
   deleteMany: jest.Mock = jest.fn().mockResolvedValue({ count: 0 }),
-): Promise<{ service: IdempotencyService; metrics: MetricsService }> {
+): Promise<{
+  service: IdempotencyService;
+  metrics: MetricsService;
+  incrementCounter: jest.Mock;
+}> {
   const incrementCounter = jest.fn();
   const metrics = { incrementCounter } as unknown as MetricsService;
   const module: TestingModule = await Test.createTestingModule({
@@ -152,6 +155,54 @@ describe('IdempotencyService.cleanupExpiredRecords', () => {
         expect(deleteMany).not.toHaveBeenCalled();
       },
     );
+  });
+
+  describe('invalid batch size', () => {
+    it.each([0, -1, Number.NaN, Number.POSITIVE_INFINITY])(
+      'rejects batch size %p with INVALID_BATCH_SIZE and never calls deleteMany',
+      async (batchSize) => {
+        const deleteMany = jest.fn();
+        const { service } = await buildService(deleteMany);
+
+        await expect(
+          service.cleanupExpiredRecords(batchSize, NOW),
+        ).rejects.toMatchObject({
+          code: IdempotencyCleanupErrorCode.INVALID_BATCH_SIZE,
+        });
+        expect(deleteMany).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe('hasMore boundary', () => {
+    it('is true when the deleted count equals the batch size', async () => {
+      const deleteMany = jest.fn().mockResolvedValue({ count: 10 });
+      const { service } = await buildService(deleteMany);
+
+      const result = await service.cleanupExpiredRecords(10, NOW);
+
+      expect(result.hasMore).toBe(true);
+    });
+
+    it('is false when the deleted count is one less than the batch size', async () => {
+      const deleteMany = jest.fn().mockResolvedValue({ count: 9 });
+      const { service } = await buildService(deleteMany);
+
+      const result = await service.cleanupExpiredRecords(10, NOW);
+
+      expect(result.hasMore).toBe(false);
+    });
+
+    it('compares against the clamped batch size, not the requested one', async () => {
+      const deleteMany = jest.fn().mockResolvedValue({
+        count: MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE - 1,
+      });
+      const { service } = await buildService(deleteMany);
+
+      const result = await service.cleanupExpiredRecords(1_000_000, NOW);
+
+      expect(result.hasMore).toBe(false);
+    });
   });
 
   describe('fail-closed on dependency outage', () => {

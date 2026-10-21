@@ -11,6 +11,9 @@ export const BalanceIndexerErrorCode = {
   INVALID_INPUT: 'BALANCE_INVALID_INPUT',
   WALLET_NOT_FOUND: 'BALANCE_WALLET_NOT_FOUND',
 
+  /** A cursor write would move a stream's lastLedger backwards; nothing was written. */
+  CURSOR_REGRESSION: 'BALANCE_CURSOR_REGRESSION',
+
   // Authz (deny-by-default)
   NOT_AUTHORIZED: 'BALANCE_NOT_AUTHORIZED',
   INSUFFICIENT_ROLE: 'BALANCE_INSUFFICIENT_ROLE',

@@ -144,9 +144,14 @@ export class IdempotencyService {
         'Idempotency cleanup failed: database unavailable',
         err instanceof Error ? err.message : String(err),
       );
+      // `cause` keeps the original database error for diagnosis without
+      // leaking it into the stable code or message.
       throw Object.assign(
         new Error('Idempotency cleanup failed: database unavailable'),
-        { code: IdempotencyCleanupErrorCode.DEPENDENCY_UNAVAILABLE },
+        {
+          code: IdempotencyCleanupErrorCode.DEPENDENCY_UNAVAILABLE,
+          cause: err,
+        },
       );
     }
 

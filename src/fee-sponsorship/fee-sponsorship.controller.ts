@@ -14,9 +14,12 @@ import {
 import { FeeSponsorshipService } from './fee-sponsorship.service';
 import { CreateFeeSponsorshipBudgetDto } from './dto/create-fee-sponsorship-budget.dto';
 import { UpdateFeeSponsorshipBudgetDto } from './dto/update-fee-sponsorship-budget.dto';
-import { FeeSponsorshipBudgetResponse } from './dto/fee-sponsorship-budget-response.dto';
+import {
+  FeeSponsorshipBudgetResponse,
+  FeeSponsorshipBudgetPageResponse,
+} from './dto/fee-sponsorship-budget-response.dto';
+import { ListFeeSponsorshipBudgetsQueryDto } from './dto/list-fee-sponsorship-budgets-query.dto';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
-import { FeeSponsorshipNetwork } from './domain/fee-sponsorship-budget.model';
 import { randomUUID } from 'crypto';
 
 /**
@@ -76,25 +79,29 @@ export class FeeSponsorshipController {
   }
 
   /**
-   * List fee sponsorship budgets for a wallet.
+   * List fee sponsorship budgets for a wallet, cursor-paginated.
    *
-   * GET /v1/fee-sponsorship
+   * GET /v1/fee-sponsorship?walletId=<id>&network=MAINNET|TESTNET&limit=20&cursor=<budgetId>
    *
    * Requires API key authentication.
+   * Returns `{ items, nextCursor }`; `nextCursor` is null on the last page.
    */
   @Get()
   @UseGuards(ApiKeyGuard)
   async listBudgets(
-    @Query('walletId') walletId: string,
-    @Query('network') network?: FeeSponsorshipNetwork,
-  ): Promise<FeeSponsorshipBudgetResponse[]> {
-    const actor = this.extractActor({ walletId });
-    const results = await this.feeSponsorshipService.listBudgets(
-      walletId,
+    @Query() query: ListFeeSponsorshipBudgetsQueryDto,
+  ): Promise<FeeSponsorshipBudgetPageResponse> {
+    const actor = this.extractActor({ walletId: query.walletId });
+    const page = await this.feeSponsorshipService.listBudgets(
+      query.walletId,
       actor,
-      network,
+      query.network,
+      { limit: query.limit, cursor: query.cursor },
     );
-    return results.map((r) => this.toResponse(r));
+    return {
+      items: page.items.map((b) => this.toResponse(b)),
+      nextCursor: page.nextCursor,
+    };
   }
 
   /**
