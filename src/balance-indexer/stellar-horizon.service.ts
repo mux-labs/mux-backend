@@ -1,6 +1,22 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
+import { horizonErrorStatus } from './horizon-retry.policy';
+import { BalanceIndexerErrorCode } from './balance-indexer.error-codes';
+
+/**
+ * Raised when a Horizon asset entry cannot be turned into a trustworthy Asset.
+ * Carries a stable code so callers can classify the failure without matching
+ * on the message text.
+ */
+export class HorizonAssetParseError extends Error {
+  readonly code = BalanceIndexerErrorCode.DEPENDENCY_MALFORMED;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'HorizonAssetParseError';
+  }
+}
 
 export interface HorizonAccountResponse {
   id: string;
@@ -17,6 +33,22 @@ export interface HorizonBalance {
   balance: string;
   /** Paging token attached to this balance entry (if Horizon provides one) */
   paging_token?: string;
+}
+
+/**
+ * Failure from a Horizon read. Keeps the HTTP status (when one exists) so the
+ * retry policy and callers can classify it without parsing the message, and
+ * the original error reachable via `cause`.
+ */
+export class HorizonRequestError extends Error {
+  constructor(
+    message: string,
+    readonly statusCode: number | undefined,
+    readonly cause: unknown,
+  ) {
+    super(message);
+    this.name = 'HorizonRequestError';
+  }
 }
 
 /**
@@ -74,7 +106,14 @@ export class StellarHorizonService {
         `Failed to fetch balances for account ${publicKey}:`,
         error,
       );
-      throw new Error(`Horizon API request failed: ${error.message}`);
+      if (error instanceof HorizonAssetParseError) {
+        throw error;
+      }
+      throw new HorizonRequestError(
+        `Horizon API request failed: ${error.message}`,
+        horizonErrorStatus(error),
+        error,
+      );
     }
   }
 
@@ -86,7 +125,7 @@ export class StellarHorizonService {
       await this.mockHorizonRequest(publicKey);
       return true;
     } catch (error) {
-      if (error.message.includes('404')) {
+      if (horizonErrorStatus(error) === 404) {
         return false;
       }
       throw error;
@@ -94,7 +133,10 @@ export class StellarHorizonService {
   }
 
   /**
-   * Parses Horizon balance format to internal Asset model
+   * Parses Horizon balance format to internal Asset model.
+   *
+   * Throws {@link HorizonAssetParseError} instead of returning an Asset with
+   * undefined code/issuer: a null identity would collide with native XLM.
    */
   private parseAsset(horizonBalance: HorizonBalance): Asset {
     switch (horizonBalance.asset_type) {
@@ -102,6 +144,7 @@ export class StellarHorizonService {
         return { type: AssetType.NATIVE };
 
       case 'credit_alphanum4':
+        this.assertCreditAssetFields(horizonBalance);
         return {
           type: AssetType.CREDIT_ALPHANUM4,
           code: horizonBalance.asset_code,
@@ -109,6 +152,7 @@ export class StellarHorizonService {
         };
 
       case 'credit_alphanum12':
+        this.assertCreditAssetFields(horizonBalance);
         return {
           type: AssetType.CREDIT_ALPHANUM12,
           code: horizonBalance.asset_code,
@@ -116,13 +160,29 @@ export class StellarHorizonService {
         };
 
       case 'liquidity_pool_shares':
+        if (!horizonBalance.asset_code) {
+          throw new HorizonAssetParseError(
+            'Liquidity pool shares entry is missing asset_code',
+          );
+        }
         return {
           type: AssetType.LIQUIDITY_POOL_SHARES,
           code: horizonBalance.asset_code,
         };
 
       default:
-        throw new Error(`Unknown asset type: ${horizonBalance.asset_type}`);
+        throw new HorizonAssetParseError(
+          `Unknown asset type: ${horizonBalance.asset_type}`,
+        );
+    }
+  }
+
+  /** Credit-alphanum assets must carry both code and issuer. */
+  private assertCreditAssetFields(horizonBalance: HorizonBalance): void {
+    if (!horizonBalance.asset_code || !horizonBalance.asset_issuer) {
+      throw new HorizonAssetParseError(
+        `${horizonBalance.asset_type} entry is missing asset_code or asset_issuer`,
+      );
     }
   }
 
@@ -167,7 +227,6 @@ export class StellarHorizonService {
     };
   }
 }
-
 export interface HorizonAccountResponse {
   id: string;
   sequence: string;
@@ -227,6 +286,9 @@ export class StellarHorizonService {
         `Failed to fetch balances for account ${publicKey}:`,
         error,
       );
+      if (error instanceof HorizonAssetParseError) {
+        throw error;
+      }
       throw new Error(`Horizon API request failed: ${error.message}`);
     }
   }
@@ -247,7 +309,10 @@ export class StellarHorizonService {
   }
 
   /**
-   * Parses Horizon balance format to internal Asset model
+   * Parses Horizon balance format to internal Asset model.
+   *
+   * Throws {@link HorizonAssetParseError} instead of returning an Asset with
+   * undefined code/issuer: a null identity would collide with native XLM.
    */
   private parseAsset(horizonBalance: HorizonBalance): Asset {
     switch (horizonBalance.asset_type) {
@@ -255,6 +320,7 @@ export class StellarHorizonService {
         return { type: AssetType.NATIVE };
 
       case 'credit_alphanum4':
+        this.assertCreditAssetFields(horizonBalance);
         return {
           type: AssetType.CREDIT_ALPHANUM4,
           code: horizonBalance.asset_code,
@@ -262,6 +328,7 @@ export class StellarHorizonService {
         };
 
       case 'credit_alphanum12':
+        this.assertCreditAssetFields(horizonBalance);
         return {
           type: AssetType.CREDIT_ALPHANUM12,
           code: horizonBalance.asset_code,
@@ -269,13 +336,29 @@ export class StellarHorizonService {
         };
 
       case 'liquidity_pool_shares':
+        if (!horizonBalance.asset_code) {
+          throw new HorizonAssetParseError(
+            'Liquidity pool shares entry is missing asset_code',
+          );
+        }
         return {
           type: AssetType.LIQUIDITY_POOL_SHARES,
           code: horizonBalance.asset_code,
         };
 
       default:
-        throw new Error(`Unknown asset type: ${horizonBalance.asset_type}`);
+        throw new HorizonAssetParseError(
+          `Unknown asset type: ${horizonBalance.asset_type}`,
+        );
+    }
+  }
+
+  /** Credit-alphanum assets must carry both code and issuer. */
+  private assertCreditAssetFields(horizonBalance: HorizonBalance): void {
+    if (!horizonBalance.asset_code || !horizonBalance.asset_issuer) {
+      throw new HorizonAssetParseError(
+        `${horizonBalance.asset_type} entry is missing asset_code or asset_issuer`,
+      );
     }
   }
 
@@ -308,3 +391,4 @@ export class StellarHorizonService {
     };
   }
 }
+

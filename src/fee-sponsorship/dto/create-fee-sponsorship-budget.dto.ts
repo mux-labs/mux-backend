@@ -1,5 +1,6 @@
-import { IsString, IsNotEmpty, IsEnum, IsOptional, IsPositive, MaxLength } from 'class-validator';
+import { IsString, IsNotEmpty, IsEnum, IsOptional, MaxLength } from 'class-validator';
 import { FeeSponsorshipBudgetStatus, FeeSponsorshipNetwork } from '../domain/fee-sponsorship-budget.model';
+import { IsPositiveStroopsString } from './is-positive-stroops-string.decorator';
 
 /**
  * Request payload for creating a fee sponsorship budget.
@@ -19,9 +20,7 @@ export class CreateFeeSponsorshipBudgetDto {
   @IsNotEmpty()
   sponsorId!: string;
 
-  @IsString()
-  @IsNotEmpty()
-  @IsPositive()
+  @IsPositiveStroopsString()
   limitAmount!: string;
 
   @IsOptional()
