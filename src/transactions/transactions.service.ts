@@ -1,5 +1,3 @@
-import {
-  BadRequestException,
 import { randomUUID } from 'crypto';
 import {
   BadRequestException,
@@ -7,10 +5,6 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
-} from '@nestjs/common';
-  Injectable,
-  Logger,
-  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
@@ -222,6 +216,11 @@ export class TransactionsService {
     offset?: number;
     cursor?: string;
   }): Promise<TransactionPage> {
+    if (filters?.cursor !== undefined && filters?.offset !== undefined) {
+      throw new BadRequestException(
+        'cursor and offset are mutually exclusive',
+      );
+    }
     const pageSize = Math.min(filters?.limit ?? 20, 100);
     const where: any = {};
 
