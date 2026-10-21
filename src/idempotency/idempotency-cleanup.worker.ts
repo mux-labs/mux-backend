@@ -5,10 +5,21 @@ import {
   OnModuleDestroy,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { MetricsService } from '../metrics/metrics.service';
 import {
   IdempotencyService,
   DEFAULT_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
 } from './idempotency.service';
+
+/** Counter: rows deleted by completed cleanup ticks (0-increments keep the series visible). */
+export const IDEMPOTENCY_CLEANUP_DELETED_METRIC =
+  'idempotency_cleanup_deleted_total';
+/** Counter: cleanup ticks that failed with an error (e.g. database outage). */
+export const IDEMPOTENCY_CLEANUP_FAILED_METRIC =
+  'idempotency_cleanup_failed_total';
+/** Counter: cleanup ticks skipped because the previous pass was still running. */
+export const IDEMPOTENCY_CLEANUP_SKIPPED_METRIC =
+  'idempotency_cleanup_skipped_total';
 
 /**
  * IdempotencyCleanupWorker
@@ -56,6 +67,7 @@ export class IdempotencyCleanupWorker implements OnModuleInit, OnModuleDestroy {
   constructor(
     private readonly idempotencyService: IdempotencyService,
     private readonly configService: ConfigService,
+    private readonly metrics: MetricsService,
   ) {
     const cleanup = this.configService.get<{
       enabled: boolean;
@@ -117,6 +129,7 @@ export class IdempotencyCleanupWorker implements OnModuleInit, OnModuleDestroy {
       this.logger.warn(
         'Idempotency cleanup already running, skipping this tick',
       );
+      this.metrics.incrementCounter(IDEMPOTENCY_CLEANUP_SKIPPED_METRIC);
       return 0;
     }
 
@@ -124,6 +137,10 @@ export class IdempotencyCleanupWorker implements OnModuleInit, OnModuleDestroy {
     try {
       const result = await this.idempotencyService.cleanupExpiredRecords(
         this.batchSize,
+      );
+      this.metrics.incrementCounter(
+        IDEMPOTENCY_CLEANUP_DELETED_METRIC,
+        result.deleted,
       );
       if (result.deleted > 0) {
         this.logger.log(
@@ -133,6 +150,7 @@ export class IdempotencyCleanupWorker implements OnModuleInit, OnModuleDestroy {
       }
       return result.deleted;
     } catch (err) {
+      this.metrics.incrementCounter(IDEMPOTENCY_CLEANUP_FAILED_METRIC);
       this.logger.error(
         'Idempotency cleanup tick failed',
         err instanceof Error ? err.message : String(err),

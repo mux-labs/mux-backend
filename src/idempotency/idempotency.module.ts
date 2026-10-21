@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { PrismaModule } from '../prisma/prisma.module';
-import { MetricsService } from '../metrics/metrics.service';
+import { MetricsService } from '../common/metrics/metrics.service';
 import { IdempotencyService } from './idempotency.service';
 import { IdempotencyCleanupWorker } from './idempotency-cleanup.worker';
 import { IDEMPOTENCY_RECORD_STORE } from './idempotency.constants';
