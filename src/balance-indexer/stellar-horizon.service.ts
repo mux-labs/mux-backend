@@ -2,6 +2,21 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Asset, AssetType, BalanceUpdate } from './domain/balance.model';
 import { horizonErrorStatus } from './horizon-retry.policy';
+import { BalanceIndexerErrorCode } from './balance-indexer.error-codes';
+
+/**
+ * Raised when a Horizon asset entry cannot be turned into a trustworthy Asset.
+ * Carries a stable code so callers can classify the failure without matching
+ * on the message text.
+ */
+export class HorizonAssetParseError extends Error {
+  readonly code = BalanceIndexerErrorCode.DEPENDENCY_MALFORMED;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'HorizonAssetParseError';
+  }
+}
 
 export interface HorizonAccountResponse {
   id: string;
@@ -91,6 +106,9 @@ export class StellarHorizonService {
         `Failed to fetch balances for account ${publicKey}:`,
         error,
       );
+      if (error instanceof HorizonAssetParseError) {
+        throw error;
+      }
       throw new HorizonRequestError(
         `Horizon API request failed: ${error.message}`,
         horizonErrorStatus(error),
@@ -115,7 +133,10 @@ export class StellarHorizonService {
   }
 
   /**
-   * Parses Horizon balance format to internal Asset model
+   * Parses Horizon balance format to internal Asset model.
+   *
+   * Throws {@link HorizonAssetParseError} instead of returning an Asset with
+   * undefined code/issuer: a null identity would collide with native XLM.
    */
   private parseAsset(horizonBalance: HorizonBalance): Asset {
     switch (horizonBalance.asset_type) {
@@ -123,6 +144,7 @@ export class StellarHorizonService {
         return { type: AssetType.NATIVE };
 
       case 'credit_alphanum4':
+        this.assertCreditAssetFields(horizonBalance);
         return {
           type: AssetType.CREDIT_ALPHANUM4,
           code: horizonBalance.asset_code,
@@ -130,6 +152,7 @@ export class StellarHorizonService {
         };
 
       case 'credit_alphanum12':
+        this.assertCreditAssetFields(horizonBalance);
         return {
           type: AssetType.CREDIT_ALPHANUM12,
           code: horizonBalance.asset_code,
@@ -137,13 +160,29 @@ export class StellarHorizonService {
         };
 
       case 'liquidity_pool_shares':
+        if (!horizonBalance.asset_code) {
+          throw new HorizonAssetParseError(
+            'Liquidity pool shares entry is missing asset_code',
+          );
+        }
         return {
           type: AssetType.LIQUIDITY_POOL_SHARES,
           code: horizonBalance.asset_code,
         };
 
       default:
-        throw new Error(`Unknown asset type: ${horizonBalance.asset_type}`);
+        throw new HorizonAssetParseError(
+          `Unknown asset type: ${horizonBalance.asset_type}`,
+        );
+    }
+  }
+
+  /** Credit-alphanum assets must carry both code and issuer. */
+  private assertCreditAssetFields(horizonBalance: HorizonBalance): void {
+    if (!horizonBalance.asset_code || !horizonBalance.asset_issuer) {
+      throw new HorizonAssetParseError(
+        `${horizonBalance.asset_type} entry is missing asset_code or asset_issuer`,
+      );
     }
   }
 
@@ -188,3 +227,168 @@ export class StellarHorizonService {
     };
   }
 }
+export interface HorizonAccountResponse {
+  id: string;
+  sequence: string;
+  balances: HorizonBalance[];
+}
+
+export interface HorizonBalance {
+  asset_type: string;
+  asset_code?: string;
+  asset_issuer?: string;
+  balance: string;
+}
+
+/**
+ * Service for interacting with Stellar Horizon API
+ *
+ * In production, use stellar-sdk:
+ * import { Server } from 'stellar-sdk';
+ */
+@Injectable()
+export class StellarHorizonService {
+  private readonly logger = new Logger(StellarHorizonService.name);
+  private readonly horizonUrl: string;
+
+  constructor(private readonly configService: ConfigService) {
+    // Default to testnet
+    this.horizonUrl = this.configService.get<string>(
+      'STELLAR_HORIZON_URL',
+      'https://horizon-testnet.stellar.org',
+    );
+
+    this.logger.log(`Initialized Stellar Horizon client: ${this.horizonUrl}`);
+  }
+
+  /**
+   * Fetches account balances from Stellar Horizon
+   */
+  async getAccountBalances(publicKey: string): Promise<BalanceUpdate[]> {
+    try {
+      // Simplified mock implementation
+      const response = await this.mockHorizonRequest(publicKey);
+
+      const balances: BalanceUpdate[] = response.balances.map((balance) => ({
+        walletId: '', // Will be set by caller
+        asset: this.parseAsset(balance),
+        balance: balance.balance,
+        ledgerSequence: parseInt(response.sequence, 10),
+        timestamp: new Date(),
+      }));
+
+      this.logger.log(
+        `Fetched ${balances.length} balances for account ${publicKey.substring(0, 8)}...`,
+      );
+      return balances;
+    } catch (error) {
+      this.logger.error(
+        `Failed to fetch balances for account ${publicKey}:`,
+        error,
+      );
+      if (error instanceof HorizonAssetParseError) {
+        throw error;
+      }
+      throw new Error(`Horizon API request failed: ${error.message}`);
+    }
+  }
+
+  /**
+   * Checks if an account exists on-chain
+   */
+  async accountExists(publicKey: string): Promise<boolean> {
+    try {
+      await this.mockHorizonRequest(publicKey);
+      return true;
+    } catch (error) {
+      if (error.message.includes('404')) {
+        return false;
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Parses Horizon balance format to internal Asset model.
+   *
+   * Throws {@link HorizonAssetParseError} instead of returning an Asset with
+   * undefined code/issuer: a null identity would collide with native XLM.
+   */
+  private parseAsset(horizonBalance: HorizonBalance): Asset {
+    switch (horizonBalance.asset_type) {
+      case 'native':
+        return { type: AssetType.NATIVE };
+
+      case 'credit_alphanum4':
+        this.assertCreditAssetFields(horizonBalance);
+        return {
+          type: AssetType.CREDIT_ALPHANUM4,
+          code: horizonBalance.asset_code,
+          issuer: horizonBalance.asset_issuer,
+        };
+
+      case 'credit_alphanum12':
+        this.assertCreditAssetFields(horizonBalance);
+        return {
+          type: AssetType.CREDIT_ALPHANUM12,
+          code: horizonBalance.asset_code,
+          issuer: horizonBalance.asset_issuer,
+        };
+
+      case 'liquidity_pool_shares':
+        if (!horizonBalance.asset_code) {
+          throw new HorizonAssetParseError(
+            'Liquidity pool shares entry is missing asset_code',
+          );
+        }
+        return {
+          type: AssetType.LIQUIDITY_POOL_SHARES,
+          code: horizonBalance.asset_code,
+        };
+
+      default:
+        throw new HorizonAssetParseError(
+          `Unknown asset type: ${horizonBalance.asset_type}`,
+        );
+    }
+  }
+
+  /** Credit-alphanum assets must carry both code and issuer. */
+  private assertCreditAssetFields(horizonBalance: HorizonBalance): void {
+    if (!horizonBalance.asset_code || !horizonBalance.asset_issuer) {
+      throw new HorizonAssetParseError(
+        `${horizonBalance.asset_type} entry is missing asset_code or asset_issuer`,
+      );
+    }
+  }
+
+  /**
+   * Mock Horizon request (replace with real stellar-sdk in production)
+   */
+  private async mockHorizonRequest(
+    publicKey: string,
+  ): Promise<HorizonAccountResponse> {
+    // Simulate API call delay
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    // Mock response with realistic data
+    return {
+      id: publicKey,
+      sequence: '123456789',
+      balances: [
+        {
+          asset_type: 'native',
+          balance: '1000.5000000',
+        },
+        {
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer:
+            'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+          balance: '500.0000000',
+        },
+      ],
+    };
+  }
+}
+
