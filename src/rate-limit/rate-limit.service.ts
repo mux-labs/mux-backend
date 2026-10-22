@@ -354,6 +354,12 @@ export class RateLimitService {
 
     const limit = Math.min(batchSize, MAX_QUOTA_CLEANUP_BATCH_SIZE);
     const cutoff = new Date(now.getTime() - windowMs);
+    if (!Number.isFinite(cutoff.getTime()) || cutoff.getTime() > Date.now()) {
+      this.metrics.incrementCounter('developer_quota_cleanup_invalid_cutoff');
+      throw Object.assign(new Error('cleanup cutoff must be a past timestamp'), {
+        code: DeveloperQuotaErrorCode.CLEANUP_INVALID_BATCH_SIZE,
+      });
+    }
 
     let deleted: { count: number };
     try {
