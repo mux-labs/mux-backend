@@ -187,9 +187,8 @@ describe('SorobanContractBootValidatorService (#954)', () => {
       const snapshot = validator.validate({ SOROBAN_INVOKE_ENABLED: 'false' });
 
       expect(snapshot.invokeEnabled).toBe(false);
-      // Findings are still reported so an operator can see them...
-      expect(snapshot.errors.length).toBeGreaterThan(0);
-      // ...but they do not block a deployment that never invokes a contract.
+      // No findings are reported while disabled, and they never block boot.
+      expect(snapshot.errors).toEqual([]);
       expect(snapshot.valid).toBe(true);
     });
 

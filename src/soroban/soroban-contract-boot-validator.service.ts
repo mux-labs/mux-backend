@@ -321,13 +321,13 @@ export class SorobanContractBootValidatorService implements OnModuleInit {
     }
 
     return {
-      // A disabled surface cannot fail on missing configuration: findings are
-      // still reported so an operator sees them, but they do not block boot.
+      // A disabled surface cannot fail on missing configuration, so it reports no
+      // findings and does not block boot.
       valid: errors.length === 0 || !invokeEnabled,
       nodeEnv: env.NODE_ENV ?? 'development',
       invokeEnabled,
       configured,
-      errors,
+      errors: invokeEnabled ? errors : [],
     };
   }
 
@@ -343,8 +343,9 @@ export class SorobanContractBootValidatorService implements OnModuleInit {
 
     if (!snapshot.invokeEnabled) {
       this.logger.log(
-        `Soroban contract boot validation skipped: ${SOROBAN_INVOKE_ENABLED_ENV} ` +
-          'is not enabled (no contract ids required)',
+        `Soroban contract boot validation skipped: {"valid":${snapshot.valid},` +
+          `"invokeEnabled":${snapshot.invokeEnabled},` +
+          `"nodeEnv":${JSON.stringify(snapshot.nodeEnv)}}`,
       );
       return;
     }
