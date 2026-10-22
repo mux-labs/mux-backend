@@ -97,12 +97,15 @@ export class MaintenanceGuard implements CanActivate {
       this.cacheExpiresAt = now + this.CACHE_TTL_MS;
       
       return this.cachedState;
-    } catch (error) {
-      this.logger.error('Failed to read maintenance state, failing closed', error);
+    } catch {
+      // Log a stable message only: the raw Prisma error can carry the connection string.
+      this.logger.error('Failed to read maintenance state, failing closed');
       // Fail closed: an unreadable persisted state must not be reported as disabled.
+      // Not cached, so the next request retries the read.
       throw new ServiceUnavailableException({
-        code: 'MAINTENANCE_STATE_UNAVAILABLE',
-        message: 'Maintenance state is currently unavailable',
+        code: 'MAINTENANCE_MODE',
+        message: 'Service temporarily unavailable for maintenance',
+        retryAfter: DEFAULT_MAINTENANCE_RETRY_AFTER_SECONDS,
       });
     }
   }
