@@ -122,6 +122,59 @@ describe('AppController (e2e)', () => {
 
       expect([401, 403]).toContain(response.status);
     });
+
+    it('should reject wallet creation without credentials', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/wallets')
+        .send({ label: 'e2e-wallet' });
+
+      expect([401, 403]).toContain(response.status);
+    });
+
+    it('should reject wallet creation with malformed bearer token', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/wallets')
+        .set('Authorization', 'Bearer not-a-real-jwt')
+        .send({ label: 'e2e-wallet' });
+
+      expect([401, 403]).toContain(response.status);
+    });
+
+    it('should reject spending-limit update without credentials', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/wallets/placeholder-wallet-id/limits')
+        .send({ dailyLimit: '100', asset: 'XLM' });
+
+      expect([401, 403]).toContain(response.status);
+    });
+
+    it('should reject spending-limit update with malformed bearer token', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/wallets/placeholder-wallet-id/limits')
+        .set('Authorization', 'Bearer not-a-real-jwt')
+        .send({ dailyLimit: '100', asset: 'XLM' });
+
+      expect([401, 403]).toContain(response.status);
+    });
+
+    it('should reject soroban invoke without credentials (auth before feature gate)', async () => {
+      // Auth must be evaluated before the SOROBAN_INVOKE_ENABLED feature gate,
+      // so unauthenticated requests are rejected regardless of flag state.
+      const response = await request(app.getHttpServer())
+        .post('/v1/soroban/invoke')
+        .send({ contractId: 'placeholder-contract-id', method: 'noop', args: [] });
+
+      expect([401, 403]).toContain(response.status);
+    });
+
+    it('should reject soroban invoke with malformed bearer token (auth before feature gate)', async () => {
+      const response = await request(app.getHttpServer())
+        .post('/v1/soroban/invoke')
+        .set('Authorization', 'Bearer not-a-real-jwt')
+        .send({ contractId: 'placeholder-contract-id', method: 'noop', args: [] });
+
+      expect([401, 403]).toContain(response.status);
+    });
   });
 
   describe('idempotency on money-path writes', () => {

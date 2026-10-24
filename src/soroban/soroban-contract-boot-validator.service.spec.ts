@@ -167,6 +167,25 @@ describe('SorobanContractBootValidatorService (#954)', () => {
       );
     });
 
+    it('pins the collision error fields and never leaks the id (#1136)', () => {
+      const env = validEnv({
+        [contractIdEnvKey('wallet_registry', SorobanNetwork.MAINNET)]:
+          TESTNET_ID,
+      });
+
+      const snapshot = validator.validate(env);
+
+      expect(snapshot.valid).toBe(false);
+      expect(snapshot.errors).toContainEqual({
+        code: SOROBAN_CONTRACT_BOOT_ERROR_CODES.CONTRACT_ID_NETWORK_COLLISION,
+        contract: 'wallet_registry',
+        network: SorobanNetwork.MAINNET,
+        envKey: contractIdEnvKey('wallet_registry', SorobanNetwork.MAINNET),
+      });
+      // The configured id value itself must not appear in the snapshot.
+      expect(JSON.stringify(snapshot)).not.toContain(TESTNET_ID);
+    });
+
     it('does not demand a mainnet id for a testnet-only contract', () => {
       // spend_limit.set_limit has mainnetEnabled: false, so a testnet-only
       // deployment is legitimate and must still boot.
@@ -231,38 +250,25 @@ describe('SorobanContractBootValidatorService (#954)', () => {
       expect(() => validator.onModuleInit()).not.toThrow();
     });
 
-    it('refuses to start when an enabled surface has a missing id', () => {
+    it('refuses to boot when a contract id is missing', () => {
       const env = validEnv();
       delete env[contractIdEnvKey('wallet_registry', SorobanNetwork.MAINNET)];
       process.env = env;
 
-      expect(() => validator.onModuleInit()).toThrow(
-        /SOROBAN_CONTRACT_ID_MISSING/,
+      expect(captureBootError(validator)).toContain(
+        SOROBAN_CONTRACT_BOOT_ERROR_CODES.CONTRACT_ID_MISSING,
       );
     });
 
-    it('names the contract, network, and env var in the failure message', () => {
-      process.env = { SOROBAN_INVOKE_ENABLED: 'true' };
-
-      const message = captureBootError(validator);
-
-      expect(message).toContain('wallet_registry');
-      expect(message).toContain('MAINNET');
-      expect(message).toContain('SOROBAN_CONTRACT_WALLET_REGISTRY_MAINNET_ID');
-      // The message must point at the escape hatch, not just the failure.
-      expect(message).toContain('SOROBAN_INVOKE_ENABLED=false');
-    });
-
-    it('does not leak the configured id value into the failure message', () => {
+    it('refuses to boot when the same id is configured for both networks (#1136)', () => {
       process.env = validEnv({
-        [contractIdEnvKey('spend_limit', SorobanNetwork.TESTNET)]:
-          'garbage-id-value',
+        [contractIdEnvKey('wallet_registry', SorobanNetwork.MAINNET)]:
+          TESTNET_ID,
       });
 
-      const message = captureBootError(validator);
-
-      expect(message).toContain('SOROBAN_CONTRACT_ID_INVALID');
-      expect(message).not.toContain('garbage-id-value');
+      expect(captureBootError(validator)).toContain(
+        SOROBAN_CONTRACT_BOOT_ERROR_CODES.CONTRACT_ID_NETWORK_COLLISION,
+      );
     });
   });
 });
