@@ -1,5 +1,3 @@
-import {
-  BadRequestException,
 import { randomUUID } from 'crypto';
 import {
   BadRequestException,
@@ -7,10 +5,6 @@ import {
   Logger,
   NotFoundException,
   ConflictException,
-} from '@nestjs/common';
-  Injectable,
-  Logger,
-  NotFoundException,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { BalanceIndexerService } from '../balance-indexer/balance-indexer.service';
@@ -25,6 +19,7 @@ import {
 import { Transaction as TransactionEntity } from './entities/transaction.entity';
 import { ErrorCode } from '../common/dto/error-envelope.dto';
 import { InsufficientBalanceException } from './domain/insufficient-balance.exception';
+import { compareDecimalStrings } from './domain/decimal-amount';
 import { WebhookEventEmitterService } from '../webhooks/webhook-event-emitter.service';
 import { WalletStatus } from '../wallets/domain/wallet.model';
 
@@ -160,7 +155,7 @@ export class TransactionsService {
       balanceAsset,
     );
     const available = walletBalance?.balance ?? '0';
-    if (parseFloat(available) < parseFloat(amount)) {
+    if (compareDecimalStrings(available, amount) < 0) {
       throw new InsufficientBalanceException(
         senderWalletId,
         amount,
@@ -222,6 +217,11 @@ export class TransactionsService {
     offset?: number;
     cursor?: string;
   }): Promise<TransactionPage> {
+    if (filters?.cursor !== undefined && filters?.offset !== undefined) {
+      throw new BadRequestException(
+        'cursor and offset are mutually exclusive',
+      );
+    }
     const pageSize = Math.min(filters?.limit ?? 20, 100);
     const where: any = {};
 

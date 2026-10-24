@@ -309,6 +309,7 @@ describe('IdempotencyCleanupWorker', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         IdempotencyCleanupWorker,
+        MetricsService,
         {
           provide: IdempotencyService,
           useValue: { cleanupExpiredRecords },

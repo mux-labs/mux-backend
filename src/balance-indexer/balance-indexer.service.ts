@@ -71,11 +71,11 @@ export class BalanceIndexerService {
     private readonly webhookEventEmitter: WebhookEventEmitterService,
     private readonly prisma: PrismaService,
   ) {
-    // Consider balances stale after 5 minutes
-    this.staleThresholdMs = this.configService.get<number>(
-      'BALANCE_STALE_THRESHOLD_MS',
-      5 * 60 * 1000,
-    );
+    // Value is validated at boot by validateEnv(); the default mirrors it.
+    const raw = this.configService.get<string>('BALANCE_STALE_THRESHOLD_MS');
+    this.staleThresholdMs = raw
+      ? Number(raw)
+      : DEFAULT_BALANCE_STALE_THRESHOLD_MS;
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -561,18 +561,6 @@ export class BalanceIndexerService {
   }
 
   /**
-   * Checks if a balance is stale
-   */
-  private isBalanceStale(balance: any): boolean {
-    if (!balance.lastSyncedAt) {
-      return true;
-    }
-
-    const age = Date.now() - balance.lastSyncedAt.getTime();
-    return age > this.staleThresholdMs;
-  }
-
-  /**
    * Checks if two assets match
    */
   private assetsMatch(asset1: Asset, asset2: Asset): boolean {
@@ -1015,7 +1003,7 @@ export class BalanceIndexerService {
       () => this.prisma.walletBalance.findMany({ where: { walletId } }),
     );
 
-    const cutoff = Date.now() - this.staleThresholdMs();
+    const cutoff = Date.now() - this.staleThresholdMs;
     const stale = rows.filter((row) => {
       // Already-known-bad rows stay in the report regardless of age.
       if (row.syncStatus === 'MISMATCH' || row.syncStatus === 'FAILED') {
@@ -1277,7 +1265,7 @@ export class BalanceIndexerService {
     if (!row.lastSyncedAt) {
       return true;
     }
-    return row.lastSyncedAt.getTime() < Date.now() - this.staleThresholdMs();
+    return row.lastSyncedAt.getTime() < Date.now() - this.staleThresholdMs;
   }
 
   /**
@@ -1367,7 +1355,7 @@ export class BalanceIndexerService {
 
   /** True when at least one asset was synced within the staleness budget. */
   private async hasFreshBalance(walletId: string): Promise<boolean> {
-    const cutoff = new Date(Date.now() - this.staleThresholdMs());
+    const cutoff = new Date(Date.now() - this.staleThresholdMs);
     const count = await this.withDependencyGuard(
       `balances.sync.freshness wallet=${walletId}`,
       () =>
@@ -1376,14 +1364,6 @@ export class BalanceIndexerService {
         }),
     );
     return count > 0;
-  }
-
-  private staleThresholdMs(): number {
-    const raw = process.env.BALANCE_STALE_THRESHOLD_MS;
-    const parsed = raw ? Number.parseInt(raw, 10) : Number.NaN;
-    return Number.isFinite(parsed) && parsed > 0
-      ? parsed
-      : DEFAULT_BALANCE_STALE_THRESHOLD_MS;
   }
 
   /**

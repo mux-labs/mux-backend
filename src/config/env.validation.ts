@@ -3,6 +3,7 @@
  * Fail-fast: throws if any required variable is missing or invalid.
  */
 
+import { DEFAULT_BALANCE_STALE_THRESHOLD_MS } from '../balance-indexer/balance-indexer.error-codes';
 import {
   resolveDatabasePoolConfig,
   validateDatabasePoolEnv,
@@ -13,6 +14,8 @@ export interface ValidatedEnv {
   DATABASE_URL: string;
   STELLAR_NETWORK: 'mainnet' | 'testnet';
   JSON_BODY_LIMIT_BYTES: number;
+  /** Balance staleness budget in ms; positive integer (default 5 minutes). */
+  BALANCE_STALE_THRESHOLD_MS: number;
   /** Optional Prisma/Postgres pool ceiling (#951). */
   DATABASE_POOL_SIZE?: number;
   /** Optional Prisma `pool_timeout` in seconds (#951). */
@@ -203,6 +206,20 @@ export function validateEnv(
     600000,
   );
   const BALANCE_SYNC_MAX_RETRIES = parseNumber(env.BALANCE_SYNC_MAX_RETRIES, 3);
+  // A zero, negative, fractional or non-numeric budget would silently make
+  // every balance stale (or never stale), so reject it at boot.
+  const BALANCE_STALE_THRESHOLD_MS = parseRequiredNumber(
+    env.BALANCE_STALE_THRESHOLD_MS,
+    DEFAULT_BALANCE_STALE_THRESHOLD_MS,
+    'BALANCE_STALE_THRESHOLD_MS',
+    errors,
+  );
+  if (
+    !Number.isInteger(BALANCE_STALE_THRESHOLD_MS) ||
+    BALANCE_STALE_THRESHOLD_MS <= 0
+  ) {
+    errors.push('BALANCE_STALE_THRESHOLD_MS must be a positive integer');
+  }
   const CORS_ORIGINS = parseCorsOrigins(env.CORS_ORIGINS);
   const WEBHOOK_MAX_RETRIES = parseNumber(env.WEBHOOK_MAX_RETRIES, 5);
   const WEBHOOK_RETRY_BACKOFF_MS = parseNumber(
@@ -287,4 +304,45 @@ export function validateEnv(
       errors.push(
         'OTEL_EXPORTER_OTLP_ENDPOINT is re
 
-/* … truncated 1716 chars — edit only what you need near the top … */
+  const AUTH_SKIP_JWT_VERIFICATION = parseBoolean(
+    env.AUTH_SKIP_JWT_VERIFICATION,
+    false,
+  );
+  if (AUTH_SKIP_JWT_VERIFICATION && NODE_ENV === 'production') {
+    errors.push('AUTH_SKIP_JWT_VERIFICATION must not be enabled in production');
+  }
+
+  const OTEL_EXPORTER_OTLP_PROTOCOL =
+    env.OTEL_EXPORTER_OTLP_PROTOCOL ?? 'http/protobuf';
+  const JSON_BODY_LIMIT_BYTES = parseNumber(env.JSON_BODY_LIMIT_BYTES, 102400); // 100 KiB default
+
+  // DB pool sizing (#951): fail closed at boot on a malformed value rather than
+  // silently falling back to the engine default (an unbounded pool).
+  for (const issue of validateDatabasePoolEnv(env)) {
+    errors.push(`${issue.variable} ${issue.message}`);
+  }
+  const poolConfig = resolveDatabasePoolConfig(env);
+
+  if (errors.length > 0) {
+    const message = [
+      'Environment validation failed:',
+      ...errors.map((e) => `  - ${e}`),
+    ].join('\n');
+    throw new Error(message);
+  }
+
+  return {
+    PORT,
+    DATABASE_URL: DATABASE_URL as string,
+    STELLAR_NETWORK: STELLAR_NETWORK.toLowerCase() as 'mainnet' | 'testnet',
+    JSON_BODY_LIMIT_BYTES,
+    BALANCE_STALE_THRESHOLD_MS,
+    DATABASE_POOL_SIZE: poolConfig.poolSize,
+    DATABASE_POOL_TIMEOUT_SECONDS: poolConfig.poolTimeoutSeconds,
+    DATABASE_CONNECT_TIMEOUT_SECONDS: poolConfig.connectTimeoutSeconds,
+    CORS_ORIGINS: CORS_ORIGINS.join(','),
+    MAINNET_PAYMENT_ENABLED: String(MAINNET_PAYMENTS_ENABLED),
+    NODE_ENV,
+    LOG_LEVEL: env.LOG_LEVEL ?? 'info',
+  };
+}

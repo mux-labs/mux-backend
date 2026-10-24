@@ -77,6 +77,11 @@ export class DeveloperQuotaGuard implements CanActivate {
     );
     this.setRateLimitHeaders(request, decision.limitRpm, 0);
     this.setHeader(request, 'Retry-After', String(retryAfterSeconds));
+    this.setHeader(
+      request,
+      'X-RateLimit-Reset',
+      String(Math.floor(decision.resetAt / 1000)),
+    );
 
     throw new HttpException(
       {
