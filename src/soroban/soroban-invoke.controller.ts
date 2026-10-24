@@ -8,6 +8,7 @@ import {
   HttpStatus,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
 import { ApiKeyGuard } from '../api-keys/api-key.guard';
@@ -20,6 +21,14 @@ import type {
 } from './soroban-invoke.model';
 import { InvokeSorobanDto } from './dto/invoke-soroban.dto';
 import { resolveRequestId } from '../common/interceptors/request-id.interceptor';
+
+/** The request shape the actor is read from. Set by `ApiKeyGuard`. */
+interface PrincipalRequest {
+  apiKey?: {
+    developer?: { id?: unknown };
+    project?: { id?: unknown };
+  };
+}
 
 /**
  * REST surface for Soroban contract invocation.
@@ -87,6 +96,7 @@ export class SorobanInvokeController {
   @UseGuards(ApiKeyGuard)
   async invoke(
     @Body() body: InvokeSorobanDto,
+    @Req() request: PrincipalRequest,
     @Headers('x-request-id') correlationId?: string,
   ): Promise<InvokeResult> {
     return this.soroban.invoke(
@@ -98,21 +108,38 @@ export class SorobanInvokeController {
         simulateOnly: body?.simulateOnly,
         maxFee: body?.maxFee,
       },
-      this.actor(correlationId),
+      this.actor(request, correlationId),
     );
   }
 
   /**
    * Builds the actor from the validated request.
    *
-   * `ApiKeyGuard` has already resolved the principal, so the role reflects what
-   * the server determined — never what the client claimed in the body.
+   * `ApiKeyGuard` has already resolved the principal, so the subject reflects what
+   * the server determined — never what the client claimed in the body. The
+   * developer is preferred, then the project; the literal `'api-key'` is used
+   * only when no principal is present.
    */
-  private actor(correlationId: string | undefined): InvokeActor {
+  private actor(
+    request: PrincipalRequest,
+    correlationId: string | undefined,
+  ): InvokeActor {
     return {
-      subjectId: 'api-key',
+      subjectId: this.principalId(request) ?? 'api-key',
       role: 'api-key',
       correlationId: resolveRequestId(correlationId),
     };
+  }
+
+  private principalId(request: PrincipalRequest): string | undefined {
+    const developerId = request?.apiKey?.developer?.id;
+    if (typeof developerId === 'string' && developerId.length > 0) {
+      return developerId;
+    }
+    const projectId = request?.apiKey?.project?.id;
+    if (typeof projectId === 'string' && projectId.length > 0) {
+      return projectId;
+    }
+    return undefined;
   }
 }
