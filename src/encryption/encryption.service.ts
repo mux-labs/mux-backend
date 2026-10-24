@@ -250,8 +250,9 @@ export class EncryptionService {
    * Parses a stored envelope.
    *
    * @throws DecryptionError with `INVALID_DATA` when the envelope is not valid
-   *   JSON or is missing a required field. Fail-closed: a malformed envelope is
-   *   never treated as "empty plaintext".
+   *   JSON, is missing a required field, or has an `iv`/`tag` that is not the
+   *   expected hex length. Fail-closed: a malformed envelope is never treated as
+   *   "empty plaintext".
    */
   deserializeFromStorage(storedData: string): EncryptionResult {
     let parsed: EncryptionResult;
@@ -272,7 +273,27 @@ export class EncryptionService {
       );
     }
 
+    // GCM accepts IVs of any length, so a truncated IV would otherwise reach
+    // the auth-tag check and be reported as DECRYPTION_FAILED.
+    if (
+      !this.isHexOfBytes(parsed.iv, this.ivLength) ||
+      !this.isHexOfBytes(parsed.tag, this.tagLength)
+    ) {
+      throw new DecryptionError(
+        'Invalid encrypted data format: malformed iv or tag',
+        'INVALID_DATA',
+      );
+    }
+
     return parsed;
+  }
+
+  /** Whether `value` is a hex string encoding exactly `bytes` bytes. */
+  private isHexOfBytes(value: unknown, bytes: number): boolean {
+    return (
+      typeof value === 'string' &&
+      new RegExp(`^[0-9a-f]{${bytes * 2}}$`, 'i').test(value)
+    );
   }
 
   /** Encrypts and serializes in one call. */
