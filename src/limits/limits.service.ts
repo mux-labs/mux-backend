@@ -37,6 +37,11 @@ export class LimitsService {
    * The requested `amount` must be a finite, positive number; anything else
    * (NaN, Infinity, negative, zero, or an unparseable string) fails closed
    * with a `BadRequestException` before any limit lookup occurs.
+   *
+   * A missing daily limit (no wallet row or a non-finite stored value) is a
+   * distinct failure from a stored limit of zero: the former fails closed with
+   * `DAILY_LIMIT_NOT_CONFIGURED`, the latter rejects positive amounts with
+   * `DAILY_LIMIT_ZERO`.
    */
   async checkLimits(walletId: string, amount: string): Promise<LimitCheckResult> {
     const amountNum = Number(amount);
@@ -47,6 +52,20 @@ export class LimitsService {
     }
 
     const dailyLimit = await this.getDailyLimit(walletId);
+
+    if (dailyLimit === null) {
+      throw new ForbiddenException({
+        code: 'DAILY_LIMIT_NOT_CONFIGURED',
+        message: `No daily limit is configured for wallet ${walletId}`,
+      });
+    }
+
+    if (dailyLimit === 0) {
+      throw new ForbiddenException({
+        code: 'DAILY_LIMIT_ZERO',
+        message: `Daily limit for wallet ${walletId} is configured as zero`,
+      });
+    }
 
     const startOfDay = new Date();
     startOfDay.setUTCHours(0, 0, 0, 0);
@@ -152,12 +171,22 @@ export class LimitsService {
     await this.prisma.walletLimit.delete({ where: { walletId } });
   }
 
-  private async getDailyLimit(walletId: string): Promise<number> {
+  /**
+   * Returns the wallet's daily limit, or `null` when it is absent.
+   *
+   * A missing wallet row or a non-finite stored value is reported as `null`
+   * (absent) rather than coerced to `0`, so callers can distinguish a missing
+   * limit from a configured zero.
+   */
+  private async getDailyLimit(walletId: string): Promise<number | null> {
     const wallet = await this.prisma.wallet.findUnique({
       where: { id: walletId },
       select: { dailyLimit: true },
     });
-    const limit = Number(wallet?.dailyLimit);
-    return Number.isFinite(limit) ? limit : 0;
+    if (!wallet || wallet.dailyLimit === null || wallet.dailyLimit === undefined) {
+      return null;
+    }
+    const limit = Number(wallet.dailyLimit);
+    return Number.isFinite(limit) ? limit : null;
   }
 }
