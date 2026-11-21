@@ -49,6 +49,10 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
  *
  * #1112 – Ownership is resolved by the controller from the API key context and
  * passed explicitly as `developerOwnerId`; it is never read from the request body.
+ *
+ * #1250 – When isolation is on, a missing developerOwnerId must never fall back
+ * to an unscoped query. Read paths return an empty page; write paths reject with
+ * 403. The unscoped list is only available when the flag is explicitly 'false'.
  */
 @Injectable()
 export class PaymentsService {
@@ -78,6 +82,18 @@ export class PaymentsService {
     if (!allowed.includes(next)) {
       throw new BadRequestException(
         `Cannot transition payment from ${current} to ${next}`,
+      );
+    }
+  }
+
+  /**
+   * #1250 – With isolation on, a missing owner id must not degrade into an
+   * unscoped query. Write paths call this to reject the request outright.
+   */
+  private assertOwnerPresent(developerOwnerId?: string): void {
+    if (this.isolationEnabled && !developerOwnerId) {
+      throw new ForbiddenException(
+        'developerOwnerId is required when payment isolation is enabled',
       );
     }
   }
@@ -192,9 +208,18 @@ export class PaymentsService {
 
   /**
    * Returns all payments scoped to a developer.
-   * Without developerOwnerId (legacy path), returns all payments.
+   * #1250 – With isolation on, a missing developerOwnerId returns an empty page
+   * instead of an unscoped findMany. The unscoped list is only available when
+   * PAYMENT_ISOLATION_ENABLED is explicitly 'false'.
    */
   async findAll(developerOwnerId?: string) {
+    if (this.isolationEnabled && !developerOwnerId) {
+      this.logger.warn(
+        'findAll called without developerOwnerId while isolation is enabled; returning empty page',
+      );
+      return [];
+    }
+
     const where =
       this.isolationEnabled && developerOwnerId
         ? { developerOwnerId }
@@ -212,12 +237,16 @@ export class PaymentsService {
    * enumeration.
    */
   async findOne(id: string, developerOwnerId?: string) {
-    const payment = await this.prisma.payment.findUnique({ where: { id } });
+    if (this.isolationEnabled && !developerOwnerId) {
+      throw new ForbiddenException(
+        'developerOwnerId is required when payment isolation is enabled',
+      );
+    }
 
+    const payment = await this.prisma.payment.findUnique({ where: { id } });
     if (!payment) {
       throw new NotFoundException(`Payment ${id} not found`);
     }
-
     if (
       this.isolationEnabled &&
       developerOwnerId &&
@@ -225,61 +254,56 @@ export class PaymentsService {
     ) {
       throw new NotFoundException(`Payment ${id} not found`);
     }
-
     return payment;
   }
 
-  /**
-   * Updates a payment. Ownership is re-checked before mutating, and any status
-   * change is validated against ALLOWED_TRANSITIONS so terminal states are
-   * immutable.
-   */
   async update(
     id: string,
     updatePaymentDto: UpdatePaymentDto,
     developerOwnerId?: string,
   ) {
-    const payment = await this.findOne(id, developerOwnerId);
+    this.assertOwnerPresent(developerOwnerId);
 
-    if (updatePaymentDto.status !== undefined) {
+    const existing = await this.prisma.payment.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      existing.developerOwnerId !== developerOwnerId
+    ) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+
+    if (updatePaymentDto.status) {
       this.assertTransitionAllowed(
-        payment.status as PaymentStatus,
+        existing.status as PaymentStatus,
         updatePaymentDto.status as PaymentStatus,
       );
     }
 
-    const updated = await this.prisma.payment.update({
+    return this.prisma.payment.update({
       where: { id },
-      data: {
-        ...(updatePaymentDto.status !== undefined && {
-          status: updatePaymentDto.status,
-        }),
-        ...(updatePaymentDto.description !== undefined && {
-          description: updatePaymentDto.description,
-        }),
-      },
+      data: updatePaymentDto,
     });
-
-    this.logger.log(
-      `Payment updated id=${id} status=${updated.status} developerOwnerId=${developerOwnerId ?? 'unset'}`,
-    );
-
-    return updated;
   }
 
-  /**
-   * Removes a payment. Ownership is re-checked before deleting; a non-owned id
-   * yields 404 and performs no mutation, matching findOne().
-   */
   async remove(id: string, developerOwnerId?: string) {
-    await this.findOne(id, developerOwnerId);
+    this.assertOwnerPresent(developerOwnerId);
 
-    const removed = await this.prisma.payment.delete({ where: { id } });
+    const existing = await this.prisma.payment.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      existing.developerOwnerId !== developerOwnerId
+    ) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
 
-    this.logger.log(
-      `Payment removed id=${id} developerOwnerId=${developerOwnerId ?? 'unset'}`,
-    );
-
-    return removed;
+    return this.prisma.payment.delete({ where: { id } });
   }
 }
