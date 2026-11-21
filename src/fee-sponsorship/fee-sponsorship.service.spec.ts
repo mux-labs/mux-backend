@@ -193,3 +193,72 @@ describe('FeeSponsorshipService.createBudget', () => {
     expect(prisma.feeSponsorshipBudget.create).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Regression tests for FeeSponsorshipService.enforceAuthorization.
+ *
+ * These assert the invariants documented on enforceAuthorization:
+ * - Deny-by-default: only the wallet owner or an authorized delegate/guardian
+ *   may manage fee sponsorship budgets.
+ * - When sponsorId is given, the authenticated actor must be that sponsor.
+ * - The actor is never taken from the request body.
+ */
+describe('FeeSponsorshipService.enforceAuthorization', () => {
+  const walletId = 'wallet-1';
+  const sponsorId = 'sponsor-1';
+
+  let prisma: any;
+  let metrics: { incrementCounter: jest.Mock };
+  let service: FeeSponsorshipService;
+
+  const actor = (actorId: string): SponsorshipActor =>
+    ({ actorId, correlationId: 'corr-auth' }) as SponsorshipActor;
+
+  beforeEach(() => {
+    prisma = {
+      feeSponsorshipBudget: {
+        findFirst: jest.fn().mockResolvedValue(null),
+        create: jest.fn(),
+      },
+    };
+    metrics = { incrementCounter: jest.fn() };
+    service = new FeeSponsorshipService(prisma as any, metrics as any);
+  });
+
+  it('authorizes the wallet owner', () => {
+    expect(() =>
+      (service as any).enforceAuthorization(walletId, actor(walletId)),
+    ).not.toThrow();
+  });
+
+  it('authorizes an authorized delegate/guardian of the wallet', () => {
+    const delegate = actor('delegate-1');
+    jest
+      .spyOn(service as any, 'isAuthorizedDelegate')
+      .mockReturnValue(true);
+
+    expect(() =>
+      (service as any).enforceAuthorization(walletId, delegate),
+    ).not.toThrow();
+  });
+
+  it('denies an unauthorized actor by default', () => {
+    jest
+      .spyOn(service as any, 'isAuthorizedDelegate')
+      .mockReturnValue(false);
+
+    expect(() =>
+      (service as any).enforceAuthorization(walletId, actor('stranger')),
+    ).toThrow(ForbiddenException);
+  });
+
+  it('requires the actor to be the sponsor when sponsorId is given', () => {
+    expect(() =>
+      (service as any).enforceAuthorization(walletId, actor('not-the-sponsor'), sponsorId),
+    ).toThrow(ForbiddenException);
+
+    expect(() =>
+      (service as any).enforceAuthorization(walletId, actor(sponsorId), sponsorId),
+    ).not.toThrow();
+  });
+});
