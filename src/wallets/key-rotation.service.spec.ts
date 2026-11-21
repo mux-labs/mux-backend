@@ -230,3 +230,46 @@ describe('KeyRotationService.findReplay', () => {
     ).resolves.toBeNull();
   });
 });
+
+describe('KeyRotationService.replayKey', () => {
+  const buildService = () => {
+    const prisma = {};
+    const service = new KeyRotationService(prisma as any);
+    return { service };
+  };
+
+  it('namespaces the idempotency key by wallet', () => {
+    const { service } = buildService();
+
+    const key = service.replayKey('wallet-1', 'idem-1');
+
+    expect(key).toContain('wallet-1');
+    expect(key).toContain('idem-1');
+  });
+
+  it('produces distinct keys for the same idempotency key across different wallets', () => {
+    const { service } = buildService();
+
+    const keyA = service.replayKey('wallet-1', 'idem-1');
+    const keyB = service.replayKey('wallet-2', 'idem-1');
+
+    expect(keyA).not.toEqual(keyB);
+  });
+
+  it('produces distinct keys for different idempotency keys within the same wallet', () => {
+    const { service } = buildService();
+
+    const keyA = service.replayKey('wallet-1', 'idem-1');
+    const keyB = service.replayKey('wallet-1', 'idem-2');
+
+    expect(keyA).not.toEqual(keyB);
+  });
+
+  it('is deterministic for the same (wallet, idempotency key) pair', () => {
+    const { service } = buildService();
+
+    expect(service.replayKey('wallet-1', 'idem-1')).toEqual(
+      service.replayKey('wallet-1', 'idem-1'),
+    );
+  });
+});
