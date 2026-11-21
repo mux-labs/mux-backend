@@ -232,6 +232,7 @@ describe('LimitsService', () => {
 
       await service.removeLimits('wallet-1');
 
+      expect(prisma.walletLimit.delete).toHaveBeenCalledTimes(1);
       expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
         where: { walletId: 'wallet-1' },
       });
