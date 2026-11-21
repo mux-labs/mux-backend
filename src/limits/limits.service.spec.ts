@@ -32,6 +32,10 @@ describe('LimitsService', () => {
     service = module.get<LimitsService>(LimitsService);
   });
 
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
   it('sums only parseable transaction amounts and skips unparseable rows', async () => {
     prisma.transaction.findMany.mockResolvedValue([
       { id: 'tx-1', amount: '10' },
@@ -67,6 +71,48 @@ describe('LimitsService', () => {
     await expect(service.checkLimits('wallet-1', 10, 20)).rejects.toBeInstanceOf(
       ForbiddenException,
     );
+  });
+
+  describe('daily window', () => {
+    it('starts the daily window at UTC midnight', async () => {
+      // Pin the clock so the test does not depend on the current day.
+      jest.useFakeTimers().setSystemTime(new Date('2024-03-15T12:34:56.000Z'));
+
+      prisma.transaction.findMany.mockResolvedValue([]);
+
+      await service.checkLimits('wallet-1', 1, 100);
+
+      expect(prisma.transaction.findMany).toHaveBeenCalledTimes(1);
+      const query = prisma.transaction.findMany.mock.calls[0][0];
+      const gte = query.where.createdAt.gte as Date;
+
+      expect(gte).toBeInstanceOf(Date);
+      expect(gte.toISOString()).toBe('2024-03-15T00:00:00.000Z');
+      expect(gte.getUTCHours()).toBe(0);
+      expect(gte.getUTCMinutes()).toBe(0);
+      expect(gte.getUTCSeconds()).toBe(0);
+      expect(gte.getUTCMilliseconds()).toBe(0);
+    });
+
+    it('excludes a transaction at 23:00 UTC the previous day and includes one at 00:00 UTC', async () => {
+      jest.useFakeTimers().setSystemTime(new Date('2024-03-15T12:34:56.000Z'));
+
+      prisma.transaction.findMany.mockResolvedValue([]);
+
+      await service.checkLimits('wallet-1', 1, 100);
+
+      const query = prisma.transaction.findMany.mock.calls[0][0];
+      const gte = query.where.createdAt.gte as Date;
+
+      const previousDay23 = new Date('2024-03-14T23:00:00.000Z');
+      const midnight = new Date('2024-03-15T00:00:00.000Z');
+
+      // 23:00 UTC the previous day falls before the window and must not count.
+      expect(previousDay23.getTime()).toBeLessThan(gte.getTime());
+      // 00:00 UTC falls exactly on the window bound and must count.
+      expect(midnight.getTime()).toBe(gte.getTime());
+      expect(midnight.getTime()).toBeGreaterThanOrEqual(gte.getTime());
+    });
   });
 
   describe('amount validation', () => {
