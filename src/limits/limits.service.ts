@@ -53,13 +53,19 @@ export class LimitsService {
    *
    * The requested `amount` must be a finite, positive number; anything else
    * (NaN, Infinity, negative, zero, or an unparseable string) fails closed
-   * with a `BadRequestException` before any limit lookup occurs.
+   * with a `BadRequestException` before any limit lookup occurs. The error
+   * message never echoes the caller-supplied amount; only its length is
+   * logged server-side so a large or binary-looking value is not reflected
+   * back to the client.
    */
   async checkLimits(walletId: string, amount: string): Promise<LimitCheckResult> {
     const amountNum = Number(amount);
     if (!Number.isFinite(amountNum) || amountNum <= 0) {
+      this.logger.warn(
+        `Rejected invalid amount for walletId=${walletId} (length=${String(amount).length})`,
+      );
       throw new BadRequestException(
-        `Invalid amount: ${String(amount)} must be a finite, positive number`,
+        'Invalid amount: must be a finite, positive number',
       );
     }
 
