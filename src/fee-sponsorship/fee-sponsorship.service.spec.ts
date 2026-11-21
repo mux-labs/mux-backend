@@ -75,3 +75,72 @@ describe('FeeSponsorshipService.updateBudget', () => {
     ).rejects.toThrow();
   });
 });
+
+describe('FeeSponsorshipService.findBudgetByIdempotencyKey', () => {
+  let service: FeeSponsorshipService;
+
+  beforeEach(async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [FeeSponsorshipService],
+    }).compile();
+
+    service = module.get<FeeSponsorshipService>(FeeSponsorshipService);
+  });
+
+  it('returns the budget matching the idempotency key for a wallet+network', async () => {
+    const created = await service.createBudget({
+      walletId: 'wallet-1',
+      network: 'testnet',
+      idempotencyKey: 'idem-1',
+      amount: 1000,
+    });
+
+    const found = await service.findBudgetByIdempotencyKey({
+      walletId: 'wallet-1',
+      network: 'testnet',
+      idempotencyKey: 'idem-1',
+    });
+
+    expect(found).toBeDefined();
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(created.id);
+    expect(found!.idempotencyKey).toBe('idem-1');
+  });
+
+  it('matches regardless of lifecycle status so replays return the stored budget', async () => {
+    const created = await service.createBudget({
+      walletId: 'wallet-1',
+      network: 'testnet',
+      idempotencyKey: 'idem-2',
+      amount: 1000,
+    });
+
+    await service.updateBudget({
+      budgetId: created.id,
+      callerId: 'owner-1',
+      walletOwnerId: 'owner-1',
+      status: 'CLOSED',
+      amount: 1000,
+    });
+
+    const found = await service.findBudgetByIdempotencyKey({
+      walletId: 'wallet-1',
+      network: 'testnet',
+      idempotencyKey: 'idem-2',
+    });
+
+    expect(found).not.toBeNull();
+    expect(found!.id).toBe(created.id);
+    expect(found!.status).toBe('CLOSED');
+  });
+
+  it('returns null when no budget matches the idempotency key', async () => {
+    const found = await service.findBudgetByIdempotencyKey({
+      walletId: 'wallet-1',
+      network: 'testnet',
+      idempotencyKey: 'missing-key',
+    });
+
+    expect(found).toBeNull();
+  });
+});
