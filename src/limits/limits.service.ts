@@ -37,6 +37,10 @@ export class LimitsService {
    * The requested `amount` must be a finite, positive number; anything else
    * (NaN, Infinity, negative, zero, or an unparseable string) fails closed
    * with a `BadRequestException` before any limit lookup occurs.
+   *
+   * The daily limit is read from the same `walletLimit` row that `setLimits`
+   * writes. A wallet with no limit row fails closed with a
+   * `ForbiddenException` rather than being treated as a limit of 0.
    */
   async checkLimits(walletId: string, amount: string): Promise<LimitCheckResult> {
     const amountNum = Number(amount);
@@ -152,12 +156,29 @@ export class LimitsService {
     await this.prisma.walletLimit.delete({ where: { walletId } });
   }
 
+  /**
+   * Reads the daily limit from the `walletLimit` row that `setLimits` writes.
+   *
+   * A missing row fails closed with a `ForbiddenException` instead of being
+   * treated as a limit of 0, so a wallet without configured limits cannot
+   * silently reject every positive amount.
+   */
   private async getDailyLimit(walletId: string): Promise<number> {
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { id: walletId },
+    const limits = await this.prisma.walletLimit.findUnique({
+      where: { walletId },
       select: { dailyLimit: true },
     });
-    const limit = Number(wallet?.dailyLimit);
-    return Number.isFinite(limit) ? limit : 0;
+    if (!limits) {
+      throw new ForbiddenException(
+        `No daily limit configured for wallet ${walletId}`,
+      );
+    }
+    const limit = Number(limits.dailyLimit);
+    if (!Number.isFinite(limit)) {
+      throw new ForbiddenException(
+        `Invalid daily limit configured for wallet ${walletId}`,
+      );
+    }
+    return limit;
   }
 }
