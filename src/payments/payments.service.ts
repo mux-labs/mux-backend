@@ -21,6 +21,25 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
 };
 
 /**
+ * #1256 – Documented truthy/falsy sets for PAYMENT_ISOLATION_ENABLED.
+ *
+ * Parsing is case-insensitive. Unset defaults to enabled (fail closed).
+ *  - Truthy: 'true', '1', 'yes', 'on'
+ *  - Falsy:  'false', '0', 'no', 'off'
+ * Any other value falls back to the default (enabled) and is logged as such.
+ */
+const ISOLATION_TRUTHY = new Set(['true', '1', 'yes', 'on']);
+const ISOLATION_FALSY = new Set(['false', '0', 'no', 'off']);
+
+function parseIsolationEnabled(raw: string | undefined): boolean {
+  if (raw === undefined) return true;
+  const normalized = raw.trim().toLowerCase();
+  if (ISOLATION_TRUTHY.has(normalized)) return true;
+  if (ISOLATION_FALSY.has(normalized)) return false;
+  return true;
+}
+
+/**
  * #972 – Payment identity isolation across developers.
  *
  * Invariants enforced here:
@@ -36,16 +55,8 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
  *  - Idempotency key uniqueness is enforced at the DB level; the service returns the
  *    cached response instead of re-executing on conflict, but only when the cached
  *    payment belongs to the requesting developer.
- *  - Feature-flagged: if PAYMENT_ISOLATION_ENABLED !== 'true' the guard is bypassed
- *    in development to allow gradual rollout without breaking existing callers.
- *
- * #1104 – Receiver wallet validation.
- *  - The receiver wallet must exist and be ACTIVE, mirroring the send
- *  - Idempotency key uniqueness is enforced at the DB level; the service returns the
- *    cached response instead of re-executing on conflict, but only when the cached
- *    payment belongs to the requesting developer.
- *  - Feature-flagged: if PAYMENT_ISOLATION_ENABLED !== 'true' the guard is bypassed
- *    in development to allow gradual rollout without breaking existing callers.
+ *  - Feature-flagged: PAYMENT_ISOLATION_ENABLED is parsed as a boolean (see
+ *    parseIsolationEnabled); unset defaults to enabled.
  *
  * #1104 – Receiver wallet validation.
  *  - The receiver wallet must exist and be ACTIVE, mirroring the sender checks.
@@ -64,14 +75,22 @@ export class PaymentsService {
 
   /** Kill-switch / feature flag — defaults ON in production-like envs. */
   private get isolationEnabled(): boolean {
-    return process.env['PAYMENT_ISOLATION_ENABLED'] !== 'false';
+    return parseIsolationEnabled(
+      process.env['PAYMENT_ISOLATION_ENABLED'],
+    );
   }
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly limitsService: LimitsService,
     private readonly walletsService: WalletsService,
-  ) {}
+  ) {
+    // #1256 – Log the resolved isolation state exactly once at startup.
+    // Only the derived on/off state is logged; no other env values are emitted.
+    this.logger.log(
+      `Payment isolation is ${this.isolationEnabled ? 'on' : 'off'}`,
+    );
+  }
 
   /**
    * Validates a `current → next` status pair against ALLOWED_TRANSITIONS.
@@ -200,19 +219,6 @@ export class PaymentsService {
 
   /**
    * Returns all payments scoped to a developer.
-   * Without developerOwnerId (legacy path), returns all — only allowed if isolation is disabled.
-   */
-  findAll(developerOwnerId?: string) {
-    if (this.isolationEnabled && developerOwnerId) {
-      return this.prisma.payment.findMany({
-        where: { developerOwnerId },
-        orderBy: { createdAt: 'desc' },
-      });
-    }
-    return this.prisma.payment.findMany({ orderBy: { createdAt: 'desc' } });
-  }
+   * Without developerOwnerId (legacy path), returns all
 
-  /**
-   * 
-
-/* … truncated 2924 chars — edit only what you need near the top … */
+/* … truncated 442 chars — edit only what you need near the top … */
