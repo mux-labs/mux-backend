@@ -15,15 +15,20 @@ export interface LimitCheckResult {
 }
 
 export interface WalletLimits {
-  dailyLimit: number;
-  perTransactionLimit: number;
+  dailyLimit: string;
+  perTransactionLimit: string;
 }
+
+/**
+ * Matches a non-negative decimal string or integer, e.g. "0", "10", "10.10".
+ * Rejects signs, exponents, whitespace, and anything that is not a plain
+ * decimal so the value can be persisted verbatim without float coercion.
+ */
+const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 
 @Injectable()
 export class LimitsService {
   private readonly logger = new Logger(LimitsService.name);
-
-  constructor(private readonly prisma: PrismaService) {}
 
   /**
    * Checks the daily spending limit for a wallet.
@@ -88,42 +93,36 @@ export class LimitsService {
   /**
    * Persists the daily and per-transaction limits for a wallet.
    *
-   * Both values must be finite and non-negative; anything else (NaN,
-   * Infinity, or a negative number) fails closed with a `BadRequestException`
-   * naming the offending field before Prisma is touched. A negative limit
-   * would otherwise make the corresponding guard true for every amount and
-   * permanently block the wallet.
+   * Both values must be decimal strings or integers in the asset scale. They
+   * are validated with a decimal parser (not `Number.isFinite`) so `NaN`,
+   * `Infinity`, negatives, and malformed input fail closed with a
+   * `BadRequestException` naming the offending field before Prisma is touched.
+   * The validated string is persisted verbatim so the stored value matches
+   * the decimal the client sent (e.g. `"10.10"` reads back as `"10.10"`).
    */
   async setLimits(
     walletId: string,
-    daily: number,
-    perTx: number,
+    daily: string,
+    perTx: string,
   ): Promise<WalletLimits> {
-    if (!Number.isFinite(daily) || daily < 0) {
-      throw new BadRequestException(
-        `Invalid daily limit: ${String(daily)} must be a finite, non-negative number`,
-      );
-    }
-    if (!Number.isFinite(perTx) || perTx < 0) {
-      throw new BadRequestException(
-        `Invalid per-transaction limit: ${String(perTx)} must be a finite, non-negative number`,
-      );
-    }
+    const dailyValue = this.parseLimit(daily, 'daily');
+    const perTxValue = this.parseLimit(perTx, 'per-transaction');
 
     const limits = await this.prisma.walletLimit.upsert({
       where: { walletId },
-      update: { dailyLimit: daily, perTransactionLimit: perTx },
-      create: { walletId, dailyLimit: daily, perTransactionLimit: perTx },
+      update: { dailyLimit: dailyValue, perTransactionLimit: perTxValue },
+      create: { walletId, dailyLimit: dailyValue, perTransactionLimit: perTxValue },
     });
 
     return {
-      dailyLimit: Number(limits.dailyLimit),
-      perTransactionLimit: Number(limits.perTransactionLimit),
+      dailyLimit: String(limits.dailyLimit),
+      perTransactionLimit: String(limits.perTransactionLimit),
     };
   }
 
   /**
    * Returns the persisted limits for a wallet, or `null` when no row exists.
+   * Limits are returned as strings so the stored decimal is preserved.
    */
   async getLimits(walletId: string): Promise<WalletLimits | null> {
     const limits = await this.prisma.walletLimit.findUnique({
@@ -133,8 +132,8 @@ export class LimitsService {
       return null;
     }
     return {
-      dailyLimit: Number(limits.dailyLimit),
-      perTransactionLimit: Number(limits.perTransactionLimit),
+      dailyLimit: String(limits.dailyLimit),
+      perTransactionLimit: String(limits.perTransactionLimit),
     };
   }
 
@@ -150,6 +149,20 @@ export class LimitsService {
       throw new NotFoundException(`No limits found for wallet ${walletId}`);
     }
     await this.prisma.walletLimit.delete({ where: { walletId } });
+  }
+
+  /**
+   * Validates a limit as a non-negative decimal string or integer and returns
+   * it unchanged so it can be persisted without float coercion.
+   */
+  private parseLimit(value: string, field: string): string {
+    const raw = typeof value === 'string' ? value.trim() : String(value);
+    if (!DECIMAL_PATTERN.test(raw)) {
+      throw new BadRequestException(
+        `Invalid ${field} limit: ${String(value)} must be a non-negative decimal string`,
+      );
+    }
+    return raw;
   }
 
   private async getDailyLimit(walletId: string): Promise<number> {
