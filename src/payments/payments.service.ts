@@ -40,14 +40,6 @@ const ALLOWED_TRANSITIONS: Record<string, PaymentStatus[]> = {
  *    in development to allow gradual rollout without breaking existing callers.
  *
  * #1104 – Receiver wallet validation.
- *  - The receiver wallet must exist and be ACTIVE, mirroring the send
- *  - Idempotency key uniqueness is enforced at the DB level; the service returns the
- *    cached response instead of re-executing on conflict, but only when the cached
- *    payment belongs to the requesting developer.
- *  - Feature-flagged: if PAYMENT_ISOLATION_ENABLED !== 'true' the guard is bypassed
- *    in development to allow gradual rollout without breaking existing callers.
- *
- * #1104 – Receiver wallet validation.
  *  - The receiver wallet must exist and be ACTIVE, mirroring the sender checks.
  *  - Receiver ownership is intentionally NOT scoped to the calling developer:
  *    payments are a transfer primitive and a developer may legitimately pay a
@@ -200,19 +192,94 @@ export class PaymentsService {
 
   /**
    * Returns all payments scoped to a developer.
-   * Without developerOwnerId (legacy path), returns all — only allowed if isolation is disabled.
+   * Without developerOwnerId (legacy path), returns all payments.
    */
-  findAll(developerOwnerId?: string) {
-    if (this.isolationEnabled && developerOwnerId) {
-      return this.prisma.payment.findMany({
-        where: { developerOwnerId },
-        orderBy: { createdAt: 'desc' },
-      });
-    }
-    return this.prisma.payment.findMany({ orderBy: { createdAt: 'desc' } });
+  async findAll(developerOwnerId?: string) {
+    const where =
+      this.isolationEnabled && developerOwnerId
+        ? { developerOwnerId }
+        : {};
+
+    return this.prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
   }
 
   /**
-   * 
+   * Returns a single payment scoped to a developer.
+   * A record that exists but belongs to another developer yields 404 to avoid
+   * enumeration.
+   */
+  async findOne(id: string, developerOwnerId?: string) {
+    const payment = await this.prisma.payment.findUnique({ where: { id } });
 
-/* … truncated 2924 chars — edit only what you need near the top … */
+    if (!payment) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      payment.developerOwnerId !== developerOwnerId
+    ) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+
+    return payment;
+  }
+
+  /**
+   * Updates a payment. Ownership is re-checked before mutating, and any status
+   * change is validated against ALLOWED_TRANSITIONS so terminal states are
+   * immutable.
+   */
+  async update(
+    id: string,
+    updatePaymentDto: UpdatePaymentDto,
+    developerOwnerId?: string,
+  ) {
+    const payment = await this.findOne(id, developerOwnerId);
+
+    if (updatePaymentDto.status !== undefined) {
+      this.assertTransitionAllowed(
+        payment.status as PaymentStatus,
+        updatePaymentDto.status as PaymentStatus,
+      );
+    }
+
+    const updated = await this.prisma.payment.update({
+      where: { id },
+      data: {
+        ...(updatePaymentDto.status !== undefined && {
+          status: updatePaymentDto.status,
+        }),
+        ...(updatePaymentDto.description !== undefined && {
+          description: updatePaymentDto.description,
+        }),
+      },
+    });
+
+    this.logger.log(
+      `Payment updated id=${id} status=${updated.status} developerOwnerId=${developerOwnerId ?? 'unset'}`,
+    );
+
+    return updated;
+  }
+
+  /**
+   * Removes a payment. Ownership is re-checked before deleting; a non-owned id
+   * yields 404 and performs no mutation, matching findOne().
+   */
+  async remove(id: string, developerOwnerId?: string) {
+    await this.findOne(id, developerOwnerId);
+
+    const removed = await this.prisma.payment.delete({ where: { id } });
+
+    this.logger.log(
+      `Payment removed id=${id} developerOwnerId=${developerOwnerId ?? 'unset'}`,
+    );
+
+    return removed;
+  }
+}
