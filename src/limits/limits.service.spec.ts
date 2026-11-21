@@ -180,7 +180,16 @@ describe('LimitsService', () => {
   });
 
   describe('getLimits', () => {
-    it('returns the row for a known wallet', async () => {
+    it('returns null when the wallet has no limit row', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue(null);
+
+      await expect(service.getLimits('missing')).resolves.toBeNull();
+      expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
+        where: { walletId: 'missing' },
+      });
+    });
+
+    it('returns both numbers when a limit row exists', async () => {
       const row = {
         walletId: 'wallet-1',
         dailyLimit: 100,
@@ -188,16 +197,14 @@ describe('LimitsService', () => {
       };
       prisma.walletLimit.findUnique.mockResolvedValue(row);
 
-      await expect(service.getLimits('wallet-1')).resolves.toEqual(row);
+      const result = await service.getLimits('wallet-1');
+
+      expect(result).not.toBeNull();
+      expect(result?.dailyLimit).toBe(100);
+      expect(result?.perTransactionLimit).toBe(10);
       expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
         where: { walletId: 'wallet-1' },
       });
-    });
-
-    it('returns null for an unknown wallet', async () => {
-      prisma.walletLimit.findUnique.mockResolvedValue(null);
-
-      await expect(service.getLimits('missing')).resolves.toBeNull();
     });
   });
 
