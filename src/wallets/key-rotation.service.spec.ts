@@ -171,3 +171,62 @@ describe('KeyRotationService.assertReadAuthorized', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 });
+
+describe('KeyRotationService.findReplay', () => {
+  const buildService = (rotations: any[]) => {
+    const prisma = {
+      keyRotation: {
+        findMany: jest.fn().mockResolvedValue(rotations),
+      },
+    };
+    const service = new KeyRotationService(prisma as any);
+    return { service, prisma };
+  };
+
+  const recorded = {
+    id: 'rotation-1',
+    walletId: 'wallet-1',
+    idempotencyKey: 'idem-1',
+    targetVersion: 2,
+  };
+
+  it('returns the recorded rotation on an exact (wallet, idempotency key, target version) match', async () => {
+    const { service } = buildService([recorded]);
+
+    await expect(
+      service.findReplay('wallet-1', 'idem-1', 2),
+    ).resolves.toEqual(recorded);
+  });
+
+  it('returns null when the request has no idempotency key (treated as a fresh rotation)', async () => {
+    const { service } = buildService([recorded]);
+
+    await expect(
+      service.findReplay('wallet-1', undefined, 2),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when the wallet does not match', async () => {
+    const { service } = buildService([recorded]);
+
+    await expect(
+      service.findReplay('wallet-2', 'idem-1', 2),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when the idempotency key does not match', async () => {
+    const { service } = buildService([recorded]);
+
+    await expect(
+      service.findReplay('wallet-1', 'idem-2', 2),
+    ).resolves.toBeNull();
+  });
+
+  it('returns null when the target version does not match', async () => {
+    const { service } = buildService([recorded]);
+
+    await expect(
+      service.findReplay('wallet-1', 'idem-1', 3),
+    ).resolves.toBeNull();
+  });
+});
