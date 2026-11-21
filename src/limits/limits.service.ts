@@ -26,12 +26,24 @@ export interface WalletLimits {
  */
 const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 
+/**
+ * Transaction statuses that actually move funds and therefore count toward
+ * the daily spending limit. Failed, cancelled, and pending rows are excluded
+ * so a rejected attempt cannot consume the limit and a pending row is not
+ * double-counted once it is confirmed as a separate record.
+ */
+const DAILY_COUNTED_STATUSES = ['CONFIRMED', 'COMPLETED', 'SUCCESS'];
+
 @Injectable()
 export class LimitsService {
   private readonly logger = new Logger(LimitsService.name);
 
   /**
    * Checks the daily spending limit for a wallet.
+   *
+   * Only transactions whose status actually moves funds (see
+   * `DAILY_COUNTED_STATUSES`) are aggregated into `dailyUsed`; failed,
+   * cancelled, and pending rows are ignored.
    *
    * Policy: rows whose `amount` cannot be parsed into a finite number are
    * skipped with a warning log (skip-with-warning). This prevents a single
@@ -60,6 +72,7 @@ export class LimitsService {
       where: {
         walletId,
         createdAt: { gte: startOfDay },
+        status: { in: DAILY_COUNTED_STATUSES },
       },
       select: { id: true, amount: true },
     });
