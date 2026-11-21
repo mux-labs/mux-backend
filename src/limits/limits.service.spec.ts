@@ -145,6 +145,38 @@ describe('LimitsService', () => {
 
       expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ['negative daily', -1],
+      ['NaN daily', NaN],
+      ['Infinity daily', Infinity],
+    ])('rejects %s with BadRequestException and never calls upsert', async (_label, daily) => {
+      await expect(
+        service.setLimits('wallet-1', daily as number, 10),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
+    });
+
+    it('accepts a zero daily limit and reaches Prisma', async () => {
+      prisma.walletLimit.upsert.mockResolvedValue({
+        walletId: 'wallet-1',
+        dailyLimit: 0,
+        perTransactionLimit: 10,
+      });
+
+      await service.setLimits('wallet-1', 0, 10);
+
+      expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+        update: { dailyLimit: 0, perTransactionLimit: 10 },
+        create: {
+          walletId: 'wallet-1',
+          dailyLimit: 0,
+          perTransactionLimit: 10,
+        },
+      });
+    });
   });
 
   describe('getLimits', () => {
