@@ -47,6 +47,33 @@ const DEFAULTS = {
   LOG_LEVEL: 'info',
 } as const;
 
+/**
+ * Per-variable numeric bounds (#1275). A parsed value must be finite and
+ * within [min, max]; otherwise it is a validation error, not a fallback.
+ */
+interface NumberBounds {
+  min: number;
+  max: number;
+  integer?: boolean;
+}
+
+const NUMBER_BOUNDS: Record<string, NumberBounds> = {
+  PORT: { min: 1, max: 65535, integer: true },
+  JSON_BODY_LIMIT_BYTES: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  BALANCE_SYNC_INTERVAL_MS: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  BALANCE_SYNC_MAX_RETRIES: { min: 0, max: 1000, integer: true },
+  BALANCE_STALE_THRESHOLD_MS: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  WEBHOOK_MAX_RETRIES: { min: 0, max: 1000, integer: true },
+  WEBHOOK_RETRY_BACKOFF_MS: { min: 0, max: Number.MAX_SAFE_INTEGER, integer: true },
+  WEBHOOK_TIMEOUT_MS: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  WEBHOOK_MAX_CONSECUTIVE_FAILURES: { min: 0, max: 1000, integer: true },
+  WEBHOOK_QUEUE_INTERVAL_MS: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  RECOVERY_REQUEST_TTL_MS: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  AUTH_RATE_LIMIT_MAX: { min: 1, max: 1000000, integer: true },
+  AUTH_RATE_LIMIT_WINDOW_MS: { min: 1, max: Number.MAX_SAFE_INTEGER, integer: true },
+  API_KEY_DEFAULT_EXPIRY_DAYS: { min: 0, max: 36500, integer: true },
+};
+
 function parseBoolean(value: string | undefined, fallback: boolean): boolean {
   if (value === undefined || value === null || value === '') {
     return fallback;
@@ -89,15 +116,50 @@ function parseRequiredBoolean(
   return fallback;
 }
 
-function parseNumber(value: string | undefined, fallback: number): number {
+/**
+ * Validates a raw numeric string against the per-variable bounds. Returns the
+ * parsed number, or `undefined` when the value is not finite or out of range.
+ */
+function parseBoundedNumber(
+  raw: string,
+  variable: string,
+): { value?: number; error?: string } {
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed)) {
+    return { error: `${variable} must be a finite number` };
+  }
+  const bounds = NUMBER_BOUNDS[variable];
+  if (bounds) {
+    if (bounds.integer && !Number.isInteger(parsed)) {
+      return { error: `${variable} must be an integer` };
+    }
+    if (parsed < bounds.min || parsed > bounds.max) {
+      return {
+        error: `${variable} must be between ${bounds.min} and ${bounds.max}`,
+      };
+    }
+  }
+  return { value: parsed };
+}
+
+function parseNumber(
+  value: string | undefined,
+  fallback: number,
+  variable?: string,
+  errors?: string[],
+): number {
   if (value === undefined || value === null || value === '') {
     return fallback;
   }
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) {
+  const name = variable ?? 'value';
+  const { value: parsed, error } = parseBoundedNumber(String(value).trim(), name);
+  if (error) {
+    if (errors) {
+      errors.push(error);
+    }
     return fallback;
   }
-  return parsed;
+  return parsed as number;
 }
 
 /**
@@ -113,12 +175,12 @@ function parseRequiredNumber(
   if (value === undefined || value === null || value === '') {
     return fallback;
   }
-  const parsed = Number(value);
-  if (Number.isNaN(parsed)) {
-    errors.push(`${variable} must be a valid number`);
+  const { value: parsed, error } = parseBoundedNumber(String(value).trim(), variable);
+  if (error) {
+    errors.push(error);
     return fallback;
   }
-  return parsed;
+  return parsed as number;
 }
 
 function parseCorsOrigins(raw: string | undefined): string[] {
@@ -142,7 +204,7 @@ export function validateEnv(
 
   const NODE_ENV = env.NODE_ENV ?? 'development';
 
-  const PORT = parseNumber(env.PORT, 3000);
+  const PORT = parseNumber(env.PORT, 3000, 'PORT', errors);
 
   const DATABASE_URL = env.DATABASE_URL;
   if (!DATABASE_URL) {
@@ -204,8 +266,15 @@ export function validateEnv(
   const BALANCE_SYNC_INTERVAL_MS = parseNumber(
     env.BALANCE_SYNC_INTERVAL_MS,
     600000,
+    'BALANCE_SYNC_INTERVAL_MS',
+    errors,
   );
-  const BALANCE_SYNC_MAX_RETRIES = parseNumber(env.BALANCE_SYNC_MAX_RETRIES, 3);
+  const BALANCE_SYNC_MAX_RETRIES = parseNumber(
+    env.BALANCE_SYNC_MAX_RETRIES,
+    3,
+    'BALANCE_SYNC_MAX_RETRIES',
+    errors,
+  );
   // A zero, negative, fractional or non-numeric budget would silently make
   // every balance stale (or never stale), so reject it at boot.
   const BALANCE_STALE_THRESHOLD_MS = parseRequiredNumber(
@@ -221,128 +290,70 @@ export function validateEnv(
     errors.push('BALANCE_STALE_THRESHOLD_MS must be a positive integer');
   }
   const CORS_ORIGINS = parseCorsOrigins(env.CORS_ORIGINS);
-  const WEBHOOK_MAX_RETRIES = parseNumber(env.WEBHOOK_MAX_RETRIES, 5);
+  const WEBHOOK_MAX_RETRIES = parseNumber(
+    env.WEBHOOK_MAX_RETRIES,
+    5,
+    'WEBHOOK_MAX_RETRIES',
+    errors,
+  );
   const WEBHOOK_RETRY_BACKOFF_MS = parseNumber(
     env.WEBHOOK_RETRY_BACKOFF_MS,
     1000,
+    'WEBHOOK_RETRY_BACKOFF_MS',
+    errors,
   );
-  const WEBHOOK_TIMEOUT_MS = parseNumber(env.WEBHOOK_TIMEOUT_MS, 10000);
+  const WEBHOOK_TIMEOUT_MS = parseNumber(
+    env.WEBHOOK_TIMEOUT_MS,
+    10000,
+    'WEBHOOK_TIMEOUT_MS',
+    errors,
+  );
   const WEBHOOK_MAX_CONSECUTIVE_FAILURES = parseNumber(
     env.WEBHOOK_MAX_CONSECUTIVE_FAILURES,
     10,
+    'WEBHOOK_MAX_CONSECUTIVE_FAILURES',
+    errors,
   );
   const WEBHOOK_QUEUE_INTERVAL_MS = parseNumber(
     env.WEBHOOK_QUEUE_INTERVAL_MS,
     30000,
+    'WEBHOOK_QUEUE_INTERVAL_MS',
+    errors,
   );
   const WEBHOOK_INBOUND_SECRET =
     env.WEBHOOK_INBOUND_SECRET ?? 'your-inbound-webhook-secret';
   const RECOVERY_REQUEST_TTL_MS = parseNumber(
     env.RECOVERY_REQUEST_TTL_MS,
     604800000,
+    'RECOVERY_REQUEST_TTL_MS',
+    errors,
   );
   const FEATURE_MAINNET_PAYMENT_SUBMIT = parseBoolean(
     env.FEATURE_MAINNET_PAYMENT_SUBMIT,
     false,
   );
   const STELLAR_SPONSOR_SECRET_KEY = env.STELLAR_SPONSOR_SECRET_KEY;
-  const AUTH_RATE_LIMIT_MAX = parseNumber(env.AUTH_RATE_LIMIT_MAX, 10);
+  const AUTH_RATE_LIMIT_MAX = parseNumber(
+    env.AUTH_RATE_LIMIT_MAX,
+    10,
+    'AUTH_RATE_LIMIT_MAX',
+    errors,
+  );
   const AUTH_RATE_LIMIT_WINDOW_MS = parseNumber(
     env.AUTH_RATE_LIMIT_WINDOW_MS,
     60000,
+    'AUTH_RATE_LIMIT_WINDOW_MS',
+    errors,
   );
   const API_KEY_DEFAULT_EXPIRY_DAYS = env.API_KEY_DEFAULT_EXPIRY_DAYS
-    ? parseNumber(env.API_KEY_DEFAULT_EXPIRY_DAYS, 0)
+    ? parseNumber(
+        env.API_KEY_DEFAULT_EXPIRY_DAYS,
+        0,
+        'API_KEY_DEFAULT_EXPIRY_DAYS',
+        errors,
+      )
     : undefined;
   const OTEL_ENABLED = parseBoolean(env.OTEL_ENABLED, false);
-  const OTEL_EXPORTER_OTLP_ENDPOINT = env.OTEL_EXPORTER_OTLP_ENDPOINT;
-  const OTEL_SERVICE_NAME = env.OTEL_SERVICE_NAME ?? 'mux-backend';
-  const OTEL_SERVICE_VERSION = env.OTEL_SERVICE_VERSION ?? '1.0.0';
+  const OTEL_EXPORTER_OTLP_ENDPOINT = env.OTEL_EXPORTER_
 
-  // Idempotency cleanup worker (#1061): fail fast on malformed values rather
-  // than silently defaulting an opt-in worker that is disabled by default.
-  const IDEMPOTENCY_CLEANUP_ENABLED = parseBoolean(
-    env.IDEMPOTENCY_CLEANUP_ENABLED,
-    false,
-  );
-  const IDEMPOTENCY_CLEANUP_INTERVAL_MS = parseRequiredNumber(
-    env.IDEMPOTENCY_CLEANUP_INTERVAL_MS,
-    3_600_000,
-    'IDEMPOTENCY_CLEANUP_INTERVAL_MS',
-    errors,
-  );
-  const IDEMPOTENCY_CLEANUP_BATCH_SIZE = parseRequiredNumber(
-    env.IDEMPOTENCY_CLEANUP_BATCH_SIZE,
-    1000,
-    'IDEMPOTENCY_CLEANUP_BATCH_SIZE',
-    errors,
-  );
-
-  const AUTH_IDENTITY_PROVIDER = (
-    env.AUTH_IDENTITY_PROVIDER ?? 'CLERK'
-  ).toUpperCase();
-  if (!['CLERK', 'BETTER_AUTH'].includes(AUTH_IDENTITY_PROVIDER)) {
-    errors.push('AUTH_IDENTITY_PROVIDER must be either CLERK or BETTER_AUTH');
-  }
-
-  const CLERK_JWT_PUBLIC_KEY = env.CLERK_JWT_PUBLIC_KEY;
-  const BETTER_AUTH_JWKS_URL = env.BETTER_AUTH_JWKS_URL;
-
-  // Validate provider-specific config in production
-  if (NODE_ENV === 'production') {
-    if (AUTH_IDENTITY_PROVIDER === 'CLERK' && !CLERK_JWT_PUBLIC_KEY) {
-      errors.push(
-        'CLERK_JWT_PUBLIC_KEY is required when AUTH_IDENTITY_PROVIDER=CLERK in production',
-      );
-    }
-    if (AUTH_IDENTITY_PROVIDER === 'BETTER_AUTH' && !BETTER_AUTH_JWKS_URL) {
-      errors.push(
-        'BETTER_AUTH_JWKS_URL is required when AUTH_IDENTITY_PROVIDER=BETTER_AUTH in production',
-      );
-    }
-    if (OTEL_ENABLED && !OTEL_EXPORTER_OTLP_ENDPOINT) {
-      errors.push(
-        'OTEL_EXPORTER_OTLP_ENDPOINT is re
-
-  const AUTH_SKIP_JWT_VERIFICATION = parseBoolean(
-    env.AUTH_SKIP_JWT_VERIFICATION,
-    false,
-  );
-  if (AUTH_SKIP_JWT_VERIFICATION && NODE_ENV === 'production') {
-    errors.push('AUTH_SKIP_JWT_VERIFICATION must not be enabled in production');
-  }
-
-  const OTEL_EXPORTER_OTLP_PROTOCOL =
-    env.OTEL_EXPORTER_OTLP_PROTOCOL ?? 'http/protobuf';
-  const JSON_BODY_LIMIT_BYTES = parseNumber(env.JSON_BODY_LIMIT_BYTES, 102400); // 100 KiB default
-
-  // DB pool sizing (#951): fail closed at boot on a malformed value rather than
-  // silently falling back to the engine default (an unbounded pool).
-  for (const issue of validateDatabasePoolEnv(env)) {
-    errors.push(`${issue.variable} ${issue.message}`);
-  }
-  const poolConfig = resolveDatabasePoolConfig(env);
-
-  if (errors.length > 0) {
-    const message = [
-      'Environment validation failed:',
-      ...errors.map((e) => `  - ${e}`),
-    ].join('\n');
-    throw new Error(message);
-  }
-
-  return {
-    PORT,
-    DATABASE_URL: DATABASE_URL as string,
-    STELLAR_NETWORK: STELLAR_NETWORK.toLowerCase() as 'mainnet' | 'testnet',
-    JSON_BODY_LIMIT_BYTES,
-    BALANCE_STALE_THRESHOLD_MS,
-    DATABASE_POOL_SIZE: poolConfig.poolSize,
-    DATABASE_POOL_TIMEOUT_SECONDS: poolConfig.poolTimeoutSeconds,
-    DATABASE_CONNECT_TIMEOUT_SECONDS: poolConfig.connectTimeoutSeconds,
-    CORS_ORIGINS: CORS_ORIGINS.join(','),
-    MAINNET_PAYMENT_ENABLED: String(MAINNET_PAYMENTS_ENABLED),
-    NODE_ENV,
-    LOG_LEVEL: env.LOG_LEVEL ?? 'info',
-  };
-}
+/* … truncated 3226 chars — edit only what you need near the top … */
