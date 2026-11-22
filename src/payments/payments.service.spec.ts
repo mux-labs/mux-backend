@@ -198,6 +198,36 @@ describe('PaymentsService', () => {
     expect(prisma.payment.create).toHaveBeenCalledTimes(1);
     expect(result).toBe(created);
   });
-});
+
+  describe('isolationEnabled', () => {
+    const originalValue = process.env.PAYMENTS_ISOLATION_ENABLED;
+
+    afterEach(() => {
+      if (originalValue === undefined) {
+        delete process.env.PAYMENTS_ISOLATION_ENABLED;
+      } else {
+        process.env.PAYMENTS_ISOLATION_ENABLED = originalValue;
+      }
+    });
+
+    it('stays enabled when the env var is unset', () => {
+      delete process.env.PAYMENTS_ISOLATION_ENABLED;
+      expect(service.isolationEnabled).toBe(true);
+    });
+
+    it('stays enabled when the env var is an empty string', () => {
+      process.env.PAYMENTS_ISOLATION_ENABLED = '';
+      expect(service.isolationEnabled).toBe(true);
+    });
+
+    it('stays enabled when the env var is "true"', () => {
+      process.env.PAYMENTS_ISOLATION_ENABLED = 'true';
+      expect(service.isolationEnabled).toBe(true);
+    });
+
+    it('is disabled only when the env var is exactly "false"', () => {
+      process.env.PAYMENTS_ISOLATION_ENABLED = 'false';
+      expect(service.isolationEnabled).toBe(false);
+    });
   });
 });

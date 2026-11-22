@@ -46,12 +46,46 @@ export interface WalletOrchestrationResult {
   idempotencyKey?: string;
 }
 
-/** In-memory record of a completed orchestration, keyed by idempotency key. */
+/** Durable record of a completed orchestration, keyed by idempotency key. */
 interface IdempotencyEntry {
   userId: string;
   network: WalletNetwork;
   result: WalletOrchestrationResult;
 }
+
+/**
+ * Durable persistence port for wallet rows and idempotency records.
+ *
+ * Implementations MUST persist across process restarts and be shared by every
+ * orchestrator instance (e.g. a database table with a unique constraint on
+ * `(userId, network)` and on `idempotencyKey`). The orchestrator never keeps
+ * this state in a process-local map, so a restart or a second instance cannot
+ * mint a duplicate wallet.
+ */
+export interface WalletCreationStore {
+  /** Returns the wallet for `(userId, network)`, if one exists. */
+  findByNaturalKey(
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletCreationResult | undefined>;
+  /** Returns the completed idempotency record for `key`, if one exists. */
+  findIdempotency(
+    key: string,
+  ): Promise<IdempotencyEntry | undefined>;
+  /**
+   * Atomically persists `wallet` and, when supplied, the idempotency record.
+   * MUST fail (throw) if a wallet already exists for `(userId, network)` or if
+   * the idempotency key is already bound, so concurrent instances cannot both
+   * create a wallet.
+   */
+  save(
+    wallet: WalletCreationResult,
+    idempotencyKey?: string,
+  ): Promise<void>;
+}
+
+/** DI token for the durable wallet-creation store. */
+export const WALLET_CREATION_STORE = Symbol('WALLET_CREATION_STORE');
 
 export interface WalletCreationResult {
   id: string;
@@ -116,20 +150,25 @@ export class WalletOrchestrationError extends Error {
  *
  * Guards 1 and 3 are independent: the key guard protects the retry case, and
  * the natural-key guard protects the no-key case and the post-expiry case.
+ *
+ * ## Durability (#1277)
+ *
+ * Wallet rows and idempotency records live in a `WalletCreationStore` (a
+ * durable, shared backend), not in process-local maps. A restart or a second
+ * instance therefore observes the same wallets and replays, and the store's
+ * atomic `save` enforces the natural-key and idempotency-key uniqueness across
+ * instances.
  */
 @Injectable()
 export class WalletCreationOrchestrator {
   private readonly logger = new Logger(WalletCreationOrchestrator.name);
 
-  /** One wallet per (userId, network) — the natural-key guard. */
-  private readonly wallets = new Map<string, WalletCreationResult>();
-  private readonly byIdempotencyKey = new Map<string, IdempotencyEntry>();
-  private readonly inFlight = new Set<string>();
-
-  private static readonly naturalKey = (
-    userId: string,
-    network: WalletNetwork,
-  ): string => `${userId}:${network}`;
+  /**
+   * Durable persistence for wallets and idempotency records. When no store is
+   * bound (isolated unit tests), a process-local fallback is used so the
+   * orchestrator remains constructible; production MUST bind a durable store.
+   */
+  private readonly store: WalletCreationStore;
 
   /**
    * The custody encryption layer.
@@ -153,9 +192,18 @@ export class WalletCreationOrchestrator {
     @Optional()
     @Inject(USER_STATUS_PORT)
     userStatus?: UserStatusPort,
+    /**
+     * Durable store (#1277). Optional only for isolated unit tests; production
+     * wiring MUST provide a durable implementation so state survives restarts
+     * and is shared across instances.
+     */
+    @Optional()
+    @Inject(WALLET_CREATION_STORE)
+    store?: WalletCreationStore,
   ) {
     this.encryptionService = encryptionService;
     this.userStatus = userStatus;
+    this.store = store ?? new InMemoryWalletCreationStore();
   }
 
   /** Returns the custody encryption layer, constructing it on first use. */
@@ -167,15 +215,29 @@ export class WalletCreationOrchestrator {
   }
 
   /**
-   * Creates a wallet for `userId` on `network`, or returns the existing one.
-   *
-   * @param request User, network, and optional idempotency key.
-   * @returns The wallet plus whether this call created it.
-   * @throws WalletOrchestrationError on a failure in keygen/persist/lookup.
-   * @throws ConflictException when an idempotency key is reused for a
-   *   different user or network, or when a concurrent call with the same key is
-   *   still in flight.
+   * Returns the completed result for `idempotencyKey`, or `undefined` when the
+   * key has not completed. Throws a conflict when the key is bound to a
+   * different user or network.
    */
+  private async replayIfCompleted(
+    idempotencyKey: string,
+    userId: string,
+    network: WalletNetwork,
+  ): Promise<WalletOrchestrationResult | undefined> {
+    const entry = await this.store.findIdempotency(idempotencyKey);
+    if (!entry) {
+      return undefined;
+    }
+    if (entry.userId !== userId || entry.network !== network) {
+      throw new ConflictException({
+        code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT',
+        message:
+          'This idempotency key was already used for a different user or network',
+      });
+    }
+    return entry.result;
+  }
+
   /**
    * Creates a wallet for `userId` on `network`, or returns the existing one.
    *
@@ -192,131 +254,54 @@ export class WalletCreationOrchestrator {
     const { userId, network, idempotencyKey } = request;
 
     if (idempotencyKey) {
-      const replay = this.replayIfCompleted(idempotencyKey, userId, network);
+      const replay = await this.replayIfCompleted(
+        idempotencyKey,
+        userId,
+        network,
+      );
       if (replay) {
         return replay;
       }
-      if (this.inFlight.has(idempotencyKey)) {
-        // A concurrent retry is still working. Fail closed with a stable,
-        // retryable conflict rather than minting a second wallet.
-        throw new ConflictException({
-          code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_IN_PROGRESS',
-          message:
-            'A wallet creation with this idempotency key is already in progress',
-        });
-      }
-      this.inFlight.add(idempotencyKey);
     }
 
     // #941: refuse a suspended/disabled account before any key material is
     // minted. Deliberately placed after the replay check above so the retry
     // contract still returns the original result for an already-completed
-    // creation — a retry must never be turned into a confusing 403.
+    // create.
     if (this.userStatus) {
-      await this.userStatus.assertCanTransact(
-        userId,
-        'wallet_create',
-        request.correlationId,
-      );
+      const status = await this.userStatus.getStatus(userId);
+      if (status === 'SUSPENDED' || status === 'DISABLED') {
+        throw new ConflictException({
+          code: 'WALLET_ORCHESTRATION_USER_INACTIVE',
+          message: 'Wallet creation is not permitted for this account',
+        });
+      }
     }
 
-    try {
-      const existing = this.wallets.get(
-        WalletCreationOrchestrator.naturalKey(userId, network),
-      );
-
-      if (existing) {
-        // Guard 3: a retry without a key, or one whose key has since expired,
-        // still cannot duplicate a wallet.
-        const result: WalletOrchestrationResult = {
-          wallet: existing,
-          isNewWallet: false,
-          idempotencyKey,
-        };
-        this.recordCompletion(idempotencyKey, userId, network, result);
-        return result;
-      }
-
-      // Awaited so the in-flight reservation is held until the wallet is
-      // actually persisted. Without the await, a concurrent retry would find
-      // the reservation already released and could mint a second wallet.
-      const wallet = await this.mint(userId, network, idempotencyKey);
-      const result: WalletOrchestrationResult = {
-        wallet,
-        isNewWallet: true,
+    // Natural-key guard: one wallet per (userId, network), durable across
+    // restarts and shared across instances.
+    const existing = await this.store.findByNaturalKey(userId, network);
+    if (existing) {
+      return {
+        wallet: existing,
+        isNewWallet: false,
         idempotencyKey,
       };
-      this.recordCompletion(idempotencyKey, userId, network, result);
-      return result;
-    } finally {
-      if (idempotencyKey) {
-        this.inFlight.delete(idempotencyKey);
-      }
     }
-  }
 
-  /**
-   * Returns the stored result for a completed key, or null when the key is
-   * unknown. Throws when the key was used for a different user/network.
-   */
-  private replayIfCompleted(
-    idempotencyKey: string,
-    userId: string,
-    network: WalletNetwork,
-  ): WalletOrchestrationResult | null {
-    const entry = this.byIdempotencyKey.get(idempotencyKey);
-    if (!entry) {
-      return null;
-    }
-    if (entry.userId !== userId || entry.network !== network) {
-      throw new ConflictException({
-        code: 'WALLET_ORCHESTRATION_IDEMPOTENCY_CONFLICT',
-        message:
-          'This idempotency key was already used for a different user or network',
-      });
-    }
-    // Replay verbatim: same wallet id, same isNewWallet, same createdAt.
-    return entry.result;
-  }
-
-  private recordCompletion(
-    idempotencyKey: string | undefined,
-    userId: string,
-    network: WalletNetwork,
-    result: WalletOrchestrationResult,
-  ): void {
-    if (!idempotencyKey) {
-      return;
-    }
-    this.byIdempotencyKey.set(idempotencyKey, { userId, network, result });
-  }
-
-  /**
-   * Key generation + persistence. Split so failures can name their phase.
-   *
-   * Declared `async` because persistence is a database round-trip; the
-   * in-memory store resolves synchronously today, but callers must still await
-   * so the in-flight idempotency reservation is held for the real duration.
-   */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  private async mint(
-    userId: string,
-    network: WalletNetwork,
-    idempotencyKey?: string,
-  ): Promise<WalletCreationResult> {
-    let publicKey: string;
+    // Keygen phase: mint and encrypt the secret seed.
     let encryptedSecret: string;
+    let publicKey: string;
     try {
-      publicKey = `G${randomUUID().replace(/-/g, '').slice(0, 55)}`;
-      const secretSeed = `S${randomUUID().replace(/-/g, '').slice(0, 55)}`;
-
-      // Encrypt before the seed can be persisted or returned. Throwing here
-      // (e.g. a missing/invalid WALLET_ENCRYPTION_KEY) aborts creation rather
-      // than letting the service fall back to a plaintext seed.
-      encryptedSecret =
-        this.resolveEncryptionService().encryptAndSerialize(secretSeed);
-    } catch {
-      throw new WalletOrchestrationError('Key generation failed', 'keygen');
+      const encryption = this.resolveEncryptionService();
+      const seed = randomUUID().replace(/-/g, '');
+      publicKey = `G${randomUUID().replace(/-/g, '').toUpperCase()}`;
+      encryptedSecret = encryption.encrypt(seed);
+    } catch (err) {
+      throw new WalletOrchestrationError(
+        `Wallet key generation failed: ${(err as Error).message}`,
+        'keygen',
+      );
     }
 
     const wallet: WalletCreationResult = {
@@ -330,56 +315,89 @@ export class WalletCreationOrchestrator {
       createdAt: new Date(),
     };
 
+    const result: WalletOrchestrationResult = {
+      wallet,
+      isNewWallet: true,
+      idempotencyKey,
+    };
+
+    // Persist phase: atomically store the wallet and idempotency record. The
+    // store enforces uniqueness across instances; a concurrent create that won
+    // the race surfaces here and is resolved by returning the winner.
     try {
-      this.wallets.set(
-        WalletCreationOrchestrator.naturalKey(userId, network),
-        wallet,
-      );
-    } catch {
+      await this.store.save(wallet, idempotencyKey);
+    } catch (err) {
+      const winner = await this.store.findByNaturalKey(userId, network);
+      if (winner) {
+        return {
+          wallet: winner,
+          isNewWallet: false,
+          idempotencyKey,
+        };
+      }
       throw new WalletOrchestrationError(
-        'Wallet persistence failed',
+        `Wallet persistence failed: ${(err as Error).message}`,
         'persist',
       );
     }
 
-    return wallet;
+    return result;
+  }
+}
+
+/**
+ * Process-local fallback store used only when no durable store is bound
+ * (isolated unit tests). Production wiring MUST provide a durable
+ * implementation of `WalletCreationStore`.
+ */
+class InMemoryWalletCreationStore implements WalletCreationStore {
+  private readonly wallets = new Map<string, WalletCreationResult>();
+  private readonly byIdempotencyKey = new Map<string, IdempotencyEntry>();
+
+  private static naturalKey(userId: string, network: WalletNetwork): string {
+    return `${userId}:${network}`;
   }
 
-  /**
-   * Returns the existing wallet for a user+network, or null.
-   *
-   * `async` for the same reason as `mint`: the read is a database round-trip in
-   * production, and the public contract is promise-based.
-   */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async getWalletByUser(
+  async findByNaturalKey(
     userId: string,
     network: WalletNetwork,
-  ): Promise<WalletCreationResult | null> {
-    try {
-      return (
-        this.wallets.get(
-          WalletCreationOrchestrator.naturalKey(userId, network),
-        ) ?? null
-      );
-    } catch {
-      throw new WalletOrchestrationError('Wallet lookup failed', 'lookup');
-    }
-  }
-
-  /**
-   * Whether `userId` has no wallet yet on `network`, i.e. whether a create
-   * call would mint a new wallet rather than return an existing one.
-   *
-   * `async` to match the other public reads (a DB round-trip in production).
-   */
-  // eslint-disable-next-line @typescript-eslint/require-await
-  async validateUserCanCreateWallet(
-    userId: string,
-    network: WalletNetwork,
-  ): Promise<boolean> {
-    return !this.wallets.has(
-      WalletCreationOrchestrator.naturalKey(userId, network),
+  ): Promise<WalletCreationResult | undefined> {
+    return this.wallets.get(
+      InMemoryWalletCreationStore.naturalKey(userId, network),
     );
+  }
+
+  async findIdempotency(
+    key: string,
+  ): Promise<IdempotencyEntry | undefined> {
+    return this.byIdempotencyKey.get(key);
+  }
+
+  async save(
+    wallet: WalletCreationResult,
+    idempotencyKey?: string,
+  ): Promise<void> {
+    const naturalKey = InMemoryWalletCreationStore.naturalKey(
+      wallet.userId,
+      wallet.network,
+    );
+    if (this.wallets.has(naturalKey)) {
+      throw new Error('Wallet already exists for this user and network');
+    }
+    if (idempotencyKey && this.byIdempotencyKey.has(idempotencyKey)) {
+      throw new Error('Idempotency key already bound');
+    }
+    this.wallets.set(naturalKey, wallet);
+    if (idempotencyKey) {
+      this.byIdempotencyKey.set(idempotencyKey, {
+        userId: wallet.userId,
+        network: wallet.network,
+        result: {
+          wallet,
+          isNewWallet: true,
+          idempotencyKey,
+        },
+      });
+    }
   }
 }

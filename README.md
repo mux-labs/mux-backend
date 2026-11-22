@@ -1398,3 +1398,6 @@ Query parameters: `userId`, `network`, `status`, `includeArchived` (default `fal
 
 <!-- handsoff-issue-1121 -->
 - #1121: Soroban invoke: enforce MAX_INVOKE_ARGS / MAX_INVOKE_ARG_BYTES bounds with unit tests
+
+<!-- handsoff-issue-1289 -->
+- #1289: Add a regression test for OFF in src/wallets/key-rotation.model.ts
