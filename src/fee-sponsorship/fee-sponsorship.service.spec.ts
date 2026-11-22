@@ -262,3 +262,5 @@ describe('FeeSponsorshipService.enforceAuthorization', () => {
     ).not.toThrow();
   });
 });
+  });
+});
