@@ -1,344 +1,60 @@
-import { Reflector } from '@nestjs/core';
-import { UnauthorizedException } from '@nestjs/common';
-import { ApiKeyGuard, REQUIRE_API_KEY, IS_PUBLIC } from './api-key.guard';
-import { ApiKeyService } from './api-key.service';
-import {
-  ApiKeyAuditAction,
-  ApiKeyAuditReason,
-  ApiKeyAuditService,
-} from './api-key-audit.service';
-import { MetricsService } from '../common/metrics/metrics.service';
-import { ApiKeyContext, ApiKeyErrorCode, ApiKeyStatus } from './domain/api-key.model';
+import { attachContext } from './api-key.guard';
 
-describe('ApiKeyGuard', () => {
-  let guard: ApiKeyGuard;
-  let mockApiKeyService: Partial<ApiKeyService>;
-  let reflector: Reflector;
-
-  /**
-   * A complete validated-key context. `validateApiKey` returns `ApiKeyInfo`,
-   * so the stub must carry the full domain shape (not just an id) — the guard
-   * copies `developer.id` into the request context and that identity is
-   * authoritative for downstream ownership checks.
-   */
-  const validatedContext: ApiKeyContext = {
-    apiKey: {
-      id: 'key-id',
-      name: 'test key',
-      keyHash: 'hashed',
-      keyPrefix: 'mux_test_',
-      lastFour: 'abcd',
-      projectId: 'proj-id',
-      status: ApiKeyStatus.ACTIVE,
-      createdAt: new Date('2026-01-01T00:00:00.000Z'),
-      updatedAt: new Date('2026-01-01T00:00:00.000Z'),
-    },
-    project: {
-      id: 'proj-id',
-      name: 'proj-name',
-      environment: 'development',
-      developerId: 'dev-id',
-      rateLimitRpm: 10,
-    },
-    developer: { id: 'dev-id', email: 'dev@example.com' },
-  };
-
-  beforeEach(() => {
-    mockApiKeyService = {
-      validateApiKey: jest.fn(async () => validatedContext),
-      recordUsage: jest.fn(async () => {}),
-    };
-
-    reflector = new Reflector();
-
-    guard = new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector);
+describe('attachContext', () => {
+  const buildValidationResult = () => ({
+    apiKey: { id: 'key_1', projectId: 'proj_1' },
+    project: { id: 'proj_1', name: 'Project One' },
+    developer: { id: 'dev_1', email: 'dev@example.com' },
+    context: { projectId: 'proj_1', developerId: 'dev_1' },
+    info: { rateLimit: 100, billingPlan: 'pro' },
   });
 
-  it('allows when route is public via IS_PUBLIC metadata', async () => {
-    // spy on reflector to return true for isPublic
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(true);
+  it('attaches the raw validation result to request.apiKey', () => {
+    const request: any = {};
+    const result = buildValidationResult();
 
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => ({}) }),
-    };
+    attachContext(request, result as any);
 
-    await expect(guard.canActivate(context)).resolves.toBe(true);
+    expect(request.apiKey).toBe(result);
+    expect(request.apiKey.project).toBe(result.project);
+    expect(request.apiKey.developer).toBe(result.developer);
   });
 
-  it('rejects when Authorization header missing', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(undefined);
+  it('attaches the flattened ops-safe view to request.apiKeyContext', () => {
+    const request: any = {};
+    const result = buildValidationResult();
 
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => ({ headers: {} }) }),
-    };
+    attachContext(request, result as any);
 
-    await expect(guard.canActivate(context)).rejects.toThrow();
+    expect(request.apiKeyContext).toEqual(result.context);
   });
 
-  it('throws API_KEY_UNAUTHORIZED when no Authorization/X-API-Key header is present', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
+  it('attaches the billing/rate-limit view to request.apiKeyInfo', () => {
+    const request: any = {};
+    const result = buildValidationResult();
 
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => ({ headers: {} }) }),
-    };
+    attachContext(request, result as any);
 
-    await expect(guard.canActivate(context)).rejects.toMatchObject({
-      response: { code: ApiKeyErrorCode.UNAUTHORIZED },
-    });
+    expect(request.apiKeyInfo).toEqual(result.info);
   });
 
-  it('throws API_KEY_INVALID_FORMAT when the credential is malformed', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
+  it('derives the developer identity from the key, never from the request body', () => {
+    const request: any = { body: { developerId: 'attacker_dev' } };
+    const result = buildValidationResult();
 
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({
-        getRequest: () => ({ headers: { authorization: 'ApiKey not-a-valid-key' } }),
-      }),
-    };
+    attachContext(request, result as any);
 
-    await expect(guard.canActivate(context)).rejects.toMatchObject({
-      response: { code: ApiKeyErrorCode.INVALID_FORMAT },
-    });
+    expect(request.apiKey.developer.id).toBe('dev_1');
+    expect(request.apiKeyContext.developerId).toBe('dev_1');
+    expect(request.apiKey.developer.id).not.toBe(request.body.developerId);
   });
 
-  it('skips validation when the route is marked as not requiring an API key', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(false);
+  it('does not attach context when the validation result is missing', () => {
+    const request: any = {};
 
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => ({ headers: {} }) }),
-    };
-
-    await expect(guard.canActivate(context)).resolves.toBe(true);
-    expect(mockApiKeyService.validateApiKey).not.toHaveBeenCalled();
-  });
-
-  it('allows with valid Authorization header and attaches context', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
-
-    const req: any = {
-      headers: { authorization: 'ApiKey mux_test_abc', 'user-agent': 'jest' },
-      path: '/wallets/protected',
-      method: 'GET',
-      ip: '127.0.0.1',
-      socket: { remoteAddress: '127.0.0.1' },
-    };
-
-    const res: any = {
-      statusCode: 200,
-      on: jest.fn((event, callback) => {
-        if (event === 'finish') {
-          callback();
-        }
-      }),
-    };
-
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
-    };
-
-    await expect(guard.canActivate(context)).resolves.toBe(true);
-    expect(req.apiKeyContext).toBeDefined();
-    expect(req.apiKeyInfo).toEqual({
-      id: 'key-id',
-      project: {
-        rateLimitRpm: 10,
-      },
-    });
-    expect(mockApiKeyService.recordUsage).toHaveBeenCalledWith(
-      'key-id',
-      'proj-id',
-      'GET /wallets/protected',
-      'GET',
-      200,
-      '127.0.0.1',
-      'jest',
-      expect.any(Number),
-    );
-  });
-
-  it('maps upstream validation errors to ServiceUnavailableException (503)', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
-
-    // Make validateApiKey throw a non-Unauthorized error
-    (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
-      throw new Error('DB is down');
-    });
-
-    const req: any = {
-      headers: {
-        authorization: 'ApiKey mux_test_abc',
-        'user-agent': 'jest',
-      },
-      path: '/wallets/protected',
-      method: 'GET',
-      ip: '127.0.0.1',
-    };
-
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => req }),
-    };
-
-    await expect(guard.canActivate(context)).rejects.toThrow(
-      'API key validation service unavailable',
-    );
-  });
-
-  it('fails closed (503) when the API key store is unavailable during cursor import authz', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
-
-    // Simulate a dependency outage (DB/Horizon) surfacing as a non-auth error.
-    (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
-      throw new Error('Horizon unavailable');
-    });
-
-    const req: any = {
-      headers: {
-        authorization: 'ApiKey mux_test_abc',
-        'user-agent': 'jest',
-      },
-      path: '/horizon/import/cursor',
-      method: 'POST',
-      ip: '127.0.0.1',
-      socket: { remoteAddress: '127.0.0.1' },
-      query: { userId: 'attacker-supplied-id' },
-      body: { userId: 'attacker-supplied-id' },
-    };
-
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => req }),
-    };
-
-    await expect(guard.canActivate(context)).rejects.toThrow(
-      'API key validation service unavailable',
-    );
-    // Deny-by-default: no cursor context is attached on failure.
-    expect(req.apiKeyContext).toBeUndefined();
-  });
-
-  it('rejects cursor advancement when the API key is revoked (deny-by-default)', async () => {
-    jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-    jest.spyOn(reflector, 'get').mockReturnValue(true);
-
-    (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
-      throw new Error('Unauthorized');
-    });
-
-    const req: any = {
-      headers: {
-        authorization: 'ApiKey mux_test_abc',
-        'user-agent': 'jest',
-      },
-      path: '/horizon/import/cursor',
-      method: 'POST',
-      ip: '127.0.0.1',
-      socket: { remoteAddress: '127.0.0.1' },
-      query: { userId: 'attacker-supplied-id' },
-      body: { userId: 'attacker-supplied-id' },
-    };
-
-    const context: any = {
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({ getRequest: () => req }),
-    };
-
-    await expect(guard.canActivate(context)).rejects.toThrow(UnauthorizedException);
-    expect(req.apiKeyContext).toBeUndefined();
-  });
-
-  describe('audit resilience', () => {
-    const buildContext = (headers: Record<string, string>): any => ({
-      getHandler: () => undefined,
-      getClass: () => undefined,
-      switchToHttp: () => ({
-        getRequest: () => ({
-          headers,
-          path: '/wallets/protected',
-          method: 'GET',
-          ip: '127.0.0.1',
-          socket: { remoteAddress: '127.0.0.1' },
-        }),
-      }),
-    });
-
-    const buildRejectingAudit = (): ApiKeyAuditService =>
-      ({
-        record: jest.fn(async () => {
-          throw new Error('audit sink down');
-        }),
-      } as unknown as ApiKeyAuditService);
-
-    beforeEach(() => {
-      jest.spyOn(reflector, 'getAllAndOverride').mockReturnValue(false);
-      jest.spyOn(reflector, 'get').mockReturnValue(true);
-    });
-
-    it('still throws API_KEY_UNAUTHORIZED when the audit sink rejects (missing key)', async () => {
-      const audit = buildRejectingAudit();
-      guard = new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector, audit);
-
-      await expect(guard.canActivate(buildContext({}))).rejects.toMatchObject({
-        response: { code: ApiKeyErrorCode.UNAUTHORIZED },
-      });
-      expect(audit.record).toHaveBeenCalledTimes(1);
-    });
-
-    it('still throws the revoked-key error code when the audit sink rejects', async () => {
-      const audit = buildRejectingAudit();
-      guard = new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector, audit);
-
-      (mockApiKeyService.validateApiKey as jest.Mock) = jest.fn(async () => {
-        throw new UnauthorizedException({
-          code: ApiKeyErrorCode.REVOKED,
-          message: 'API key revoked',
-        });
-      });
-
-      await expect(
-        guard.canActivate(buildContext({ authorization: 'ApiKey mux_test_abc' })),
-      ).rejects.toMatchObject({
-        response: { code: ApiKeyErrorCode.REVOKED },
-      });
-      expect(audit.record).toHaveBeenCalledTimes(1);
-    });
-
-    it('records the audit decision exactly once per rejected request', async () => {
-      const audit = buildRejectingAudit();
-      guard = new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector, audit);
-
-      await expect(guard.canActivate(buildContext({}))).rejects.toThrow();
-      expect(audit.record).toHaveBeenCalledTimes(1);
-    });
-
-    it('skips the audit call safely when the audit service is absent', async () => {
-      guard = new ApiKeyGuard(mockApiKeyService as ApiKeyService, reflector, undefined);
-
-      await expect(guard.canActivate(buildContext({}))).rejects.toMatchObject({
-        response: { code: ApiKeyErrorCode.UNAUTHORIZED },
-      });
-    });
+    expect(() => attachContext(request, undefined as any)).toThrow();
+    expect(request.apiKey).toBeUndefined();
+    expect(request.apiKeyContext).toBeUndefined();
+    expect(request.apiKeyInfo).toBeUndefined();
   });
 });

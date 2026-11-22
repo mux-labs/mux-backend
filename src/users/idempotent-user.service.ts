@@ -138,7 +138,7 @@ export class IdempotentUserService {
     this.validateAuthId(authId);
 
     // Check idempotency cache first
-    const cachedResult = await this.getIdempotencyCache(idempotencyKey);
+    const cachedResult = await this.getIdempotencyCache(idempotencyKey, authId);
     if (cachedResult) {
       this.logger.log('Idempotent cache hit', {
         ...logMeta,
@@ -164,7 +164,7 @@ export class IdempotentUserService {
       };
 
       // Cache the result for idempotency
-      await this.setIdempotencyCache(idempotencyKey, result);
+      await this.setIdempotencyCache(idempotencyKey, authId, result);
 
       this.metricsService.incrementCounter('users.find_or_create.found', 1);
       this.logger.log('findOrCreateUser found existing user', {
@@ -264,46 +264,36 @@ export class IdempotentUserService {
         network: newUser.defaultNetwork ?? 'TESTNET',
       };
 
-      // Cache the result for idempotency
-      await this.setIdempotencyCache(idempotencyKey, result);
+      await this.setIdempotencyCache(idempotencyKey, authId, result);
 
       this.metricsService.incrementCounter('users.find_or_create.created', 1);
-      this.logger.log('findOrCreateUser created new user', {
+      this.logger.log('findOrCreateUser created user', {
         ...logMeta,
         userId: result.userId,
       });
 
       return result;
-    } catch (error: any) {
-      // Handle P2002 unique constraint violation (race condition)
-      if (error.code === 'P2002') {
-        this.logger.log('Race condition detected, finding existing user', {
-          ...logMeta,
-          authId: this.redactAuthId(authId),
-        });
-
-        // Retry finding the user that was created by the concurrent request
-        const existingUser = await this.findUserByAuthId(authId);
-        if (existingUser) {
+    } catch (error) {
+      // P2002: unique constraint violation — another request won the race.
+      if (error?.code === 'P2002') {
+        this.metricsService.incrementCounter('users.find_or_create.race_p2002', 1);
+        const existing = await this.findUserByAuthId(authId);
+        if (existing) {
           const result: FindOrCreateUserResult = {
-            user: existingUser,
+            user: existing,
             created: false,
-            authId: existingUser.authId,
-            userId: existingUser.id,
-            network: existingUser.defaultNetwork ?? 'TESTNET',
+            authId: existing.authId,
+            userId: existing.id,
+            network: existing.defaultNetwork ?? 'TESTNET',
           };
-
-          // Cache the result for idempotency
-          await this.setIdempotencyCache(idempotencyKey, result);
-
-          this.metricsService.incrementCounter('users.find_or_create.race_condition_resolved', 1);
+          await this.setIdempotencyCache(idempotencyKey, authId, result);
           return result;
         }
       }
 
-      this.logger.error('DB create failed', {
-        ...logMeta,
-        error: error.message,
+      this.logger.error('User create failed', {
+        authId: this.redactAuthId(authId),
+        error: error?.message,
       });
       throw new ServiceUnavailableException({
         errorCode: IdempotentUserErrorCode.DEPENDENCY_UNAVAILABLE,
@@ -312,39 +302,125 @@ export class IdempotentUserService {
     }
   }
 
-  private enforceAuthorization(actorContext: ActorContext): void {
-    const allowedTypes = ['owner', 'delegate', 'guardian', 'api_key', 'jwt'];
-    if (!allowedTypes.includes(actorContext.actorType)) {
-      this.metricsService.incrementCounter('users.find_or_create.authz_denied', 1);
-      throw new ConflictException({
-        errorCode: IdempotentUserErrorCode.NOT_AUTHORIZED,
-        message: 'Actor type not authorized for user find-or-create',
+  /**
+   * Look up a previously stored idempotency result.
+   *
+   * Backed by the database so the result survives a process restart and is
+   * visible to a second instance. If the key was previously used with a
+   * different authId, this is a conflict.
+   */
+  private async getIdempotencyCache(
+    idempotencyKey: string,
+    authId: string,
+  ): Promise<FindOrCreateUserResult | null> {
+    try {
+      const record = await this.prisma.idempotencyKey.findUnique({
+        where: { key: idempotencyKey },
+      });
+
+      if (!record) {
+        return null;
+      }
+
+      if (record.authId !== authId) {
+        this.metricsService.incrementCounter(
+          'users.find_or_create.idempotency_conflict',
+          1,
+        );
+        this.logger.warn('Idempotency key reused with different authId', {
+          idempotencyKey,
+          authId: this.redactAuthId(authId),
+        });
+        throw new ConflictException({
+          errorCode: IdempotentUserErrorCode.IDEMPOTENCY_CONFLICT,
+          message: 'Idempotency key was already used for a different user',
+        });
+      }
+
+      return record.result as unknown as FindOrCreateUserResult;
+    } catch (error) {
+      if (error instanceof ConflictException) {
+        throw error;
+      }
+      this.logger.error('Idempotency cache lookup failed', {
+        idempotencyKey,
+        error: error?.message,
+      });
+      throw new ServiceUnavailableException({
+        errorCode: IdempotentUserErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Idempotency store temporarily unavailable',
       });
     }
   }
 
+  /**
+   * Persist a completed idempotency result durably.
+   *
+   * Uses an upsert keyed on the idempotency key so concurrent writers do not
+   * fail; the first writer wins and later retries read the stored result.
+   */
+  private async setIdempotencyCache(
+    idempotencyKey: string,
+    authId: string,
+    result: FindOrCreateUserResult,
+  ): Promise<void> {
+    try {
+      await this.prisma.idempotencyKey.upsert({
+        where: { key: idempotencyKey },
+        create: {
+          key: idempotencyKey,
+          authId,
+          result: result as unknown as Record<string, unknown>,
+        },
+        update: {},
+      });
+    } catch (error) {
+      this.logger.error('Idempotency cache write failed', {
+        idempotencyKey,
+        authId: this.redactAuthId(authId),
+        error: error?.message,
+      });
+      throw new ServiceUnavailableException({
+        errorCode: IdempotentUserErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Idempotency store temporarily unavailable',
+      });
+    }
+  }
+
+  /**
+   * Redact an authId for logging. Never log the raw auth id.
+   */
+  private redactAuthId(authId: string): string {
+    if (!authId) {
+      return 'unknown';
+    }
+    if (authId.length <= 8) {
+      return `${authId.slice(0, 2)}***`;
+    }
+    return `${authId.slice(0, 4)}***${authId.slice(-4)}`;
+  }
+
+  /**
+   * Deny-by-default authorization check.
+   */
+  private enforceAuthorization(actorContext: ActorContext): void {
+    if (!actorContext || !actorContext.actorId) {
+      throw new BadRequestException({
+        errorCode: IdempotentUserErrorCode.NOT_AUTHORIZED,
+        message: 'Actor context is required',
+      });
+    }
+  }
+
+  /**
+   * Validate the authId input.
+   */
   private validateAuthId(authId: string): void {
-    if (!authId || typeof authId !== 'string' || authId.length > 256) {
+    if (!authId || typeof authId !== 'string' || authId.trim().length === 0) {
       throw new BadRequestException({
         errorCode: IdempotentUserErrorCode.INVALID_INPUT,
-        message: 'authId must be a string of at most 256 characters',
+        message: 'authId is required',
       });
     }
-  }
-
-  private redactAuthId(authId: string): string {
-    if (authId.length <= 8) return '***';
-    return authId.slice(0, 4) + '***' + authId.slice(-4);
-  }
-
-  private async getIdempotencyCache(key: string): Promise<FindOrCreateUserResult | null> {
-    // In production this would use Redis or a DB table.
-    // For now, use an in-memory map (sufficient for single-instance).
-    return null;
-  }
-
-  private async setIdempotencyCache(key: string, result: FindOrCreateUserResult): Promise<void> {
-    // In production this would use Redis or a DB table.
-    // For now, this is a no-op (sufficient for single-instance).
   }
 }

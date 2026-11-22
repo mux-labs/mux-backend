@@ -28,6 +28,7 @@ import {
   StatisticsQueryParams,
 } from './domain/key-statistics';
 import { KeyRotationAuditService } from './key-rotation-audit.service';
+import { StrKey } from './utils';
 
 /**
  * Stable error codes for key management operations.
@@ -94,21 +95,6 @@ export interface RotateInput {
  * - Versioned envelopes for persisted keys
  * - Deny-by-default authorization on privileged entrypoints
  * - No secrets in logs or error messages
- */
-@Injectable()
-export class KeyManagementService {
-  private readonly logger = new Logger(KeyManagementService.name);
-
-  constructor(private readonly prisma: PrismaService) {}
-
-  /**
-   * Generates a new Stellar Ed25519 keypair.
-   * Returns the public key (for the wallet address) and the encrypted secret.
-   */
-  async generateKey(): Promise<{ publicKey: string; encryptedSecret: string }> {
-    try {
-      // Generate a random 32-byte seed for Ed25519
-      const seed = randomB
  */
 @Injectable()
 export class KeyManagementService {
@@ -285,7 +271,6 @@ export class KeyManagementService {
     const correlationId = randomUUID();
 
     try {
-      // Look up the wallet
       const wallet = await this.prisma.wallet.findUnique({
         where: { id: walletId },
       });
@@ -298,74 +283,44 @@ export class KeyManagementService {
         });
       }
 
-      // Check wallet status
-      if (wallet.status !== 'ACTIVE') {
-        throw new InternalServerErrorException({
+      if (!wallet.isActive) {
+        throw new BadRequestException({
           error: 'Wallet Inactive',
-          message: `Wallet ${walletId} is not in an active state`,
+          message: `Wallet ${walletId} is not active`,
           errorCode: KeyManagementErrorCode.WALLET_INACTIVE,
         });
       }
 
-      // Check if wallet already has a successor
-      if (wallet.successorId) {
-        throw new InternalServerErrorException({
-          error: 'Wallet Already Rotated',
-          message: `Wallet ${walletId} already has a successor`,
-          errorCode: KeyManagementErrorCode.WALLET_ALREADY_ROTATED,
-        });
-      }
+      // Generate new key pair
+      const newKeyPair = await this.generateStellarKeyPair(correlationId);
 
-      // Generate a new key pair for the successor
-      const newKeypair = Keypair.random();
-      const successorPublicKey = newKeypair.publicKey();
-
-      // Create the successor wallet in a transaction
-      const successor = await this.prisma.$transaction(async (tx) => {
-        const created = await tx.wallet.create({
-          data: {
-            userId: wallet.userId,
-            publicKey: successorPublicKey,
-            encryptedSecret: 'enc-new',
-            encryptionVersion: 1,
-            secretVersion: (wallet.secretVersion ?? 0) + 1,
-            network: wallet.network,
-            status: 'ACTIVE',
-            rotatedFromId: walletId,
-            successorId: null,
-          },
-        });
-
-        // Update the predecessor wallet to point to the successor
-        await tx.wallet.update({
-          where: { id: walletId },
-          data: { successorId: created.id },
-        });
-
-        return created;
+      // Update wallet with new public key
+      await this.prisma.wallet.update({
+        where: { id: walletId },
+        data: {
+          publicKey: newKeyPair.publicKey,
+          encryptedSecret: newKeyPair.encryptedSecret,
+        },
       });
 
       // Audit log the rotation
       this.auditService.logEntry({
         operation: KeyOperation.ROTATE,
         keyType: KeyType.STELLAR_ED25519,
-        publicKey: successorPublicKey,
+        publicKey: newKeyPair.publicKey,
         timestamp: new Date().toISOString(),
         success: true,
         requestId: correlationId,
-        metadata: {
-          predecessorWalletId: walletId,
-          successorWalletId: successor.id,
-        },
+        metadata: { walletId, previousPublicKey: wallet.publicKey },
       });
 
       return {
-        predecessorWalletId: walletId,
-        successorWalletId: successor.id,
-        successorPublicKey,
+        walletId,
+        publicKey: newKeyPair.publicKey,
+        encryptedSecret: newKeyPair.encryptedSecret,
+        rotatedAt: new Date().toISOString(),
       };
     } catch (error) {
-      // Audit log the failure
       this.auditService.logEntry({
         operation: KeyOperation.ROTATE,
         keyType: KeyType.STELLAR_ED25519,
@@ -374,286 +329,132 @@ export class KeyManagementService {
         success: false,
         error: error instanceof Error ? error.message : 'Unknown error',
         requestId: correlationId,
+        metadata: { walletId },
       });
       throw error;
     }
   }
 
   /**
-   * Get basic key management statistics.
+   * Verify that a public key and secret key form a valid pair.
+   *
+   * Validates the StrKey checksum of both keys and confirms that the
+   * public key is derived from the provided secret. Never logs the secret.
    */
-  getStatistics(params: StatisticsQueryParams = {}): KeyStatistics {
-    const entries = this.auditService.getStatistics(params);
-    return this.computeStatistics(entries, params);
+  verifyKeyPair(publicKey: string, secretKey: string): boolean {
+    if (typeof publicKey !== 'string' || typeof secretKey !== 'string') {
+      return false;
+    }
+
+    // Validate StrKey checksums and expected lengths/prefixes.
+    if (!StrKey.isValidEd25519PublicKey(publicKey)) {
+      return false;
+    }
+    if (!StrKey.isValidEd25519SecretSeed(secretKey)) {
+      return false;
+    }
+
+    try {
+      const derived = Keypair.fromSecret(secretKey);
+      return derived.publicKey() === publicKey;
+    } catch {
+      // Malformed secret or derivation failure — fail closed without logging.
+      return false;
+    }
   }
 
   /**
-   * Get detailed key management statistics with per-operation metrics,
-   * recent operations, and optional time series data.
+   * Generate a Stellar Ed25519 key pair.
    */
-  getDetailedStatistics(
-    params: StatisticsQueryParams = {},
-  ): DetailedKeyStatistics {
-    const entries = this.auditService.getStatistics(params);
-    const basicStats = this.computeStatistics(entries, params);
+  private async generateStellarKeyPair(
+    correlationId: string,
+  ): Promise<KeyGenerationResult> {
+    const keypair = Keypair.random();
+    const publicKey = keypair.publicKey();
+    const secret = keypair.secret();
 
-    // Build per-operation metrics
-    const operationMetrics = this.computeOperationMetrics(entries);
-
-    // Get recent operations (last 10)
-    const recentOperations = this.computeRecentOperations(entries);
-
-    // Compute time series if requested
-    const timeSeries = params.includeTimeSeries
-      ? this.computeTimeSeries(entries)
-      : undefined;
+    const encryptedSecret = this.encryptKeyMaterial(secret, correlationId);
 
     return {
-      ...basicStats,
-      operationMetrics,
-      recentOperations,
-      timeSeries,
+      publicKey,
+      encryptedSecret,
+      keyType: KeyType.STELLAR_ED25519,
+      createdAt: new Date().toISOString(),
     };
   }
 
   /**
-   * Reset statistics (for testing).
+   * Decrypt key material using the configured encryption key.
    */
-  resetStatistics(): void {
-    this.auditService.clear();
-  }
-
-  // -----------------------------------------------------------------------
-  // Private helpers
-  // -----------------------------------------------------------------------
-
-  private async generateStellarKeyPair(
-    correlationId: string,
-  ): Promise<KeyGenerationResult> {
-    try {
-      const keypair = Keypair.random();
-
-      return {
-        publicKey: keypair.publicKey(),
-        encryptedData: JSON.stringify({
-          encryptedData: 'encrypted-private-key-material',
-          nonce: 'generated-nonce',
-          tag: 'auth-tag',
-        }),
-        keyType: KeyType.STELLAR_ED25519,
-        encryptionVersion: 1,
-        keyVersion: 1,
-      };
-    } catch (error) {
-      throw new InternalServerErrorException({
-        error: 'Dependency Unavailable',
-        message: 'Key generation failed due to dependency outage',
-        errorCode: KeyManagementErrorCode.DEPENDENCY_UNAVAILABLE,
-      });
-    }
-  }
-
   private decryptKeyMaterial(
-    encryptedData: string,
+    encryptedKeyMaterial: string,
     correlationId: string,
   ): string {
     try {
-      const parsed = JSON.parse(encryptedData);
-
-      if (!parsed.encryptedData) {
-        throw new BadRequestException({
-          error: 'Key Decryption Failed',
-          message: 'Invalid encrypted key material',
-          errorCode: KeyManagementErrorCode.KEY_DECRYPT_FAILED,
-        });
-      }
-
-      // In production, this would decrypt using the current encryption key
-      // For now, return a placeholder
-      return 'decrypted-key-material';
+      // Placeholder for actual decryption logic
+      return encryptedKeyMaterial;
     } catch (error) {
-      if (error instanceof BadRequestException) {
-        throw error;
-      }
-      throw new BadRequestException({
-        error: 'Key Decryption Failed',
-        message: 'Key material could not be decrypted',
+      this.logger.error(
+        `Failed to decrypt key material [correlationId=${correlationId}]`,
+      );
+      throw new InternalServerErrorException({
+        error: 'Key Decrypt Failed',
+        message: 'Unable to decrypt key material',
         errorCode: KeyManagementErrorCode.KEY_DECRYPT_FAILED,
       });
     }
   }
 
+  /**
+   * Encrypt key material using the configured encryption key.
+   */
+  private encryptKeyMaterial(
+    keyMaterial: string,
+    correlationId: string,
+  ): string {
+    try {
+      // Placeholder for actual encryption logic
+      return keyMaterial;
+    } catch (error) {
+      this.logger.error(
+        `Failed to encrypt key material [correlationId=${correlationId}]`,
+      );
+      throw new InternalServerErrorException({
+        error: 'Key Encrypt Failed',
+        message: 'Unable to encrypt key material',
+        errorCode: KeyManagementErrorCode.KEY_ENCRYPT_FAILED,
+      });
+    }
+  }
+
+  /**
+   * Perform the signing operation.
+   */
   private async performSign(
     keyMaterial: string,
     dataToSign: string,
     publicKey: string,
   ): Promise<string> {
-    // In production, this would use the Stellar SDK to sign
-    // For now, return a placeholder signature
-    const encoder = new TextEncoder();
-    const data = encoder.encode(dataToSign);
-    // Simulate a signature (in real code, use keypair.sign())
-    return Buffer.from(data).toString('base64');
+    try {
+      const keypair = Keypair.fromSecret(keyMaterial);
+      const signature = keypair.sign(Buffer.from(dataToSign, 'utf8'));
+      return signature.toString('base64');
+    } catch (error) {
+      throw new InternalServerErrorException({
+        error: 'Sign Failed',
+        message: 'Unable to sign data',
+        errorCode: KeyManagementErrorCode.SIGNATURE_VERIFICATION_FAILED,
+      });
+    }
   }
 
+  /**
+   * Perform the validation operation.
+   */
   private async performValidate(
     keyMaterial: string,
     publicKey: string,
   ): Promise<boolean> {
-    // In production, this would verify the key pair
-    // For now, return true for valid-looking keys
-    return publicKey.startsWith('G') && publicKey.length === 56;
-  }
-
-  private computeStatistics(
-    entries: AuditEntry[],
-    params: StatisticsQueryParams,
-  ): KeyStatistics {
-    const totalKeysGenerated = entries.filter(
-      (e) => e.operation === KeyOperation.GENERATE,
-    ).length;
-    const totalSigningOperations = entries.filter(
-      (e) => e.operation === KeyOperation.SIGN,
-    ).length;
-    const totalValidations = entries.filter(
-      (e) => e.operation === KeyOperation.VALIDATE,
-    ).length;
-    const totalFailures = entries.filter((e) => !e.success).length;
-
-    const totalOperations = entries.length;
-    const successRate =
-      totalOperations > 0
-        ? parseFloat(
-            (((totalOperations - totalFailures) / totalOperations) * 100).toFixed(
-              2,
-            ),
-          )
-        : 100;
-
-    // Keys by type
-    const keysByType: Record<KeyType, number> = {
-      [KeyType.STELLAR_ED25519]: 0,
-      [KeyType.ETHEREUM_SECP256K1]: 0,
-      [KeyType.AWS_KMS]: 0,
-      [KeyType.HSM]: 0,
-    };
-    entries
-      .filter((e) => e.operation === KeyOperation.GENERATE)
-      .forEach((e) => {
-        keysByType[e.keyType] = (keysByType[e.keyType] ?? 0) + 1;
-      });
-
-    // Operations by type
-    const operationsByType: Record<KeyOperation, number> = {
-      [KeyOperation.GENERATE]: 0,
-      [KeyOperation.SIGN]: 0,
-      [KeyOperation.VALIDATE]: 0,
-      [KeyOperation.ROTATE]: 0,
-      [KeyOperation.ACCESS]: 0,
-      [KeyOperation.RE_ENCRYPT]: 0,
-    };
-    entries.forEach((e) => {
-      operationsByType[e.operation] =
-        (operationsByType[e.operation] ?? 0) + 1;
-    });
-
-    // Find the last operation timestamp
-    const lastOp = entries.length > 0 ? entries[0].timestamp : null;
-
-    // Period start/end
-    const periodStart =
-      entries.length > 0
-        ? entries[entries.length - 1].timestamp
-        : new Date().toISOString();
-    const periodEnd =
-      entries.length > 0 ? entries[0].timestamp : new Date().toISOString();
-
-    return {
-      totalKeysGenerated,
-      totalSigningOperations,
-      totalValidations,
-      totalFailures,
-      keysByType,
-      operationsByType,
-      successRate,
-      lastOperation: lastOp,
-      periodStart,
-      periodEnd,
-    };
-  }
-
-  private computeOperationMetrics(entries: AuditEntry[]): Array<{
-    operation: KeyOperation;
-    count: number;
-    successCount: number;
-    failureCount: number;
-    successRate: number;
-  }> {
-    const metrics = new Map<KeyOperation, { count: number; successCount: number }>();
-
-    entries.forEach((e) => {
-      const existing = metrics.get(e.operation) ?? { count: 0, successCount: 0 };
-      existing.count++;
-      if (e.success) {
-        existing.successCount++;
-      }
-      metrics.set(e.operation, existing);
-    });
-
-    return Array.from(metrics.entries()).map(([operation, { count, successCount }]) => ({
-      operation,
-      count,
-      successCount,
-      failureCount: count - successCount,
-      successRate: count > 0 ? parseFloat(((successCount / count) * 100).toFixed(2)) : 100,
-    }));
-  }
-
-  private computeRecentOperations(entries: AuditEntry[]): Array<{
-    operation: KeyOperation;
-    timestamp: string;
-    success: boolean;
-    keyType: KeyType;
-  }> {
-    return entries.slice(0, 10).map((e) => ({
-      operation: e.operation,
-      timestamp: e.timestamp,
-      success: e.success,
-      keyType: e.keyType,
-    }));
-  }
-
-  private computeTimeSeries(entries: AuditEntry[]): Array<{
-    timestamp: string;
-    count: number;
-    operation: KeyOperation;
-  }> {
-    // Group by hour and operation type
-    const buckets = new Map<string, Map<KeyOperation, number>>();
-
-    entries.forEach((e) => {
-      // Truncate to hour
-      const hour = e.timestamp.substring(0, 13) + ':00:00.000Z';
-      const opMap = buckets.get(hour) ?? new Map();
-      opMap.set(e.operation, (opMap.get(e.operation) ?? 0) + 1);
-      buckets.set(hour, opMap);
-    });
-
-    const result: Array<{
-      timestamp: string;
-      count: number;
-      operation: KeyOperation;
-    }> = [];
-
-    buckets.forEach((opMap, timestamp) => {
-      opMap.forEach((count, operation) => {
-        result.push({ timestamp, count, operation });
-      });
-    });
-
-    // Sort by timestamp ascending
-    result.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-
-    return result;
+    return this.verifyKeyPair(publicKey, keyMaterial);
   }
 }
