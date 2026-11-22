@@ -94,13 +94,21 @@ describe('BalanceIndexerService', () => {
     jest.restoreAllMocks();
   });
 
-  describe('calculateDifference', () => {
-    it('reports a zero difference for equal decimal strings', () => {
-      expect(service.calculateDifference('1.0000000', '1.0000000')).toBe('0');
+  describe('calculateDifference (exact stroop math)', () => {
+    it('subtracts 7-decimal minor units without float error', () => {
+      expect(service.calculateDifference('0.1000000', '0.0000001')).toBe(
+        '0.0999999',
+      );
     });
 
-    it('throws for a non-numeric string', () => {
-      expect(() => service.calculateDifference('not-a-number', '1')).toThrow();
+    it('returns a consistent zero for equal balances', () => {
+      expect(service.calculateDifference('100', '100.0000000')).toBe(
+        '0.0000000',
+      );
+    });
+
+    it('throws on a non-numeric balance instead of returning NaN', () => {
+      expect(() => service.calculateDifference('abc', '1')).toThrow();
     });
   });
 
