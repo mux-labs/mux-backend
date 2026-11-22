@@ -4,23 +4,6 @@ import {
   resolveMainnetPaymentFlag,
 } from './configuration';
 
-describe('mainnetPaymentFlagSnapshot', () => {
-  const originalEnv = { ...process.env };
-
-  afterEach(() => {
-    process.env = { ...originalEnv };
-  });
-
-  it('returns exactly the documented key set for the testnet result', () => {
-    const snapshot = mainnetPaymentFlagSnapshot(
-      resolveMainnetPaymentFlag({ MAINNET_PAYMENT_ENABLED: 'false' }),
-    );
-
-    expect(Object.keys(snapshot).sort()
-  mainnetPaymentFlagSnapshot,
-  resolveMainnetPaymentFlag,
-} from './configuration';
-
 describe('resolveMainnetPaymentFlag', () => {
   it('returns disabled/testnet/DISABLED when no env is set', () => {
     const flag = resolveMainnetPaymentFlag({});
@@ -64,6 +47,15 @@ describe('resolveMainnetPaymentFlag', () => {
     expect(flag.enabled).toBe(false);
     expect(flag.network).toBe('mainnet');
     expect(flag.denialCode).toBe(MAINNET_PAYMENT_FLAG_ERROR_CODES.DISABLED);
+  });
+
+  it('never gates testnet payments on the flag (testnet stays enabled)', () => {
+    const flag = resolveMainnetPaymentFlag({
+      STELLAR_NETWORK: 'testnet',
+      MAINNET_PAYMENT_ENABLED: 'false',
+    });
+    expect(flag.network).toBe('testnet');
+    expect(flag.denialCode).toBeUndefined();
   });
 });
 
