@@ -56,6 +56,11 @@ export class LimitsService {
    * The daily limit is read from the same `walletLimit` row that `setLimits`
    * writes. A wallet with no limit row fails closed with a
    * `ForbiddenException` rather than being treated as a limit of 0.
+   *
+   * A missing daily limit (no wallet row or a non-finite stored value) is a
+   * distinct failure from a stored limit of zero: the former fails closed with
+   * `DAILY_LIMIT_NOT_CONFIGURED`, the latter rejects positive amounts with
+   * `DAILY_LIMIT_ZERO`.
    */
   async checkLimits(walletId: string, amount: string): Promise<LimitCheckResult> {
     const requested = this.parseDecimal(amount);
@@ -66,6 +71,20 @@ export class LimitsService {
     }
 
     const dailyLimit = await this.getDailyLimit(walletId);
+
+    if (dailyLimit === null) {
+      throw new ForbiddenException({
+        code: 'DAILY_LIMIT_NOT_CONFIGURED',
+        message: `No daily limit is configured for wallet ${walletId}`,
+      });
+    }
+
+    if (dailyLimit === 0) {
+      throw new ForbiddenException({
+        code: 'DAILY_LIMIT_ZERO',
+        message: `Daily limit for wallet ${walletId} is configured as zero`,
+      });
+    }
 
     const startOfDay = new Date();
     startOfDay.setUTCHours(0, 0, 0, 0);

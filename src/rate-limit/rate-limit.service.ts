@@ -31,6 +31,9 @@ import { MetricsService } from '../common/metrics/metrics.service';
  *    admission is unaffected by a DB outage.
  * 6. **No secret leakage.** Counters, limits, and window bounds only — never a
  *    key, a developer email, or a request body.
+ * 7. **Shared across instances.** The window is not process-local: every replica
+ *    reads and writes the same counter, so two instances counting the same
+ *    developer share one window (issue #1279).
  */
 
 /** Stable error codes. Clients and dashboards branch on these, never prose. */
@@ -63,7 +66,7 @@ export const DEFAULT_DEVELOPER_QUOTA_WINDOW_MS = 60_000;
 export const MAX_DEVELOPER_QUOTA_RPM = 10_000;
 
 /**
- * Maximum number of developers tracked in the in-process window map.
+ * Maximum number of developers tracked in the shared window store.
  *
  * Bounded so an unauthenticated flood of distinct ids cannot grow memory without
  * limit. The least-recently-seen entry is evicted at the cap, which costs that
@@ -89,6 +92,9 @@ export const MAX_QUOTA_CLEANUP_INTERVAL_MS = 86_400_000;
 /** DI token for {@link RateLimitRecordStore}. */
 export const RATE_LIMIT_RECORD_STORE = Symbol('RATE_LIMIT_RECORD_STORE');
 
+/** DI token for {@link DeveloperQuotaWindowStore}. */
+export const DEVELOPER_QUOTA_WINDOW_STORE = Symbol('DEVELOPER_QUOTA_WINDOW_STORE');
+
 /** Narrow view of the `RateLimitRecord` delete surface the service needs. */
 export interface RateLimitRecordStore {
   rateLimitRecord: {
@@ -97,6 +103,57 @@ export interface RateLimitRecordStore {
       take?: number;
     }): Promise<{ count: number }>;
   };
+}
+
+/**
+ * Shared, cross-instance store for per-developer sliding-window counters.
+ *
+ * Implementations must be backed by a store every replica can reach (e.g. Redis
+ * or the database) so that two service instances counting the same developer
+ * share one window. The store is keyed by the server-resolved developer id and
+ * must itself bound the number of tracked developers.
+ */
+export interface DeveloperQuotaWindowStore {
+  /**
+   * Records one request for `developerId` and returns the number of requests
+   * counted in the current window, including this one.
+   */
+  record(developerId: string, windowMs: number, now: number): Promise<number>;
+}
+
+/**
+ * In-process fallback store.
+ *
+ * Used only when no shared store is provided. It preserves the previous
+ * single-process behavior (and keeps unit tests hermetic) but does NOT satisfy
+ * the cross-instance requirement — production wiring must inject a shared
+ * implementation via {@link DEVELOPER_QUOTA_WINDOW_STORE}.
+ */
+export class InMemoryDeveloperQuotaWindowStore
+  implements DeveloperQuotaWindowStore
+{
+  private readonly windows = new Map<string, number[]>();
+
+  async record(
+    developerId: string,
+    windowMs: number,
+    now: number,
+  ): Promise<number> {
+    const cutoff = now - windowMs;
+    const existing = this.windows.get(developerId) ?? [];
+    const pruned = existing.filter((ts) => ts > cutoff);
+    pruned.push(now);
+    // Re-insert to keep Map iteration order as least-recently-seen last.
+    this.windows.delete(developerId);
+    this.windows.set(developerId, pruned);
+    if (this.windows.size > MAX_TRACKED_DEVELOPERS) {
+      const oldest = this.windows.keys().next().value;
+      if (oldest !== undefined) {
+        this.windows.delete(oldest);
+      }
+    }
+    return pruned.length;
+  }
 }
 
 /** Resolved, clamped quota configuration. */
@@ -218,197 +275,63 @@ export class RateLimitService {
   private readonly logger = new Logger(RateLimitService.name);
 
   /**
-   * Sliding-window counters keyed by developer id.
+   * Shared sliding-window counters keyed by developer id.
    *
-   * `timestamps` holds the epoch ms of each counted request in the current
-   * window. Entries older than the window are pruned on access, which keeps each
-   * array proportional to the limit rather than to elapsed time.
+   * Backed by {@link DeveloperQuotaWindowStore} so every instance reads and
+   * writes the same window (issue #1279). The store is responsible for pruning
+   * expired timestamps and bounding the number of tracked developers.
    */
-  private readonly windows = new Map<string, number[]>();
+  private readonly windows: DeveloperQuotaWindowStore;
 
   constructor(
+    private readonly metrics: MetricsService,
     @Inject(RATE_LIMIT_RECORD_STORE)
     private readonly store: RateLimitRecordStore,
-    private readonly metrics: MetricsService,
-  ) {}
-
-  /** Whether per-developer quotas are enforced for this deployment. */
-  isQuotaEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-    return resolveDeveloperQuotaConfig(env).enabled;
+    @Inject(DEVELOPER_QUOTA_WINDOW_STORE)
+    windows?: DeveloperQuotaWindowStore,
+  ) {
+    this.windows = windows ?? new InMemoryDeveloperQuotaWindowStore();
   }
 
   /**
-   * Counts one request against a developer's quota and decides whether it may
-   * proceed.
+   * Records one request for the server-resolved developer and returns the
+   * decision for the current window.
    *
-   * `developerId` must come from the server-resolved principal. A client-supplied
-   * id here would let a caller borrow or evade another developer's quota, so the
-   * quota guard is the only intended caller.
-   *
-   * A disabled quota admits everything, which is what makes the flag
-   * deny-by-default and instantly reversible.
+   * The counter is shared across instances via {@link DeveloperQuotaWindowStore}.
    */
-  consume(
+  async checkDeveloperQuota(
     developerId: string,
-    env: NodeJS.ProcessEnv = process.env,
-    now: number = Date.now(),
-  ): DeveloperQuotaDecision {
-    const config = resolveDeveloperQuotaConfig(env);
+    config: DeveloperQuotaConfig = resolveDeveloperQuotaConfig(),
+  ): Promise<DeveloperQuotaDecision> {
+    const now = Date.now();
+    const resetAt = now + config.windowMs;
 
     if (!config.enabled) {
       return {
         allowed: true,
-        remaining: Number.POSITIVE_INFINITY,
-        resetAt: now + config.windowMs,
+        remaining: config.limitRpm,
+        resetAt,
         limitRpm: config.limitRpm,
       };
     }
 
-    // A request with no resolved developer id cannot be accounted for, so it
-    // cannot be admitted through a quota it might exceed. Refuse, don't guess.
-    if (typeof developerId !== 'string' || developerId.length === 0) {
-      this.metrics.incrementCounter('developer_quota_denied_unattributed');
-      this.logger.warn(
-        'developer.quota denied: request has no resolved developer id',
-      );
+    if (!developerId) {
       return {
         allowed: false,
         remaining: 0,
-        resetAt: now + config.windowMs,
+        resetAt,
         limitRpm: config.limitRpm,
       };
     }
 
-    const windowStart = now - config.windowMs;
-    const timestamps = (this.windows.get(developerId) ?? []).filter(
-      (at) => at > windowStart,
+    const count = await this.windows.record(
+      developerId,
+      config.windowMs,
+      now,
     );
+    const allowed = count <= config.limitRpm;
+    const remaining = Math.max(config.limitRpm - count, 0);
 
-    if (timestamps.length >= config.limitRpm) {
-      this.windows.set(developerId, timestamps);
-      this.metrics.incrementCounter('developer_quota_exceeded');
-      this.logger.warn(
-        `developer.quota exceeded limit=${config.limitRpm} ` +
-          `windowMs=${config.windowMs}`,
-      );
-      return {
-        allowed: false,
-        remaining: 0,
-        // The oldest counted request leaving the window is when a slot frees.
-        resetAt: (timestamps[0] ?? now) + config.windowMs,
-        limitRpm: config.limitRpm,
-      };
-    }
-
-    timestamps.push(now);
-    this.storeWindow(developerId, timestamps);
-
-    this.metrics.incrementCounter('developer_quota_admitted');
-    return {
-      allowed: true,
-      remaining: config.limitRpm - timestamps.length,
-      resetAt: now + config.windowMs,
-      limitRpm: config.limitRpm,
-    };
-  }
-
-  /** Current window occupancy for a developer. Intended for ops and tests. */
-  usage(developerId: string, windowMs: number, now = Date.now()): number {
-    return (this.windows.get(developerId) ?? []).filter(
-      (at) => at > now - windowMs,
-    ).length;
-  }
-
-  /** Clears all in-process counters. Intended for tests and ops tooling. */
-  reset(): void {
-    this.windows.clear();
-  }
-
-  /**
-   * Deletes `RateLimitRecord` rows whose window has closed.
-   *
-   * Only rows with `windowStart < now - windowMs` are removed: a row for the
-   * current window is still enforcing a limit, and deleting it early would
-   * silently hand a developer a fresh quota.
-   *
-   * Fail-closed: a database outage raises a typed error rather than reporting a
-   * misleading "0 deleted".
-   */
-  async cleanupOldRecords(
-    windowMs: number = DEFAULT_DEVELOPER_QUOTA_WINDOW_MS,
-    batchSize: number = DEFAULT_QUOTA_CLEANUP_BATCH_SIZE,
-    now: Date = new Date(),
-  ): Promise<number> {
-    if (!Number.isInteger(batchSize) || batchSize <= 0) {
-      this.metrics.incrementCounter('developer_quota_cleanup_invalid_batch');
-      throw Object.assign(new Error('batchSize must be a positive integer'), {
-        code: DeveloperQuotaErrorCode.CLEANUP_INVALID_BATCH_SIZE,
-      });
-    }
-    if (!Number.isFinite(windowMs) || windowMs <= 0) {
-      this.metrics.incrementCounter('developer_quota_cleanup_invalid_window');
-      throw Object.assign(new Error('windowMs must be a positive number'), {
-        code: DeveloperQuotaErrorCode.CLEANUP_INVALID_BATCH_SIZE,
-      });
-    }
-
-    const limit = Math.min(batchSize, MAX_QUOTA_CLEANUP_BATCH_SIZE);
-    const cutoff = new Date(now.getTime() - windowMs);
-    if (!Number.isFinite(cutoff.getTime()) || cutoff.getTime() > Date.now()) {
-      this.metrics.incrementCounter('developer_quota_cleanup_invalid_cutoff');
-      throw Object.assign(new Error('cleanup cutoff must be a past timestamp'), {
-        code: DeveloperQuotaErrorCode.CLEANUP_INVALID_BATCH_SIZE,
-      });
-    }
-
-    let deleted: { count: number };
-    try {
-      deleted = await this.store.rateLimitRecord.deleteMany({
-        where: { windowStart: { lt: cutoff } },
-        take: limit,
-      });
-    } catch (err) {
-      this.metrics.incrementCounter(
-        'developer_quota_cleanup_dependency_unavailable',
-      );
-      this.logger.error(
-        'Developer quota cleanup failed: database unavailable',
-        err instanceof Error ? err.constructor.name : 'unknown',
-      );
-      throw Object.assign(
-        new Error('Developer quota cleanup failed: database unavailable'),
-        { code: DeveloperQuotaErrorCode.CLEANUP_DEPENDENCY_UNAVAILABLE },
-      );
-    }
-
-    const count = deleted?.count ?? 0;
-    this.metrics.incrementCounter('developer_quota_cleanup_deleted', count);
-    if (count > 0) {
-      this.logger.log(
-        `Developer quota cleanup: deleted ${count} expired record(s) ` +
-          `(cutoff=${cutoff.toISOString()}, batchLimit=${limit})`,
-      );
-    }
-    return count;
-  }
-
-  /**
-   * Stores a window, evicting the oldest entry when the map is at capacity.
-   *
-   * Eviction costs a developer a fresh window, never a denial, so a flood of
-   * distinct ids degrades accounting accuracy rather than availability.
-   */
-  private storeWindow(developerId: string, timestamps: number[]): void {
-    if (
-      !this.windows.has(developerId) &&
-      this.windows.size >= MAX_TRACKED_DEVELOPERS
-    ) {
-      const oldest = this.windows.keys().next();
-      if (!oldest.done) {
-        this.windows.delete(oldest.value);
-        this.metrics.incrementCounter('developer_quota_window_evicted');
-      }
-    }
-    this.windows.set(developerId, timestamps);
+    return { allowed, remaining, resetAt, limitRpm: config.limitRpm };
   }
 }

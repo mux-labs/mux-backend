@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ForbiddenException,
   NotFoundException,
   PayloadTooLargeException,
   ServiceUnavailableException,
@@ -108,6 +109,102 @@ describe('BalanceIndexerService', () => {
 
     it('throws on a non-numeric balance instead of returning NaN', () => {
       expect(() => service.calculateDifference('abc', '1')).toThrow();
+    });
+  });
+
+  describe('enforceAuthorization', () => {
+    const OWNER: BalanceActor = {
+      subjectId: 'owner-1',
+      role: 'user',
+      correlationId: 'test-correlation',
+    };
+    const FOREIGN: BalanceActor = {
+      subjectId: 'stranger-1',
+      role: 'user',
+      correlationId: 'test-correlation',
+    };
+
+    it('allows an operator through the no-walletId (sweep/write) gate', async () => {
+      await expect(
+        service.enforceAuthorization(OPERATOR),
+      ).resolves.toBeUndefined();
+    });
+
+    it('denies a non-operator through the no-walletId gate', async () => {
+      await expect(service.enforceAuthorization(OWNER)).rejects.toBeInstanceOf(
+        ForbiddenException,
+      );
+    });
+
+    it('denies an unauthenticated actor through the no-walletId gate', async () => {
+      await expect(
+        service.enforceAuthorization(undefined as unknown as BalanceActor),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('allows the wallet owner through the wallet-scoped gate', async () => {
+      prisma.wallet.findUnique.mockResolvedValue({
+        id: WALLET,
+        publicKey: ACCOUNT,
+        ownerSubjectId: OWNER.subjectId,
+      });
+
+      await expect(
+        service.enforceAuthorization(OWNER, WALLET),
+      ).resolves.toBeUndefined();
+    });
+
+    it('allows an operator through the wallet-scoped gate', async () => {
+      prisma.wallet.findUnique.mockResolvedValue({
+        id: WALLET,
+        publicKey: ACCOUNT,
+        ownerSubjectId: OWNER.subjectId,
+      });
+
+      await expect(
+        service.enforceAuthorization(OPERATOR, WALLET),
+      ).resolves.toBeUndefined();
+    });
+
+    it('denies a foreign actor through the wallet-scoped gate', async () => {
+      prisma.wallet.findUnique.mockResolvedValue({
+        id: WALLET,
+        publicKey: ACCOUNT,
+        ownerSubjectId: OWNER.subjectId,
+      });
+
+      await expect(
+        service.enforceAuthorization(FOREIGN, WALLET),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('denies a missing wallet exactly like a foreign one', async () => {
+      prisma.wallet.findUnique.mockResolvedValue(null);
+
+      await expect(
+        service.enforceAuthorization(OWNER, WALLET),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it('resolves ownership from the stored row, not a caller-supplied claim', async () => {
+      // The actor claims to own the wallet, but the stored row says otherwise.
+      prisma.wallet.findUnique.mockResolvedValue({
+        id: WALLET,
+        publicKey: ACCOUNT,
+        ownerSubjectId: 'someone-else',
+      });
+
+      const claimant: BalanceActor = {
+        subjectId: WALLET,
+        role: 'user',
+        correlationId: 'test-correlation',
+      };
+
+      await expect(
+        service.enforceAuthorization(claimant, WALLET),
+      ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
     });
   });
 
