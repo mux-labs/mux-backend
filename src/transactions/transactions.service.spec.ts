@@ -1,4 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
+import { Test, TestingModule } from '@nestjs/testing';
 import { ForbiddenException, ConflictException } from '@nestjs/common';
 import { TransactionsService } from './transactions.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -42,6 +43,47 @@ describe('TransactionsService.create', () => {
     }).compile();
 
     service = module.get<TransactionsService>(TransactionsService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  describe('assertValidAmount', () => {
+    it('rejects a zero amount', () => {
+      expect(() => service.assertValidAmount(0)).toThrow();
+    });
+
+    it('rejects 0.0000000', () => {
+      expect(() => service.assertValidAmount(0.0000000)).toThrow();
+    });
+
+    it('accepts the smallest 7-decimal amount 0.0000001', () => {
+      expect(() => service.assertValidAmount(0.0000001)).not.toThrow();
+    });
+  });
+});
+    }).compile();
+
+    service = module.get<TransactionsService>(TransactionsService);
+  });
+
+  it('should be defined', () => {
+    expect(service).toBeDefined();
+  });
+
+  describe('assertValidAmount', () => {
+    it('rejects a zero amount', () => {
+      expect(() => service.assertValidAmount(0)).toThrow();
+    });
+
+    it('rejects 0.0000000', () => {
+      expect(() => service.assertValidAmount(0.0000000)).toThrow();
+    });
+
+    it('accepts the smallest 7-decimal amount 0.0000001', () => {
+      expect(() => service.assertValidAmount(0.0000001)).not.toThrow();
+    });
   });
 
   it('creates a new transaction in PENDING state', async () => {
@@ -107,5 +149,6 @@ describe('TransactionsService.create', () => {
     ).rejects.toBeInstanceOf(ConflictException);
 
     expect(prisma.transaction.create).not.toHaveBeenCalled();
+  });
   });
 });

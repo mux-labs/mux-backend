@@ -94,6 +94,16 @@ describe('BalanceIndexerService', () => {
     jest.restoreAllMocks();
   });
 
+  describe('calculateDifference', () => {
+    it('reports a zero difference for equal decimal strings', () => {
+      expect(service.calculateDifference('1.0000000', '1.0000000')).toBe('0');
+    });
+
+    it('throws for a non-numeric string', () => {
+      expect(() => service.calculateDifference('not-a-number', '1')).toThrow();
+    });
+  });
+
   describe('enforceAuthorization', () => {
     const OWNER: BalanceActor = {
       subjectId: 'owner-1',
@@ -185,6 +195,8 @@ describe('BalanceIndexerService', () => {
       await expect(
         service.enforceAuthorization(claimant, WALLET),
       ).rejects.toBeInstanceOf(ForbiddenException);
+    });
+  });
     });
   });
 
@@ -345,6 +357,7 @@ describe('BalanceIndexerService', () => {
 
       expect(result.matches).toBe(false);
       expect(result.indexedBalance).toBeNull();
+      expect(result.onChainBalance).toBe('100');
       expect(createArgs[0]).toBeDefined();
     });
   });

@@ -75,8 +75,13 @@ export class PaymentsService {
 
   /**
    * Validates a `current → next` status pair against ALLOWED_TRANSITIONS.
-   * Terminal states (CONFIRMED, FAILED) have no outgoing transitions, so any
-   * attempt to move out of them is rejected here.
+   *
+   * Legal edges (see ALLOWED_TRANSITIONS):
+   *  - PENDING → CONFIRMED
+   *  - PENDING → FAILED
+   *
+   * Terminal states (no outgoing transitions): CONFIRMED, FAILED.
+   * Any attempt to move out of a terminal state is rejected here.
    */
   private assertTransitionAllowed(
     current: PaymentStatus,
@@ -200,19 +205,6 @@ export class PaymentsService {
 
   /**
    * Returns all payments scoped to a developer.
-   * Without developerOwnerId (legacy path), returns all — only allowed if isolation is disabled.
-   */
-  findAll(developerOwnerId?: string) {
-    if (this.isolationEnabled && developerOwnerId) {
-      return this.prisma.payment.findMany({
-        where: { developerOwnerId },
-        orderBy: { createdAt: 'desc' },
-      });
-    }
-    return this.prisma.payment.findMany({ orderBy: { createdAt: 'desc' } });
-  }
+   * Without developerOwnerId (legacy path), returns all
 
-  /**
-   * 
-
-/* … truncated 2924 chars — edit only what you need near the top … */
+/* … truncated 442 chars — edit only what you need near the top … */
