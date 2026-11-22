@@ -35,7 +35,23 @@ const DECIMAL_PATTERN = /^\d+(\.\d+)?$/;
 export class LimitsService {
   private readonly logger = new Logger(LimitsService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly clock: () => Date = () => new Date(),
+  ) {}
+
+  /**
+   * Returns the start of the current UTC day (00:00:00.000 UTC).
+   *
+   * The daily window is anchored to UTC midnight via `setUTCHours(0, 0, 0, 0)`
+   * so it does not depend on the server's local timezone. The current time is
+   * read from the injected clock so tests can pin the day deterministically.
+   */
+  private startOfUtcDay(): Date {
+    const startOfDay = new Date(this.clock().getTime());
+    startOfDay.setUTCHours(0, 0, 0, 0);
+    return startOfDay;
+  }
 
   /**
    * Checks the daily spending limit for a wallet.

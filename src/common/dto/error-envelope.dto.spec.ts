@@ -30,6 +30,25 @@ describe('redactErrorDetails', () => {
     expect(redacted.message).toContain(REDACTED_PLACEHOLDER);
   });
 
+  it('masks a generated S-secret in a message while keeping non-secret words', () => {
+    const base32Alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
+    const seed =
+      'S' +
+      Array.from(
+        { length: 55 },
+        () => base32Alphabet[Math.floor(Math.random() * base32Alphabet.length)],
+      ).join('');
+    const details: ErrorDetail[] = [
+      { field: 'body.seed', message: `invalid seed ${seed} for account` },
+    ];
+
+    const [redacted] = redactErrorDetails(details);
+
+    expect(redacted.message).not.toContain(seed);
+    expect(redacted.message).toContain('invalid seed');
+    expect(redacted.message).toContain('for account');
+  });
+
   it('returns a benign detail unchanged', () => {
     const details: ErrorDetail[] = [
       { field: 'body.amount', message: 'must be positive' },
