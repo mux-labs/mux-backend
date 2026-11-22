@@ -189,6 +189,45 @@ describe('LimitsService', () => {
 
       expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ['daily', NaN, 10, 'daily'],
+      ['daily', Infinity, 10, 'daily'],
+      ['daily', -1, 10, 'daily'],
+      ['per-transaction', 10, NaN, 'per-transaction'],
+      ['per-transaction', 10, Infinity, 'per-transaction'],
+      ['per-transaction', 10, -1, 'per-transaction'],
+    ])(
+      'names the offending %s field when it is %s',
+      async (_field, daily, perTx, expectedField) => {
+        await expect(
+          service.setLimits('wallet-1', daily as number, perTx as number),
+        ).rejects.toThrow(
+          new RegExp(`Invalid ${expectedField} limit`),
+        );
+
+        expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
+      },
+    );
+
+    it('persists zero limits as finite, non-negative values', async () => {
+      prisma.walletLimit.upsert.mockResolvedValue({
+        walletId: 'wallet-1',
+        dailyLimit: 0,
+        perTransactionLimit: 0,
+      });
+
+      await expect(service.setLimits('wallet-1', 0, 0)).resolves.toEqual({
+        dailyLimit: 0,
+        perTransactionLimit: 0,
+      });
+
+      expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+        update: { dailyLimit: 0, perTransactionLimit: 0 },
+        create: { walletId: 'wallet-1', dailyLimit: 0, perTransactionLimit: 0 },
+      });
+    });
   });
 
   describe('getLimits', () => {
