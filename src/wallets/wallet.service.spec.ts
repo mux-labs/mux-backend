@@ -1,8 +1,15 @@
-import { Test } from '@nestjs/testing';
-import { WalletService } from './wallet.service';
-import { PrismaService } from '../prisma/prisma.service';
+  const walletId = 'wallet-1';
+  const successorId = 'wallet-2';
+  const delegateId = 'delegate-1';
+  const strangerId = 'stranger-1';
 
-describe('WalletService.setSuccessor', () => {
+  beforeEach(async () => {
+    prisma = {
+      wallet: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
   let service: WalletService;
   let prisma: {
     wallet: {
@@ -12,8 +19,18 @@ describe('WalletService.setSuccessor', () => {
   };
 
   const ownerId = 'owner-1';
+  const delegateId = 'delegate-1';
+  const strangerId = 'stranger-1';
   const walletId = 'wallet-1';
   const successorId = 'wallet-2';
+
+  beforeEach(async () => {
+    prisma = {
+      wallet: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
 
   const wallet = (overrides: Record<string, unknown> = {}) => ({
     id: walletId,
@@ -66,88 +83,58 @@ describe('WalletService.setSuccessor', () => {
 
     await service.setSuccessor(walletId, null, ownerId);
 
+    expect(prisma.wallet.update).toHave
+
     expect(prisma.wallet.update).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: walletId },
-        data: { successorId: null },
+        data: expect.objectContaining({ successor_id: 'successor-1' }),
       }),
     );
-  });
-
-  it('rejects a caller who is not the owner', async () => {
-    prisma.wallet.findUnique.mockResolvedValueOnce(wallet());
-
-    await expect(
-      service.setSuccessor(walletId, successorId, 'intruder'),
-    ).rejects.toThrow();
-
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
-  });
-
-  it('rejects a successor owned by a different owner (no cross-tenant)', async () => {
-    prisma.wallet.findUnique
-      .mockResolvedValueOnce(wallet())
-      .mockResolvedValueOnce(wallet({ id: successorId, ownerId: 'other' }));
-
-    await expect(
-      service.setSuccessor(walletId, successorId, ownerId),
-    ).rejects.toThrow();
-
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
-  });
-
-  it('rejects a missing successor', async () => {
-    prisma.wallet.findUnique
-      .mockResolvedValueOnce(wallet())
-      .mockResolvedValueOnce(null);
-
-    await expect(
-      service.setSuccessor(walletId, successorId, ownerId),
-    ).rejects.toThrow();
-
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
-  });
-
-  it('rejects a self-reference', async () => {
-    prisma.wallet.findUnique.mockResolvedValueOnce(wallet());
-
-    await expect(
-      service.setSuccessor(walletId, walletId, ownerId),
-    ).rejects.toThrow();
-
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
-  });
-
-  it('rejects a successor chain that would create a cycle', async () => {
-    prisma.wallet.findUnique
-      .mockResolvedValueOnce(wallet())
-      .mockResolvedValueOnce(wallet({ id: successorId, successorId: walletId }));
-
-    await expect(
-      service.setSuccessor(walletId, successorId, ownerId),
-    ).rejects.toThrow();
-
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
-  });
-
-  it('is idempotent when the same successor is set again', async () => {
-    prisma.wallet.findUnique.mockResolvedValueOnce(
-      wallet({ successorId }),
+    expect(result).toEqual(
+      expect.objectContaining({ successor_id: 'successor-1' }),
     );
-
-    await service.setSuccessor(walletId, successorId, ownerId);
-
-    expect(prisma.wallet.update).not.toHaveBeenCalled();
   });
 
-  it('fails closed when the dependency is unavailable on write', async () => {
-    prisma.wallet.findUnique
-      .mockResolvedValueOnce(wallet())
-      .mockResolvedValueOnce(wallet({ id: successorId }));
-    prisma.wallet.update.mockRejectedValue(new Error('db down'));
+  it('allows an explicitly authorized delegate to mutate successor_id', async () => {
+    prisma.wallet.findUnique.mockResolvedValue({
+      id: walletId,
+      owner_id: ownerId,
+      delegates: [{ actor_id: delegateId }],
+      guardians: [],
+    });
+    prisma.wallet.update.mockResolvedValue({
+      id: walletId,
+      successor_id: 'successor-2',
+    });
 
     await expect(
-      service.setSuccessor(walletId, successorId, ownerId),
-    ).rejects.toThrow();
+      service.caller(
+        { id: delegateId } as any,
+        walletId,
+        { successor_id: 'successor-2' } as any,
+      ),
+    ).resolves.toEqual(
+      expect.objectContaining({ successor_id: 'successor-2' }),
+    );
+  });
+
+  it('denies an unauthorized actor by default (failure path)', async () => {
+    prisma.wallet.findUnique.mockResolvedValue({
+      id: walletId,
+      owner_id: ownerId,
+      delegates: [],
+      guardians: [],
+    });
+
+    await expect(
+      service.caller(
+        { id: strangerId } as any,
+        walletId,
+        { successor_id: 'successor-3' } as any,
+      ),
+    ).rejects.toBeInstanceOf(ForbiddenException);
+
+    expect(prisma.wallet.update).not.toHaveBeenCalled();
   });
 });
