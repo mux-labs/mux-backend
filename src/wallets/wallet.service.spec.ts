@@ -1,29 +1,19 @@
-  const walletId = 'wallet-1';
-  const successorId = 'wallet-2';
-  const delegateId = 'delegate-1';
-  const strangerId = 'stranger-1';
+        update: jest.fn(),
+      },
+    };
+
+  const wallet = (overrides: Record<string, unknown> = {}) => ({
+    id: walletId,
+    ownerId,
+    successorId: null,
+    ...overrides,
+  });
 
   beforeEach(async () => {
     prisma = {
       wallet: {
         findUnique: jest.fn(),
         update: jest.fn(),
-      },
-    };
-  let service: WalletService;
-  let prisma: {
-    wallet: {
-      findUnique: jest.Mock;
-      update: jest.Mock;
-    };
-  };
-
-  const ownerId = 'owner-1';
-  const delegateId = 'delegate-1';
-  const strangerId = 'stranger-1';
-  const walletId = 'wallet-1';
-  const successorId = 'wallet-2';
-
   beforeEach(async () => {
     prisma = {
       wallet: {
@@ -82,8 +72,6 @@
     prisma.wallet.update.mockResolvedValue(wallet());
 
     await service.setSuccessor(walletId, null, ownerId);
-
-    expect(prisma.wallet.update).toHave
 
     expect(prisma.wallet.update).toHaveBeenCalledWith(
       expect.objectContaining({
