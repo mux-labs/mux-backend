@@ -27,10 +27,222 @@ describe('LimitsService.checkLimits amount validation', () => {
     },
   );
 
+  it('sums only parseable transaction amounts and skips unparseable rows', async () => {
+    prisma.transaction.findMany.mockResolvedValue([
+      { id: 'tx-1', amount: '10' },
+      { id: 'tx-2', amount: 'bogus' },
+      { id: 'tx-3', amount: '5' },
+    ]);
+
+    const warnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    const result = await service.checkLimits('wallet-1', 1, 100);
+
+    expect(result.dailyUsed).toBe(15);
+    expect(Number.isFinite(result.dailyUsed)).toBe(true);
+    expect(Number.isFinite(result.dailyRemaining)).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining('tx-2'),
+    );
+  });
+
+  it('still throws ForbiddenException when valid rows plus proposed amount exceed the daily limit', async () => {
+    prisma.transaction.findMany.mockResolvedValue([
+      { id: 'tx-1', amount: '10' },
+      { id: 'tx-2', amount: 'bogus' },
+      { id: 'tx-3', amount: '5' },
+    ]);
+
+    jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(service.checkLimits('wallet-1', 10, 20)).rejects.toBeInstanceOf(
+      ForbiddenException,
+    );
+  });
+
+  describe('amount validation', () => {
+    it.each([
+      ['NaN', NaN],
+      ['unparseable string', 'abc'],
+      ['partially numeric string', '10abc'],
+      ['negative number', -1],
+      ['zero', 0],
+      ['Infinity', Infinity],
+    ])('rejects %s with BadRequestException and never queries Prisma', async (_label, amount) => {
+      await expect(
+        service.checkLimits('wallet-1', amount as number, 100),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    });
+
+    it('allows a valid numeric amount', async () => {
+      prisma.transaction.findMany.mockResolvedValue([]);
+
+      const result = await service.checkLimits('wallet-1', 10, 100);
+
+      expect(result.allowed).toBe(true);
+      expect(result.perTxLimit).toBe(100);
+      expect(result.dailyLimit).toBe(100);
+      expect(result.dailyUsed).toBe(0);
+      expect(result.dailyRemaining).toBe(100);
+    });
+
+    it('allows a valid numeric string amount', async () => {
+      prisma.transaction.findMany.mockResolvedValue([]);
+
+      const result = await service.checkLimits('wallet-1', '10.5' as unknown as number, 100);
+
+      expect(result.allowed).toBe(true);
+      expect(result.perTxLimit).toBe(100);
+      expect(result.dailyLimit).toBe(100);
+      expect(result.dailyUsed).toBe(0);
+      expect(result.dailyRemaining).toBe(100);
+    });
+  });
+
+  describe('setLimits', () => {
+    it('upserts valid limits with both update and create branches', async () => {
+      prisma.walletLimit.upsert.mockResolvedValue({
+        walletId: 'wallet-1',
+        dailyLimit: 100,
+        perTransactionLimit: 10,
+      });
+
+      await service.setLimits('wallet-1', 100, 10);
+
+      expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+        update: { dailyLimit: 100, perTransactionLimit: 10 },
+        create: {
+          walletId: 'wallet-1',
+          dailyLimit: 100,
+          perTransactionLimit: 10,
+        },
+      });
+    });
+
+    it.each([
+      ['negative daily', -1, 10],
+      ['negative perTx', 10, -1],
+      ['NaN daily', NaN, 10],
+      ['NaN perTx', 10, NaN],
+      ['Infinity daily', Infinity, 10],
+      ['Infinity perTx', 10, Infinity],
+    ])('rejects %s with BadRequestException and never calls upsert', async (_label, daily, perTx) => {
+      await expect(
+        service.setLimits('wallet-1', daily as number, perTx as number),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ['negative daily', -1],
+      ['NaN daily', NaN],
+      ['Infinity daily', Infinity],
+    ])('rejects %s with BadRequestException and never calls upsert', async (_label, daily) => {
+      await expect(
+        service.setLimits('wallet-1', daily as number, 10),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
+    });
+
+    it('accepts a zero daily limit and reaches Prisma', async () => {
+      prisma.walletLimit.upsert.mockResolvedValue({
+        walletId: 'wallet-1',
+        dailyLimit: 0,
+        perTransactionLimit: 10,
+      });
+
+      await service.setLimits('wallet-1', 0, 10);
+
+      expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+        update: { dailyLimit: 0, perTransactionLimit: 10 },
+        create: {
+          walletId: 'wallet-1',
+          dailyLimit: 0,
+          perTransactionLimit: 10,
+        },
+      });
+    });
+  });
+
+  describe('getLimits', () => {
+    it('returns null when the wallet has no limit row', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue(null);
+
+      await expect(service.getLimits('missing')).resolves.toBeNull();
+      expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
+        where: { walletId: 'missing' },
+      });
+    });
+
+    it('returns both numbers when a limit row exists', async () => {
+      const row = {
+        walletId: 'wallet-1',
+        dailyLimit: 100,
+        perTransactionLimit: 10,
+      };
+      prisma.walletLimit.findUnique.mockResolvedValue(row);
+
+      const result = await service.getLimits('wallet-1');
+
+      expect(result).not.toBeNull();
+      expect(result?.dailyLimit).toBe(100);
+      expect(result?.perTransactionLimit).toBe(10);
+      expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+      });
+    });
+  });
+
+  describe('removeLimits', () => {
+    it('throws NotFoundException when no row exists', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue(null);
+
+      await expect(service.removeLimits('missing')).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+    });
+
+    it('deletes the row when it exists', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue({
+        walletId: 'wallet-1',
+        dailyLimit: 100,
+        perTransactionLimit: 10,
+      });
+      prisma.walletLimit.delete.mockResolvedValue({});
+
+      await service.removeLimits('wallet-1');
+
+      expect(prisma.walletLimit.delete).toHaveBeenCalledTimes(1);
+      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+      });
+    });
+  });
+});
+      );
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    },
+  );
+
   it('continues past validation for a valid amount', async () => {
     const result = await service.checkLimits('wallet-1', '1');
 
-    expect(result.allowed).toBe(true);
-    expect(prisma.transaction.findMany).toHaveBeenCalledTimes(1);
+      await service.removeLimits('wallet-1');
+
+      expect(prisma.walletLimit.delete).toHaveBeenCalledTimes(1);
+      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+      });
+    });
   });
 });

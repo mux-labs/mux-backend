@@ -32,6 +32,15 @@ export interface TransactionPage {
   hasMore: boolean;
 }
 
+/**
+ * Maximum number of integer digits an amount may have.  The amount column is
+ * a fixed-precision decimal; anything wider cannot be stored without loss.
+ */
+const MAX_INTEGER_DIGITS = 18;
+
+/** Maximum number of fractional digits an amount may have. */
+const MAX_FRACTIONAL_DIGITS = 7;
+
 @Injectable()
 export class TransactionsService {
   private readonly logger = new Logger(TransactionsService.name);
@@ -222,281 +231,165 @@ export class TransactionsService {
         'cursor and offset are mutually exclusive',
       );
     }
-    const pageSize = Math.min(filters?.limit ?? 20, 100);
-    const where: any = {};
 
-    if (filters?.senderWalletId) {
-      where.senderWalletId = filters.senderWalletId;
-    }
-    if (filters?.receiverWalletId) {
+    const limit = Math.min(filters?.limit ?? 20, 100);
+
+    const where: Record<string, unknown> = {};
+    if (filters?.senderWalletId) where.senderWalletId = filters.senderWalletId;
+    if (filters?.receiverWalletId)
       where.receiverWalletId = filters.receiverWalletId;
-    }
-    if (filters?.status) {
-      where.status = filters.status;
-    }
+    if (filters?.status) where.status = filters.status;
 
-    // Cursor-based pagination: compound cursor on (createdAt DESC, id DESC)
     if (filters?.cursor) {
-      const pivot = await this.prisma.transaction.findUnique({
+      // Fetch the cursor row to get its createdAt for stable ordering
+      const cursorRow = await this.prisma.transaction.findUnique({
         where: { id: filters.cursor },
-        select: { createdAt: true, id: true },
       });
-      if (!pivot) {
-        throw new BadRequestException(
-          `Invalid pagination cursor: ${filters.cursor}`,
-        );
+      if (!cursorRow) {
+        throw new BadRequestException('Invalid cursor');
       }
       where.OR = [
-        { createdAt: { lt: pivot.createdAt } },
-        { createdAt: pivot.createdAt, id: { lt: pivot.id } },
+        { createdAt: { lt: cursorRow.createdAt } },
+        {
+          createdAt: cursorRow.createdAt,
+          id: { lt: cursorRow.id },
+        },
       ];
     }
 
-    // Fetch one extra to detect hasMore
-    const transactions = await this.prisma.transaction.findMany({
+    const rows = await this.prisma.transaction.findMany({
       where,
       orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: pageSize + 1,
-      skip: filters?.cursor ? undefined : filters?.offset,
+      take: limit + 1,
+      ...(filters?.offset !== undefined && !filters?.cursor
+        ? { skip: filters.offset }
+        : {}),
     });
 
-    const hasMore = transactions.length > pageSize;
-    const data = transactions
-      .slice(0, pageSize)
-      .map((t) => this.mapPrismaToEntity(t));
-    const nextCursor = hasMore ? data[data.length - 1].id : null;
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    const nextCursor = hasMore ? page[page.length - 1].id : null;
 
-    return { data, nextCursor, hasMore };
+    return {
+      data: page.map((row) => this.mapPrismaToEntity(row)),
+      nextCursor,
+      hasMore,
+    };
   }
 
   /**
-   * Find a transaction by ID
+   * Fetch a single transaction by id.
    */
   async findOne(id: string): Promise<TransactionEntity> {
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { id },
-    });
-
-    if (!transaction) {
+    const row = await this.prisma.transaction.findUnique({ where: { id } });
+    if (!row) {
       throw new NotFoundException(`Transaction ${id} not found`);
     }
-
-    return this.mapPrismaToEntity(transaction);
+    return this.mapPrismaToEntity(row);
   }
 
   /**
-   * Update transaction status with proper state-transition validation
+   * Update a transaction's status, enforcing the state machine.
    */
   async updateStatus(
     id: string,
-    updateDto: UpdateTransactionStatusDto,
+    dto: UpdateTransactionStatusDto,
   ): Promise<TransactionEntity> {
-    const existing = await this.prisma.transaction.findUnique({
-      where: { id },
-    });
-
-    if (!existing) {
+    const row = await this.prisma.transaction.findUnique({ where: { id } });
+    if (!row) {
       throw new NotFoundException(`Transaction ${id} not found`);
     }
 
-    if (
-      !canTransitionTransactionStatus(
-        existing.status as TransactionStatus,
-        updateDto.status,
-      )
-    ) {
-      throw new ConflictException({
-        errorCode: 'TRANSACTION_STATUS_TRANSITION_INVALID',
-        message: `Invalid status transition: ${existing.status} -> ${updateDto.status}`,
+    const current = row.status as TransactionStatus;
+    if (!canTransitionTransactionStatus(current, dto.status)) {
+      throw new BadRequestException({
+        errorCode: 'INVALID_STATUS_TRANSITION',
+        message: `Cannot transition from ${current} to ${dto.status}`,
       });
-    }
-
-    const updateData: any = {
-      status: updateDto.status,
-      statusChangedAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    if (updateDto.status === TransactionStatus.SUBMITTED) {
-      updateData.submittedAt = new Date();
-    } else if (updateDto.status === TransactionStatus.CONFIRMED) {
-      updateData.confirmedAt = new Date();
-    } else if (updateDto.status === TransactionStatus.FAILED) {
-      updateData.failedAt = new Date();
-    }
-
-    if (updateDto.statusReason !== undefined) {
-      updateData.statusReason = updateDto.statusReason;
-    }
-    if (updateDto.stellarHash !== undefined) {
-      updateData.stellarHash = updateDto.stellarHash;
-    }
-    if (updateDto.stellarLedger !== undefined) {
-      updateData.stellarLedger = updateDto.stellarLedger;
-    }
-    if (updateDto.stellarFee !== undefined) {
-      updateData.stellarFee = updateDto.stellarFee;
     }
 
     const updated = await this.prisma.transaction.update({
       where: { id },
-      data: updateData,
+      data: { status: dto.status },
     });
-
-    this.logger.log(
-      `Updated transaction ${id} status: ${existing.status} -> ${updateDto.status}`,
-    );
-
-    this.emitStatusWebhook(updated).catch((err) =>
-      this.logger.error(
-        `Failed to emit webhook for transaction ${id} status ${updateDto.status}: ${err?.message}`,
-      ),
-    );
 
     return this.mapPrismaToEntity(updated);
   }
 
   /**
-   * Find a transaction by Stellar hash
-   */
-  async findByStellarHash(hash: string): Promise<TransactionEntity | null> {
-    const transaction = await this.prisma.transaction.findUnique({
-      where: { stellarHash: hash },
-    });
-
-    return transaction ? this.mapPrismaToEntity(transaction) : null;
-  }
-
-  /**
-   * Find transactions for a wallet with cursor-based pagination.
-   */
-  async findByWallet(
-    walletId: string,
-    pagination?: { limit?: number; offset?: number; cursor?: string },
-  ): Promise<TransactionPage> {
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { id: walletId },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException(`Wallet ${walletId} not found`);
-    }
-
-    const pageSize = Math.min(pagination?.limit ?? 20, 100);
-    let where: any;
-
-    if (pagination?.cursor) {
-      const pivot = await this.prisma.transaction.findUnique({
-        where: { id: pagination.cursor },
-        select: { createdAt: true, id: true },
-      });
-      if (!pivot) {
-        throw new BadRequestException(
-          `Invalid pagination cursor: ${pagination.cursor}`,
-        );
-      }
-      where = {
-        AND: [
-          { OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }] },
-          {
-            OR: [
-              { createdAt: { lt: pivot.createdAt } },
-              { createdAt: pivot.createdAt, id: { lt: pivot.id } },
-            ],
-          },
-        ],
-      };
-    } else {
-      where = {
-        OR: [{ senderWalletId: walletId }, { receiverWalletId: walletId }],
-      };
-    }
-
-    const transactions = await this.prisma.transaction.findMany({
-      where,
-      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
-      take: pageSize + 1,
-      skip: pagination?.cursor ? undefined : pagination?.offset,
-    });
-
-    const hasMore = transactions.length > pageSize;
-    const data = transactions
-      .slice(0, pageSize)
-      .map((t) => this.mapPrismaToEntity(t));
-    const nextCursor = hasMore ? data[data.length - 1].id : null;
-
-    return { data, nextCursor, hasMore };
-  }
-
-  // ─── Private helpers ────────────────────────────────────────────────────────
-
-  /**
-   * Reject amounts that are not a finite, strictly positive decimal string with
-   * at most 7 decimal places (Stellar precision). Runs before any balance or
-   * limit work so malformed values never reach those checks or the database.
+   * Validate a decimal amount string without relying on `Number`.
+   *
+   * The amount must be a plain decimal (`^\d+(\.\d{1,7})?$`), with at most
+   * 7 fractional digits and an integer part that fits the storage column.
+   * Acceptance is decided purely on the string, so values that `Number`
+   * cannot represent exactly (e.g. `9007199254740993`) are never silently
+   * rounded — they are rejected when they exceed the column width.
    */
   private assertValidAmount(amount: string): void {
-    const value = Number(amount);
-    if (
-      typeof amount !== 'string' ||
-      !/^\d+(\.\d{1,7})?$/.test(amount) ||
-      !Number.isFinite(value) ||
-      value <= 0
-    ) {
+    if (typeof amount !== 'string' || !/^\d+(\.\d{1,7})?$/.test(amount)) {
       throw new BadRequestException({
-        message: `Invalid transaction amount: ${amount}`,
-        errorCode: 'TRANSACTION_AMOUNT_INVALID',
+        errorCode: 'INVALID_AMOUNT',
+        message: 'Amount must be a positive decimal with at most 7 fractional digits',
+      });
+    }
+
+    const [integerPart, fractionalPart = ''] = amount.split('.');
+
+    // Reject values whose integer part cannot fit the storage column.
+    const significantInteger = integerPart.replace(/^0+(?=\d)/, '');
+    if (significantInteger.length > MAX_INTEGER_DIGITS) {
+      throw new BadRequestException({
+        errorCode: 'INVALID_AMOUNT',
+        message: `Amount integer part must not exceed ${MAX_INTEGER_DIGITS} digits`,
+      });
+    }
+
+    // Fractional part is already bounded by the regex; assert defensively.
+    if (fractionalPart.length > MAX_FRACTIONAL_DIGITS) {
+      throw new BadRequestException({
+        errorCode: 'INVALID_AMOUNT',
+        message: `Amount must have at most ${MAX_FRACTIONAL_DIGITS} fractional digits`,
+      });
+    }
+
+    // Reject zero amounts (all digits zero, no non-zero fractional digit).
+    if (/^0*$/.test(integerPart) && /^0*$/.test(fractionalPart)) {
+      throw new BadRequestException({
+        errorCode: 'INVALID_AMOUNT',
+        message: 'Amount must be greater than 0',
       });
     }
   }
 
-  private async emitStatusWebhook(tx: any): Promise<void> {
-    const status = tx.status as TransactionStatus;
-    if (status === TransactionStatus.SUBMITTED) {
-      await this.webhookEventEmitter.emitTransactionPending({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        txHash: tx.stellarHash ?? '',
-      });
-    } else if (status === TransactionStatus.CONFIRMED) {
-      await this.webhookEventEmitter.emitTransactionConfirmed({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        txHash: tx.stellarHash ?? '',
-        ledger: tx.stellarLedger ?? 0,
-        confirmations: 1,
-      });
-    } else if (status === TransactionStatus.FAILED) {
-      await this.webhookEventEmitter.emitTransactionFailed({
-        transactionId: tx.id,
-        walletId: tx.senderWalletId,
-        reason: tx.statusReason ?? 'unknown',
-      });
-    }
-  }
-
-  private mapPrismaToEntity(prismaTransaction: any): TransactionEntity {
+  private mapPrismaToEntity(row: {
+    id: string;
+    amount: string;
+    assetType: string;
+    assetCode: string | null;
+    assetIssuer: string | null;
+    senderWalletId: string;
+    receiverWalletId: string | null;
+    status: string;
+    metadata: unknown;
+    idempotencyKey: string | null;
+    createdAt: Date;
+    updatedAt: Date;
+  }): TransactionEntity {
     return {
-      id: prismaTransaction.id,
-      amount: prismaTransaction.amount,
-      assetType: prismaTransaction.assetType,
-      assetCode: prismaTransaction.assetCode,
-      assetIssuer: prismaTransaction.assetIssuer,
-      senderWalletId: prismaTransaction.senderWalletId,
-      receiverWalletId: prismaTransaction.receiverWalletId,
-      status: prismaTransaction.status as TransactionStatus,
-      stellarHash: prismaTransaction.stellarHash,
-      stellarLedger: prismaTransaction.stellarLedger,
-      stellarFee: prismaTransaction.stellarFee,
-      statusChangedAt: prismaTransaction.statusChangedAt,
-      statusReason: prismaTransaction.statusReason,
-      submittedAt: prismaTransaction.submittedAt,
-      confirmedAt: prismaTransaction.confirmedAt,
-      failedAt: prismaTransaction.failedAt,
-      metadata: prismaTransaction.metadata,
-      idempotencyKey: prismaTransaction.idempotencyKey,
-      createdAt: prismaTransaction.createdAt,
-      updatedAt: prismaTransaction.updatedAt,
+      id: row.id,
+      amount: row.amount,
+      asset: {
+        type: row.assetType as any,
+        code: row.assetCode ?? undefined,
+        issuer: row.assetIssuer ?? undefined,
+      },
+      senderWalletId: row.senderWalletId,
+      receiverWalletId: row.receiverWalletId ?? undefined,
+      status: row.status as TransactionStatus,
+      metadata: (row.metadata as Record<string, unknown>) ?? undefined,
+      idempotencyKey: row.idempotencyKey ?? undefined,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
     };
   }
 }
