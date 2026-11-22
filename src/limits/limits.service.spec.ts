@@ -69,6 +69,50 @@ describe('LimitsService', () => {
     );
   });
 
+  describe('checkLimits skip-with-warning regression', () => {
+    it('skips unparseable amounts with a warning and keeps the aggregation finite', async () => {
+      prisma.wallet.findUnique.mockResolvedValue({ dailyLimit: 100 });
+      prisma.transaction.findMany.mockResolvedValue([
+        { id: 'tx-1', amount: '10' },
+        { id: 'tx-2', amount: 'not-a-number' },
+        { id: 'tx-3', amount: '5' },
+      ]);
+
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+
+      const result = await service.checkLimits('wallet-1', '1');
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('Skipping transaction id=tx-2'),
+      );
+      expect(result.dailyUsed).toBe(15);
+      expect(result.dailyRemaining).toBe(85);
+      expect(Number.isFinite(result.dailyUsed)).toBe(true);
+      expect(Number.isFinite(result.dailyRemaining)).toBe(true);
+    });
+
+    it('does not warn when every amount is parseable', async () => {
+      prisma.wallet.findUnique.mockResolvedValue({ dailyLimit: 100 });
+      prisma.transaction.findMany.mockResolvedValue([
+        { id: 'tx-1', amount: '10' },
+        { id: 'tx-2', amount: '5' },
+      ]);
+
+      const warnSpy = jest
+        .spyOn((service as any).logger, 'warn')
+        .mockImplementation(() => undefined);
+
+      const result = await service.checkLimits('wallet-1', '1');
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      expect(result.dailyUsed).toBe(15);
+      expect(Number.isFinite(result.dailyRemaining)).toBe(true);
+    });
+  });
+
   describe('amount validation', () => {
     it.each([
       ['NaN', NaN],
