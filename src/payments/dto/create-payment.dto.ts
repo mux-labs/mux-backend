@@ -1,12 +1,10 @@
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 import {
   IsInt,
-  IsNumber,
   IsOptional,
-  IsPositive,
   IsString,
   IsUUID,
-  Min,
+  Matches,
 } from 'class-validator';
 
 export class CreatePaymentDto {
@@ -33,13 +31,16 @@ export class CreatePaymentDto {
   toWalletId?: string;
 
   @ApiProperty({
-    description: 'Payment amount',
-    example: 100,
+    description:
+      'Payment amount as a decimal string with at most 7 fractional digits (must be greater than zero)',
+    example: '100.0000000',
   })
-  @IsNumber()
-  @IsPositive()
-  @Min(0.000001)
-  amount: number;
+  @IsString()
+  @Matches(/^(?!0+(\.0+)?$)\d+(\.\d{1,7})?$/, {
+    message:
+      'amount must be a positive decimal string with at most 7 fractional digits',
+  })
+  amount: string;
 
   @ApiPropertyOptional({
     description: 'Currency code',
