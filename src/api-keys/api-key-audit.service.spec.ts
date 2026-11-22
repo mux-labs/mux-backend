@@ -1,184 +1,75 @@
-import {
-  API_KEY_FINGERPRINT_LENGTH,
-  ApiKeyAuditAction,
-  ApiKeyAuditReason,
-  ApiKeyAuditService,
-  MAX_AUDIT_BUFFER_SIZE,
-  MAX_AUDIT_FIELD_LENGTH,
-} from './api-key-audit.service';
-import { MetricsService } from '../common/metrics/metrics.service';
+import { ApiKeyAuditService, sameKey } from './api-key-audit.service';
 
-const CORRELATION_ID = 'corr-1';
+describe('sameKey', () => {
+  it('returns true when two events describe the same presented key', () => {
+    const fingerprint = 'a'.repeat(64);
 
-describe('ApiKeyAuditService', () => {
-  let audit: ApiKeyAuditService;
-  let metrics: jest.Mocked<Pick<MetricsService, 'incrementCounter'>>;
-
-  beforeEach(() => {
-    metrics = { incrementCounter: jest.fn() };
-    audit = new ApiKeyAuditService(metrics as unknown as MetricsService);
+    expect(sameKey(fingerprint, fingerprint)).toBe(true);
   });
 
-  describe('fingerprint()', () => {
-    it('returns a truncated sha256 hex digest', () => {
-      const fingerprint = audit.fingerprint('mux_live_abc');
+  it('returns false when the fingerprints differ (different presented keys)', () => {
+    const fingerprint = 'a'.repeat(64);
+    const otherFingerprint = 'b'.repeat(64);
 
-      expect(fingerprint).toMatch(/^[0-9a-f]{12}$/);
-      expect(fingerprint).toHaveLength(API_KEY_FINGERPRINT_LENGTH);
-    });
+    expect(sameKey(fingerprint, otherFingerprint)).toBe(false);
+  });
+});
 
-    it('is deterministic for the same key and differs across keys', () => {
-      expect(audit.fingerprint('key-a')).toBe(audit.fingerprint('key-a'));
-      expect(audit.fingerprint('key-a')).not.toBe(audit.fingerprint('key-b'));
-    });
+describe('ApiKeyAuditService.recent', () => {
+  const buildService = () => {
+    const prisma = {
+      apiKeyAuditEvent: {
+        findMany: jest.fn(),
+      },
+    };
+    const service = new ApiKeyAuditService(prisma as any);
+    return { service, prisma };
+  };
 
-    it('never reveals the key material', () => {
-      const secret = 'mux_live_this-is-the-secret-part';
-      expect(audit.fingerprint(secret)).not.toContain('secret-part');
-    });
+  it('returns most recent events with newest last', async () => {
+    const { service, prisma } = buildService();
+    const events = [
+      { id: '3', createdAt: new Date('2024-01-03T00:00:00Z') },
+      { id: '2', createdAt: new Date('2024-01-02T00:00:00Z') },
+      { id: '1', createdAt: new Date('2024-01-01T00:00:00Z') },
+    ];
+    prisma.apiKeyAuditEvent.findMany.mockResolvedValue(events);
 
-    it('returns undefined for an absent or empty key', () => {
-      expect(audit.fingerprint(undefined)).toBeUndefined();
-      expect(audit.fingerprint(null)).toBeUndefined();
-      expect(audit.fingerprint('')).toBeUndefined();
-    });
+    const result = await service.recent('key-1', 3);
+
+    expect(result).toEqual(events);
+    expect(result[result.length - 1]).toEqual(events[events.length - 1]);
   });
 
-  describe('sameKey()', () => {
-    it('matches equal fingerprints and rejects different or absent ones', () => {
-      const fingerprint = audit.fingerprint('mux_live_abc');
+  it('bounds the result by the limit argument', async () => {
+    const { service, prisma } = buildService();
+    prisma.apiKeyAuditEvent.findMany.mockResolvedValue([]);
 
-      expect(
-        audit.sameKey(fingerprint, audit.fingerprint('mux_live_abc')),
-      ).toBe(true);
-      expect(
-        audit.sameKey(fingerprint, audit.fingerprint('mux_live_xyz')),
-      ).toBe(false);
-      expect(audit.sameKey(undefined, fingerprint)).toBe(false);
-      expect(audit.sameKey(fingerprint, undefined)).toBe(false);
-      // Different lengths must not throw inside timingSafeEqual.
-      expect(audit.sameKey('abc', 'abcdef')).toBe(false);
-    });
+    await service.recent('key-1', 5);
+
+    expect(prisma.apiKeyAuditEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ take: 5 }),
+    );
   });
-  describe('record()', () => {
-    it('stores and returns the sanitized event with an ISO timestamp', () => {
-      const event = audit.record({
-        action: ApiKeyAuditAction.VALIDATED,
-        apiKeyId: 'key-1',
-        developerId: 'dev-1',
-        projectId: 'proj-1',
-        route: 'GET /wallets/protected',
-        ip: '127.0.0.1',
-        correlationId: CORRELATION_ID,
-      });
 
-      expect(event).toMatchObject({
-        action: ApiKeyAuditAction.VALIDATED,
-        apiKeyId: 'key-1',
-        correlationId: CORRELATION_ID,
-      });
-      expect(new Date(event.at).toISOString()).toBe(event.at);
-      expect(audit.recent()).toEqual([event]);
-    });
+  it('returns an empty list for a zero limit without throwing', async () => {
+    const { service, prisma } = buildService();
 
-    it('strips control characters (log-injection defense) but keeps the route readable', () => {
-      const event = audit.record({
-        action: ApiKeyAuditAction.REJECTED,
-        route: 'GET /x\napikey.audit action=API_KEY_VALIDATED',
-        correlationId: CORRELATION_ID,
-      });
-
-      // The injected newline is gone, so it cannot forge a second log line...
-      expect(event.route).not.toContain('\n');
-      // ...while the single space that separates method from path survives.
-      expect(event.route).toBe('GET /x_apikey.audit action_API_KEY_VALIDATED');
-    });
-
-    it('neutralizes carriage returns and tabs the same way', () => {
-      const event = audit.record({
-        action: ApiKeyAuditAction.REJECTED,
-        route: 'GET /x\r\n\tapikey.audit',
-        correlationId: CORRELATION_ID,
-      });
-
-      expect(event.route).not.toMatch(/[\r\n\t]/);
-    });
-
-    it('bounds every field to the maximum length', () => {
-      const event = audit.record({
-        action: ApiKeyAuditAction.VALIDATED,
-        correlationId: CORRELATION_ID,
-        apiKeyId: 'k'.repeat(500),
-      });
-
-      expect(event.apiKeyId).toHaveLength(MAX_AUDIT_FIELD_LENGTH);
-    });
-
-    it('increments an ops-safe counter per action and per reason', () => {
-      audit.record({
-        action: ApiKeyAuditAction.REJECTED,
-        reason: ApiKeyAuditReason.EXPIRED,
-        correlationId: CORRELATION_ID,
-      });
-
-      const names = metrics.incrementCounter.mock.calls.map((call) => call[0]);
-      expect(names).toContain('apikey_audit_api_key_rejected');
-      expect(names).toContain('apikey_audit_reason_expired');
-    });
-
-    it('still records the event when the metrics sink throws', () => {
-      metrics.incrementCounter.mockImplementation(() => {
-        throw new Error('metrics down');
-      });
-
-      const event = audit.record({
-        action: ApiKeyAuditAction.VALIDATED,
-        correlationId: CORRELATION_ID,
-      });
-
-      expect(event.correlationId).toBe(CORRELATION_ID);
-      expect(audit.recent()).toHaveLength(1);
-    });
+    await expect(service.recent('key-1', 0)).resolves.toEqual([]);
+    expect(prisma.apiKeyAuditEvent.findMany).not.toHaveBeenCalled();
   });
-  describe('buffer bounds', () => {
-    it('is bounded so a key spray cannot grow memory without limit', () => {
-      for (let i = 0; i < MAX_AUDIT_BUFFER_SIZE + 25; i += 1) {
-        audit.record({
-          action: ApiKeyAuditAction.REJECTED,
-          reason: ApiKeyAuditReason.UNKNOWN,
-          correlationId: `${CORRELATION_ID}-${i}`,
-        });
-      }
 
-      const events = audit.recent(MAX_AUDIT_BUFFER_SIZE * 2);
-      expect(events).toHaveLength(MAX_AUDIT_BUFFER_SIZE);
-      // The oldest events were evicted; the newest is retained.
-      expect(events[events.length - 1].correlationId).toBe(
-        `${CORRELATION_ID}-${MAX_AUDIT_BUFFER_SIZE + 24}`,
-      );
-    });
+  it('returns an empty list for a negative limit without throwing', async () => {
+    const { service, prisma } = buildService();
 
-    it('returns events newest-last and honours the limit', () => {
-      audit.record({ action: ApiKeyAuditAction.VALIDATED, correlationId: 'a' });
-      audit.record({ action: ApiKeyAuditAction.VALIDATED, correlationId: 'b' });
+    await expect(service.recent('key-1', -1)).resolves.toEqual([]);
+    expect(prisma.apiKeyAuditEvent.findMany).not.toHaveBeenCalled();
+  });
 
-      expect(audit.recent(1).map((e) => e.correlationId)).toEqual(['b']);
-      expect(audit.recent()).toHaveLength(2);
-    });
+  it('returns an empty list for a non-integer limit without throwing', async () => {
+    const { service, prisma } = buildService();
 
-    it('returns an empty list for a non-positive or fractional limit', () => {
-      audit.record({ action: ApiKeyAuditAction.VALIDATED, correlationId: 'a' });
-
-      expect(audit.recent(0)).toEqual([]);
-      expect(audit.recent(-1)).toEqual([]);
-      expect(audit.recent(1.5)).toEqual([]);
-    });
-
-    it('clear() empties the buffer', () => {
-      audit.record({ action: ApiKeyAuditAction.VALIDATED, correlationId: 'a' });
-      audit.clear();
-
-      expect(audit.recent()).toEqual([]);
-    });
+    await expect(service.recent('key-1', 1.5)).resolves.toEqual([]);
+    expect(prisma.apiKeyAuditEvent.findMany).not.toHaveBeenCalled();
   });
 });

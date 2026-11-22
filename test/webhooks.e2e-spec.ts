@@ -225,10 +225,9 @@ describe('Webhooks (e2e)', () => {
     });
   });
 
-  describe('GET /webhooks/endpoints/:id/deliveries', () => {
-    it('should retrieve delivery history for an endpoint', async () => {
-      // Create endpoint
-      const createRes = await request(app.getHttpServer())
+  describe('GET /webhooks/endpoints/project/:projectId', () => {
+    it('should list endpoints for a project without exposing secrets', async () => {
+      await request(app.getHttpServer())
         .post('/webhooks/endpoints')
         .send({
           projectId: PROJECT_ID,
@@ -237,5 +236,74 @@ describe('Webhooks (e2e)', () => {
         })
         .expect(201);
 
+      const res = await request(app.getHttpServer())
+        .get(`/webhooks/endpoints/project/${PROJECT_ID}`)
+        .expect(200);
 
-/* … truncated 5921 chars — edit only what you need near the top … */
+      expect(Array.isArray(res.body.endpoints)).toBe(true);
+      expect(res.body.endpoints.length).toBeGreaterThan(0);
+      for (const endpoint of res.body.endpoints) {
+        expect(endpoint).not.toHaveProperty('secret');
+        expect(endpoint).not.toHaveProperty('secretHash');
+      }
+    });
+  });
+
+  describe('Webhook delivery signing', () => {
+    it('should deliver a signed webhook payload that verifies with the endpoint secret', async () => {
+      const payload = {
+        event: 'wallet.created',
+        data: { walletId: 'wallet-1', projectId: PROJECT_ID },
+      };
+
+      const signature = webhookSigner.sign(payload, WEBHOOK_SECRET);
+      expect(typeof signature).toBe('string');
+      expect(signature.length).toBeGreaterThan(0);
+
+      // A correctly signed payload verifies against the same secret.
+      expect(webhookSigner.verify(payload, signature, WEBHOOK_SECRET)).toBe(
+        true,
+      );
+
+      (axios.post as jest.Mock).mockResolvedValueOnce({ status: 200 });
+
+      await webhookEmitter.emit('wallet.created', payload.data, {
+        projectId: PROJECT_ID,
+        url: WEBHOOK_URL,
+        secret: WEBHOOK_SECRET,
+      });
+
+      expect(axios.post).toHaveBeenCalled();
+      const [calledUrl, calledBody, calledConfig] = (axios.post as jest.Mock)
+        .mock.calls[0];
+      expect(calledUrl).toBe(WEBHOOK_URL);
+      expect(calledBody).toEqual(payload);
+      expect(calledConfig?.headers).toBeDefined();
+      const sentSignature =
+        calledConfig.headers['X-Webhook-Signature'] ??
+        calledConfig.headers['x-webhook-signature'];
+      expect(sentSignature).toBeDefined();
+      expect(
+        webhookSigner.verify(payload, sentSignature, WEBHOOK_SECRET),
+      ).toBe(true);
+    });
+
+    it('should reject a payload with a bad signature', async () => {
+      const payload = {
+        event: 'wallet.created',
+        data: { walletId: 'wallet-1', projectId: PROJECT_ID },
+      };
+
+      const validSignature = webhookSigner.sign(payload, WEBHOOK_SECRET);
+      const badSignature = webhookSigner.sign(payload, 'whsec_wrong_secret');
+
+      expect(badSignature).not.toBe(validSignature);
+      expect(webhookSigner.verify(payload, badSignature, WEBHOOK_SECRET)).toBe(
+        false,
+      );
+      expect(
+        webhookSigner.verify(payload, 'not-a-valid-signature', WEBHOOK_SECRET),
+      ).toBe(false);
+    });
+  });
+});
