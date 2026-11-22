@@ -71,8 +71,13 @@ export class PaymentsService {
 
   /**
    * Validates a `current → next` status pair against ALLOWED_TRANSITIONS.
-   * Terminal states (CONFIRMED, FAILED) have no outgoing transitions, so any
-   * attempt to move out of them is rejected here.
+   *
+   * Legal edges (see ALLOWED_TRANSITIONS):
+   *  - PENDING → CONFIRMED
+   *  - PENDING → FAILED
+   *
+   * Terminal states (no outgoing transitions): CONFIRMED, FAILED.
+   * Any attempt to move out of a terminal state is rejected here.
    */
   private assertTransitionAllowed(
     current: PaymentStatus,
