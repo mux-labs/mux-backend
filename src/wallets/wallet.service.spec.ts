@@ -1,9 +1,15 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { ForbiddenException } from '@nestjs/common';
-import { WalletService } from './wallet.service';
-import { PrismaService } from '../prisma/prisma.service';
+  const walletId = 'wallet-1';
+  const successorId = 'wallet-2';
+  const delegateId = 'delegate-1';
+  const strangerId = 'stranger-1';
 
-describe('WalletService.caller', () => {
+  beforeEach(async () => {
+    prisma = {
+      wallet: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
   let service: WalletService;
   let prisma: {
     wallet: {
@@ -16,6 +22,7 @@ describe('WalletService.caller', () => {
   const delegateId = 'delegate-1';
   const strangerId = 'stranger-1';
   const walletId = 'wallet-1';
+  const successorId = 'wallet-2';
 
   beforeEach(async () => {
     prisma = {
@@ -25,33 +32,58 @@ describe('WalletService.caller', () => {
       },
     };
 
-    const module: TestingModule = await Test.createTestingModule({
+  const wallet = (overrides: Record<string, unknown> = {}) => ({
+    id: walletId,
+    ownerId,
+    successorId: null,
+    ...overrides,
+  });
+
+  beforeEach(async () => {
+    prisma = {
+      wallet: {
+        findUnique: jest.fn(),
+        update: jest.fn(),
+      },
+    };
+
+    const moduleRef = await Test.createTestingModule({
       providers: [
         WalletService,
         { provide: PrismaService, useValue: prisma },
       ],
     }).compile();
 
-    service = module.get<WalletService>(WalletService);
+    service = moduleRef.get(WalletService);
   });
 
-  it('allows the wallet owner to mutate successor_id', async () => {
-    prisma.wallet.findUnique.mockResolvedValue({
-      id: walletId,
-      owner_id: ownerId,
-      delegates: [],
-      guardians: [],
-    });
-    prisma.wallet.update.mockResolvedValue({
-      id: walletId,
-      successor_id: 'successor-1',
-    });
-
-    const result = await service.caller(
-      { id: ownerId } as any,
-      walletId,
-      { successor_id: 'successor-1' } as any,
+  it('sets the successor when the caller is the owner', async () => {
+    prisma.wallet.findUnique
+      .mockResolvedValueOnce(wallet())
+      .mockResolvedValueOnce(wallet({ id: successorId }));
+    prisma.wallet.update.mockResolvedValue(
+      wallet({ successorId }),
     );
+
+    await service.setSuccessor(walletId, successorId, ownerId);
+
+    expect(prisma.wallet.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: walletId },
+        data: { successorId },
+      }),
+    );
+  });
+
+  it('clears the successor when successorId is null', async () => {
+    prisma.wallet.findUnique.mockResolvedValueOnce(
+      wallet({ successorId }),
+    );
+    prisma.wallet.update.mockResolvedValue(wallet());
+
+    await service.setSuccessor(walletId, null, ownerId);
+
+    expect(prisma.wallet.update).toHave
 
     expect(prisma.wallet.update).toHaveBeenCalledWith(
       expect.objectContaining({
