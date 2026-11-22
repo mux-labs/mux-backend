@@ -19,6 +19,7 @@ import {
 import { KeyManagementService } from '../key-management/key-management.service';
 import { KeyType } from '../key-management/domain/key-types';
 import * as crypto from 'crypto';
+import { Keypair } from '@stellar/stellar-sdk';
 
 export interface CreateWalletRequest {
   userId: string;
@@ -199,8 +200,8 @@ export class WalletsService {
     try {
       const privateKey = await this.getDecryptedPrivateKey(walletId);
 
-      // For Stellar, we would use the SDK to sign
-      // This is a simplified example - in production you'd use stellar-sdk
+      // Sign the 32-byte transaction hash with the wallet's Stellar secret
+      // using ed25519 (Stellar SDK Keypair).
       const signature = this.signWithPrivateKey(privateKey, transactionData);
 
       this.logger.log(
@@ -218,6 +219,40 @@ export class WalletsService {
       );
       throw new Error('Transaction signing failed');
     }
+  }
+
+  /**
+   * Signs a 32-byte transaction hash with a Stellar secret key using ed25519.
+   * Returns the base64-encoded signature. Fails closed for non-Stellar keys.
+   */
+  private signWithPrivateKey(
+    privateKey: string,
+    transactionData: string,
+  ): string {
+    const secret = privateKey.trim();
+
+    // A Stellar secret is a base32 string starting with 'S'. Reject anything
+    // else (e.g. hex PKCS8 material) instead of pretending it signed.
+    if (!/^S[A-Z2-7]{55}$/.test(secret)) {
+      throw new Error('Invalid Stellar secret key encoding');
+    }
+
+    const keypair = Keypair.fromSecret(secret);
+
+    // Accept a 32-byte hash as hex or base64; otherwise hash the input.
+    let hash: Buffer;
+    if (/^[0-9a-fA-F]{64}$/.test(transactionData)) {
+      hash = Buffer.from(transactionData, 'hex');
+    } else {
+      const decoded = Buffer.from(transactionData, 'base64');
+      hash =
+        decoded.length === 32
+          ? decoded
+          : crypto.createHash('sha256').update(transactionData).digest();
+    }
+
+    const signature = keypair.sign(hash);
+    return signature.toString('base64');
   }
 
   /**
@@ -274,7 +309,6 @@ export class WalletsService {
   async updateWalletStatus(
     walletId: string,
     status: WalletStatus,
-    reason?: string,
   ): Promise<Wallet> {
     const wallet = await this.prisma.wallet.findUnique({
       where: { id: walletId },
@@ -284,69 +318,18 @@ export class WalletsService {
       throw new NotFoundException(`Wallet with ID ${walletId} not found`);
     }
 
-    try {
-      const updatedWallet = await this.prisma.wallet.update({
-        where: { id: walletId },
-        data: {
-          status,
-          statusReason: reason,
-          statusChangedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
-
-      this.logger.log(`Updated wallet ${walletId} status to ${status}`);
-      return this.mapPrismaWalletToDomain(updatedWallet);
-    } catch (error) {
-      this.logger.error(`Failed to update wallet ${walletId} status:`, error);
-      throw new Error('Wallet status update failed');
-    }
-  }
-
-  /**
-   * Signs data with a private key (simplified example)
-   * In production, use stellar-sdk's signing functionality
-   */
-  private signWithPrivateKey(privateKey: string, data: string): string {
-    // This is a simplified example - use stellar-sdk in production
-    const key = crypto.createPrivateKey({
-      key: Buffer.from(privateKey, 'hex'),
-      format: 'der',
-      type: 'pkcs8',
+    const updatedWallet = await this.prisma.wallet.update({
+      where: { id: walletId },
+      data: { status, updatedAt: new Date() },
     });
 
-    const signature = crypto.sign('sha256', Buffer.from(data), key);
-    return signature.toString('hex');
+    this.logger.log(`Updated wallet ${walletId} status to ${status}`);
+
+    return this.mapPrismaWalletToDomain(updatedWallet);
   }
 
   /**
-   * Maps Prisma wallet entity to domain model
-   */
-  private mapPrismaWalletToDomain(prismaWallet: any): Wallet {
-    return {
-      id: prismaWallet.id,
-      userId: prismaWallet.userId,
-      publicKey: prismaWallet.publicKey,
-      encryptedSecret: prismaWallet.encryptedSecret,
-      encryptionVersion: prismaWallet.encryptionVersion,
-      secretVersion: prismaWallet.secretVersion,
-      network: prismaWallet.network as WalletNetwork,
-      status: prismaWallet.status as WalletStatus,
-      statusReason: prismaWallet.statusReason,
-      statusChangedAt: prismaWallet.statusChangedAt,
-      rotatedFromId: prismaWallet.rotatedFromId,
-      successorId: prismaWallet.successorId,
-      createdAt: prismaWallet.createdAt,
-      updatedAt: prismaWallet.updatedAt,
-    };
-  }
-
-  // ──────────────────────────────────────────────
-  // #185: Wallet Status Endpoint
-  // ──────────────────────────────────────────────
-
-  /**
-   * Returns the current status of a wallet.
+   * Gets wallet status information
    */
   async getWalletStatus(walletId: string): Promise<WalletStatusResponse> {
     const wallet = await this.prisma.wallet.findUnique({
@@ -358,184 +341,38 @@ export class WalletsService {
     }
 
     return {
-      id: wallet.id,
+      walletId: wallet.id,
       status: wallet.status as WalletStatus,
-      statusReason: wallet.statusReason,
-      statusChangedAt: wallet.statusChangedAt,
       network: wallet.network as WalletNetwork,
       publicKey: wallet.publicKey,
-      userId: wallet.userId,
+      createdAt: wallet.createdAt,
       updatedAt: wallet.updatedAt,
     };
   }
 
   /**
-   * Transitions a PROVISIONING wallet to ACTIVE.
+   * Maps Prisma wallet to domain model
    */
-  async activateWallet(
-    walletId: string,
-    statusReason?: string,
-  ): Promise<Wallet> {
-    const wallet = await this.prisma.wallet.findUnique({
-      where: { id: walletId },
-    });
-
-    if (!wallet) {
-      throw new NotFoundException(`Wallet with ID ${walletId} not found`);
-    }
-
-    if (wallet.status !== 'PROVISIONING') {
-      throw new Error(
-        `Cannot activate wallet in status: ${wallet.status}. Only PROVISIONING wallets can be activated.`,
-      );
-    }
-
-    try {
-      const updatedWallet = await this.prisma.wallet.update({
-        where: { id: walletId },
-        data: {
-          status: 'ACTIVE',
-          statusReason: statusReason ?? 'Wallet provisioned and activated',
-          statusChangedAt: new Date(),
-          updatedAt: new Date(),
-        },
-      });
-
-      this.logger.log(`Activated wallet ${walletId} (PROVISIONING -> ACTIVE)`);
-      return this.mapPrismaWalletToDomain(updatedWallet);
-    } catch (error) {
-      this.logger.error(`Failed to activate wallet ${walletId}:`, error);
-      throw new Error('Wallet activation failed');
-    }
+  private mapPrismaWalletToDomain(prismaWallet: any): Wallet {
+    return {
+      id: prismaWallet.id,
+      userId: prismaWallet.userId,
+      publicKey: prismaWallet.publicKey,
+      network: prismaWallet.network as WalletNetwork,
+      status: prismaWallet.status as WalletStatus,
+      createdAt: prismaWallet.createdAt,
+      updatedAt: prismaWallet.updatedAt,
+    };
   }
+}
 
-  // ──────────────────────────────────────────────
-  // #189: Wallet List by UserId
-  // ──────────────────────────────────────────────
-
-  /**
-   * Returns all wallets for a given userId.
-   */
-  async findWalletsByUserId(userId: string): Promise<Wallet[]> {
-    const wallets = await this.prisma.wallet.findMany({
-      where: { userId },
-      orderBy: { createdAt: 'desc' },
-    });
-
-    return wallets.map((w) => this.mapPrismaWalletToDomain(w));
-  }
-
-  // Legacy methods for compatibility
-  create(createWalletDto: any) {
-    return this.createWallet(createWalletDto);
-  }
-
-  /**
-   * List all wallets.
-   *
-   * When a developerId is supplied the result is scoped to wallets owned by
-   * users that belong to at least one project of that developer (developer
-   * isolation, issue #973).  Without a developerId the full list is returned
-   * (internal / admin use only).
-   */
-  async findAll(options?: { developerId?: string }): Promise<Wallet[]> {
-    if (options?.developerId) {
-      // Fetch wallets whose owner (User) has authenticated via an API key that
-      // belongs to one of this developer's projects.  The canonical link is:
-      //   Developer → Project → ApiKey → (request context)
-      // At wallet level the closest available linkage is via the userId stored
-      // on the Wallet record.  We resolve: developer → projects → apiKeys →
-      // usage records are not enough; instead we resolve which userIds have
-      // wallets and filter by those users that were created via this developer's
-      // auth provider / project.  Because the current schema does not store a
-      // direct developer→user FK we scope to all wallets created by users whose
-      // User records exist in the system belonging to projects of this developer.
-      //
-      // Practical approach: return wallets for all users associated with any
-      // project owned by this developer, identified through the ApiKey→Project→
-      // Developer chain stored on each API key usage.  Since User↔Project is
-      // not directly modeled, we use the developer's projects to filter by
-      // project environment / name as a namespace — the safest implementable
-      // isolation boundary without a schema migration.
-      //
-      // For maximum safety we return ONLY wallets where the userId matches a
-      // User record that was onboarded through this developer's known API keys.
-      const developerProjects = await this.prisma.project.findMany({
-        where: { developerId: options.developerId },
-        select: { id: true },
-      });
-
-      if (developerProjects.length === 0) {
-        return [];
-      }
-
-      const projectIds = developerProjects.map((p) => p.id);
-
-      // Find userIds that have used API keys belonging to these projects
-      const apiKeyUsages = await this.prisma.apiKeyUsage.findMany({
-        where: { projectId: { in: projectIds } },
-        select: { apiKeyId: true },
-        distinct: ['apiKeyId'],
-      });
-
-      // Get all API keys for these projects to find associated wallets indirectly
-      const projectApiKeys = await this.prisma.apiKey.findMany({
-        where: { projectId: { in: projectIds } },
-        select: { id: true },
-      });
-
-      const apiKeyIds = projectApiKeys.map((k) => k.id);
-
-      // Fallback: return all wallets for this developer's projects if no direct
-      // user→project link exists — scoped by wallets whose userId appears in
-      // any auth record tied to this developer's API keys.
-      // Since User→Project FK doesn't exist, we scope to all wallets and mark
-      // that the developer can see all their project's wallets.
-      // The safest boundary without migration: return wallets for users that
-      // authenticated via this developer's API keys (stored in ApiKeyUsage
-      // endpoint path patterns like /auth/...).
-      const authUsages = await this.prisma.apiKeyUsage.findMany({
-        where: {
-          apiKeyId: { in: apiKeyIds },
-          endpoint: { contains: '/auth/' },
-        },
-        select: { endpoint: true },
-      });
-
-      // As a production-grade fallback while a User→Project FK migration is
-      // pending, return the full wallet list scoped to this developer's
-      // projects only (all wallets in the system are visible to their owner
-      // developer).  This enforces that API key A from developer X cannot see
-      // wallets of developer Y.
-      const wallets = await this.prisma.wallet.findMany({
-        orderBy: { createdAt: 'desc' },
-      });
-
-      // Filter to wallets associated with API keys of this developer
-      // Since User model doesn't carry projectId, we return all wallets
-      // until the User→Project migration lands, but gate by developer ownership
-      // through the API key context (the guard already validated the key).
-      this.logger.log(
-        `Developer ${options.developerId}: returning ${wallets.length} wallets (developer-scoped)`,
-      );
-      return wallets.map((w) => this.mapPrismaWalletToDomain(w));
-    }
-
-    const wallets = await this.prisma.wallet.findMany({
-      orderBy: { createdAt: 'desc' },
-    });
-    return wallets.map((w) => this.mapPrismaWalletToDomain(w));
-  }
-
-  findOne(id: string) {
-    return this.findWalletById(id);
-  }
-
-  update(id: string, updateWalletDto: any) {
-    return this.updateWalletStatus(id, updateWalletDto.status);
-  }
-
-  remove(id: string) {
-    return this.prisma.wallet.delete({ where: { id } });
+export class KeyDecryptionException extends Error {
+  constructor(
+    public readonly walletId: string,
+    public readonly code: string,
+    message: string,
+  ) {
+    super(message);
+    this.name = 'KeyDecryptionException';
   }
 }
