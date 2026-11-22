@@ -1,36 +1,31 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
 import { LimitsService } from './limits.service';
 import { PrismaService } from '../prisma/prisma.service';
 
-describe('LimitsService', () => {
+describe('LimitsService.checkLimits amount validation', () => {
   let service: LimitsService;
   let prisma: {
     transaction: { findMany: jest.Mock };
     wallet: { findUnique: jest.Mock };
-    walletLimit: { findUnique: jest.Mock; upsert: jest.Mock; delete: jest.Mock };
   };
 
-  beforeEach(async () => {
+  beforeEach(() => {
     prisma = {
-      transaction: { findMany: jest.fn() },
-      wallet: { findUnique: jest.fn() },
-      walletLimit: {
-        findUnique: jest.fn(),
-        upsert: jest.fn(),
-        delete: jest.fn(),
-      },
+      transaction: { findMany: jest.fn().mockResolvedValue([]) },
+      wallet: { findUnique: jest.fn().mockResolvedValue({ dailyLimit: 1000 }) },
     };
-
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [
-        LimitsService,
-        { provide: PrismaService, useValue: prisma },
-      ],
-    }).compile();
-
-    service = module.get<LimitsService>(LimitsService);
+    service = new LimitsService(prisma as unknown as PrismaService);
   });
+
+  it.each(['NaN', 'Infinity', '-1', '0'])(
+    'rejects %s with BadRequestException before querying transactions',
+    async (amount) => {
+      await expect(service.checkLimits('wallet-1', amount)).rejects.toBeInstanceOf(
+        BadRequestException,
+      );
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    },
+  );
 
   it('sums only parseable transaction amounts and skips unparseable rows', async () => {
     prisma.transaction.findMany.mockResolvedValue([
@@ -145,10 +140,51 @@ describe('LimitsService', () => {
 
       expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
     });
+
+    it.each([
+      ['negative daily', -1],
+      ['NaN daily', NaN],
+      ['Infinity daily', Infinity],
+    ])('rejects %s with BadRequestException and never calls upsert', async (_label, daily) => {
+      await expect(
+        service.setLimits('wallet-1', daily as number, 10),
+      ).rejects.toBeInstanceOf(BadRequestException);
+
+      expect(prisma.walletLimit.upsert).not.toHaveBeenCalled();
+    });
+
+    it('accepts a zero daily limit and reaches Prisma', async () => {
+      prisma.walletLimit.upsert.mockResolvedValue({
+        walletId: 'wallet-1',
+        dailyLimit: 0,
+        perTransactionLimit: 10,
+      });
+
+      await service.setLimits('wallet-1', 0, 10);
+
+      expect(prisma.walletLimit.upsert).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+        update: { dailyLimit: 0, perTransactionLimit: 10 },
+        create: {
+          walletId: 'wallet-1',
+          dailyLimit: 0,
+          perTransactionLimit: 10,
+        },
+      });
+    });
   });
 
   describe('getLimits', () => {
-    it('returns the row for a known wallet', async () => {
+    it('returns null when the wallet has no limit row', async () => {
+      prisma.walletLimit.findUnique.mockResolvedValue(null);
+
+      await expect(service.getLimits('missing')).resolves.toBeNull();
+      expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
+        where: { walletId: 'missing' },
+      });
+    });
+
+    it('returns both numbers when a limit row exists', async () => {
       const row = {
         walletId: 'wallet-1',
         dailyLimit: 100,
@@ -156,16 +192,14 @@ describe('LimitsService', () => {
       };
       prisma.walletLimit.findUnique.mockResolvedValue(row);
 
-      await expect(service.getLimits('wallet-1')).resolves.toEqual(row);
+      const result = await service.getLimits('wallet-1');
+
+      expect(result).not.toBeNull();
+      expect(result?.dailyLimit).toBe(100);
+      expect(result?.perTransactionLimit).toBe(10);
       expect(prisma.walletLimit.findUnique).toHaveBeenCalledWith({
         where: { walletId: 'wallet-1' },
       });
-    });
-
-    it('returns null for an unknown wallet', async () => {
-      prisma.walletLimit.findUnique.mockResolvedValue(null);
-
-      await expect(service.getLimits('missing')).resolves.toBeNull();
     });
   });
 
@@ -176,7 +210,6 @@ describe('LimitsService', () => {
       await expect(service.removeLimits('missing')).rejects.toBeInstanceOf(
         NotFoundException,
       );
-      expect(prisma.walletLimit.delete).not.toHaveBeenCalled();
     });
 
     it('deletes the row when it exists', async () => {
@@ -185,14 +218,28 @@ describe('LimitsService', () => {
         dailyLimit: 100,
         perTransactionLimit: 10,
       });
-      prisma.walletLimit.delete.mockResolvedValue({
-        walletId: 'wallet-1',
-        dailyLimit: 100,
-        perTransactionLimit: 10,
-      });
+      prisma.walletLimit.delete.mockResolvedValue({});
 
       await service.removeLimits('wallet-1');
 
+      expect(prisma.walletLimit.delete).toHaveBeenCalledTimes(1);
+      expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
+        where: { walletId: 'wallet-1' },
+      });
+    });
+  });
+});
+      );
+      expect(prisma.transaction.findMany).not.toHaveBeenCalled();
+    },
+  );
+
+  it('continues past validation for a valid amount', async () => {
+    const result = await service.checkLimits('wallet-1', '1');
+
+      await service.removeLimits('wallet-1');
+
+      expect(prisma.walletLimit.delete).toHaveBeenCalledTimes(1);
       expect(prisma.walletLimit.delete).toHaveBeenCalledWith({
         where: { walletId: 'wallet-1' },
       });

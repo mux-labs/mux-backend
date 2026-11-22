@@ -9,6 +9,7 @@ import {
   UseGuards,
   Req,
   UnauthorizedException,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Request } from 'express';
 import { PaymentsService } from './payments.service';
@@ -35,6 +36,10 @@ import {
  * #1112 — The developer owner is resolved solely from the API key context. If
  * it cannot be resolved, the request is rejected (fail closed) rather than
  * falling back to any client-supplied value.
+ *
+ * #1273 — The path id is passed through as a string (matching findOne/remove)
+ * rather than coerced with Number(), which would turn '1e2' into 100, '01'
+ * into 1, and a UUID into NaN.
  */
 @Controller('payments')
 @UseGuards(ApiKeyGuard, RateLimitGuard)
@@ -83,7 +88,7 @@ export class PaymentsController {
   ) {
     const developerOwnerId: string | undefined = (req as any).apiKeyContext
       ?.developer?.id;
-    return this.paymentsService.update(Number(id), updatePaymentDto, developerOwnerId);
+    return this.paymentsService.update(id, updatePaymentDto, developerOwnerId);
   }
 
   @Delete(':id')

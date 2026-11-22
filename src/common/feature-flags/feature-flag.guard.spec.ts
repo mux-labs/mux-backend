@@ -155,4 +155,35 @@ describe('FeatureFlagGuard', () => {
       expect(() => guard.canActivate(context())).toThrow(ForbiddenException);
     });
   });
+
+  it('a denial snapshot carries the flag name and correlation id, not the raw config value', () => {
+    // The guard comment promises the decision snapshot has no secrets. A
+    // denial must surface the flag name (envKey) and the correlation id, but
+    // never the environment value that configured the flag.
+    const rawValue = 'super-secret-config-value';
+    withFlag(rawValue, undefined, () => {
+      try {
+        guard.canActivate(context('req-flag-99'));
+        throw new Error('expected the guard to deny');
+      } catch (error) {
+        expect(error).toBeInstanceOf(ForbiddenException);
+        const body = (error as ForbiddenException).getResponse() as any;
+
+        // Only the fields the comment allows are present.
+        expect(Object.keys(body).sort()).toEqual([
+          'code',
+          'correlationId',
+          'message',
+          'statusCode',
+        ]);
+
+        // The flag name and correlation id are logged.
+        expect(body.message).toContain(ENV_KEY);
+        expect(body.correlationId).toBe('req-flag-99');
+
+        // The raw environment value never leaks into the snapshot.
+        expect(JSON.stringify(body)).not.toContain(rawValue);
+      }
+    });
+  });
 });

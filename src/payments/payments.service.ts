@@ -56,7 +56,9 @@ function parseIsolationEnabled(raw: string | undefined): boolean {
  *    cached response instead of re-executing on conflict, but only when the cached
  *    payment belongs to the requesting developer.
  *  - Feature-flagged: PAYMENT_ISOLATION_ENABLED is parsed as a boolean (see
- *    parseIsolationEnabled); unset defaults to enabled.
+ *    parseIsolationEnabled); unset defaults to enabled. If the flag is not
+ *    explicitly 'true' the guard is bypassed in development to allow gradual
+ *    rollout without breaking existing callers.
  *
  * #1104 – Receiver wallet validation.
  *  - The receiver wallet must exist and be ACTIVE, mirroring the sender checks.
@@ -68,6 +70,10 @@ function parseIsolationEnabled(raw: string | undefined): boolean {
  *
  * #1112 – Ownership is resolved by the controller from the API key context and
  * passed explicitly as `developerOwnerId`; it is never read from the request body.
+ *
+ * #1250 – When isolation is on, a missing developerOwnerId must never fall back
+ * to an unscoped query. Read paths return an empty page; write paths reject with
+ * 403. The unscoped list is only available when the flag is explicitly 'false'.
  */
 @Injectable()
 export class PaymentsService {
@@ -94,8 +100,13 @@ export class PaymentsService {
 
   /**
    * Validates a `current → next` status pair against ALLOWED_TRANSITIONS.
-   * Terminal states (CONFIRMED, FAILED) have no outgoing transitions, so any
-   * attempt to move out of them is rejected here.
+   *
+   * Legal edges (see ALLOWED_TRANSITIONS):
+   *  - PENDING → CONFIRMED
+   *  - PENDING → FAILED
+   *
+   * Terminal states (no outgoing transitions): CONFIRMED, FAILED.
+   * Any attempt to move out of a terminal state is rejected here.
    */
   private assertTransitionAllowed(
     current: PaymentStatus,
@@ -105,6 +116,18 @@ export class PaymentsService {
     if (!allowed.includes(next)) {
       throw new BadRequestException(
         `Cannot transition payment from ${current} to ${next}`,
+      );
+    }
+  }
+
+  /**
+   * #1250 – With isolation on, a missing owner id must not degrade into an
+   * unscoped query. Write paths call this to reject the request outright.
+   */
+  private assertOwnerPresent(developerOwnerId?: string): void {
+    if (this.isolationEnabled && !developerOwnerId) {
+      throw new ForbiddenException(
+        'developerOwnerId is required when payment isolation is enabled',
       );
     }
   }
@@ -219,6 +242,102 @@ export class PaymentsService {
 
   /**
    * Returns all payments scoped to a developer.
-   * Without developerOwnerId (legacy path), returns all
+   * #1250 – With isolation on, a missing developerOwnerId returns an empty page
+   * instead of an unscoped findMany. The unscoped list is only available when
+   * PAYMENT_ISOLATION_ENABLED is explicitly 'false'.
+   */
+  async findAll(developerOwnerId?: string) {
+    if (this.isolationEnabled && !developerOwnerId) {
+      this.logger.warn(
+        'findAll called without developerOwnerId while isolation is enabled; returning empty page',
+      );
+      return [];
+    }
 
-/* … truncated 442 chars — edit only what you need near the top … */
+    const where =
+      this.isolationEnabled && developerOwnerId
+        ? { developerOwnerId }
+        : {};
+
+    return this.prisma.payment.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  /**
+   * Returns a single payment scoped to a developer.
+   * A record that exists but belongs to another developer yields 404 to avoid
+   * enumeration.
+   */
+  async findOne(id: string, developerOwnerId?: string) {
+    if (this.isolationEnabled && !developerOwnerId) {
+      throw new ForbiddenException(
+        'developerOwnerId is required when payment isolation is enabled',
+      );
+    }
+
+    const payment = await this.prisma.payment.findUnique({ where: { id } });
+    if (!payment) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      payment.developerOwnerId !== developerOwnerId
+    ) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+    return payment;
+  }
+
+  async update(
+    id: string,
+    updatePaymentDto: UpdatePaymentDto,
+    developerOwnerId?: string,
+  ) {
+    this.assertOwnerPresent(developerOwnerId);
+
+    const existing = await this.prisma.payment.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      existing.developerOwnerId !== developerOwnerId
+    ) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+
+    if (updatePaymentDto.status) {
+      this.assertTransitionAllowed(
+        existing.status as PaymentStatus,
+        updatePaymentDto.status as PaymentStatus,
+      );
+    }
+
+    return this.prisma.payment.update({
+      where: { id },
+      data: updatePaymentDto,
+    });
+  }
+
+  async remove(id: string, developerOwnerId?: string) {
+    this.assertOwnerPresent(developerOwnerId);
+
+    const existing = await this.prisma.payment.findUnique({ where: { id } });
+    if (!existing) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+    if (
+      this.isolationEnabled &&
+      developerOwnerId &&
+      existing.developerOwnerId !== developerOwnerId
+    ) {
+      throw new NotFoundException(`Payment ${id} not found`);
+    }
+
+    return this.prisma.payment.delete({ where: { id } });
+  }
+}

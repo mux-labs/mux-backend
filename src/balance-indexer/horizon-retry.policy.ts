@@ -62,6 +62,15 @@ export interface HorizonSleepFn {
   (ms: number): Promise<void>;
 }
 
+/**
+ * Injectable random source, so unit tests can pass a deterministic generator
+ * (e.g. `() => 0`) instead of relying on `Math.random`. Defaults to
+ * `Math.random` in production.
+ */
+export interface HorizonRandomFn {
+  (): number;
+}
+
 const realSleep: HorizonSleepFn = (ms) =>
   new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -227,132 +236,31 @@ export function horizonRetryAfterMs(
   if (typeof err !== 'object' || err === null) {
     return undefined;
   }
-  const headers = (err as { response?: { headers?: Record<string, unknown> } })
-    .response?.headers;
-  if (!headers) {
+  const headers = (err as { response?: { headers?: unknown } }).response
+    ?.headers;
+  if (typeof headers !== 'object' || headers === null) {
     return undefined;
   }
-  return parseRetryAfterMs(
-    headers['retry-after'] ?? headers['Retry-After'],
-    now,
-  );
+  const raw = (headers as Record<string, unknown>)['retry-after'];
+  return parseRetryAfterMs(raw, now);
 }
 
 /**
- * Raised when a Horizon read failed on every attempt in the budget.
+ * Compute the delay before retry `attempt` (1-based).
  *
- * Carries only the attempt count and a non-sensitive reason (HTTP status or
- * error class name) so callers, logs and metrics can branch without ever
- * surfacing an upstream body or credential.
+ * The base delay grows exponentially (`backoffMs * 2^(attempt-1)`) and a
+ * bounded jitter in `[0, jitterMs)` is added. The jitter source is injectable
+ * so tests can pass a deterministic generator: with `random() === 0` the
+ * jitter is exactly `0` and the delay equals the documented lower bound
+ * (`backoffMs * 2^(attempt-1)`).
  */
-export class HorizonRetryExhaustedError extends Error {
-  constructor(
-    readonly attempts: number,
-    readonly reason: string,
-  ) {
-    super(`Horizon read failed after ${attempts} attempt(s): ${reason}`);
-    this.name = 'HorizonRetryExhaustedError';
-  }
-}
-
-/** Observability hooks, kept secret-free by construction. */
-export interface HorizonRetryObserver {
-  /** Called once per retry (not for the initial attempt). */
-  onRetry?(info: { attempt: number; delayMs: number; reason: string }): void;
-  /** Called once when all attempts are exhausted. */
-  onExhausted?(info: { attempts: number; reason: string }): void;
-}
-
-export interface RunWithHorizonRetryOptions {
-  /** Override the resolved config (tests pass a zero-delay budget). */
-  config?: HorizonRetryConfig;
-  /** Injected clock so tests do not sleep. */
-  sleep?: HorizonSleepFn;
-  /** Jitter source in `[0, 1)`; defaults to `Math.random`. */
-  random?: () => number;
-  /** Secret-free metrics/log hooks. */
-  observer?: HorizonRetryObserver;
-  /** Wall-clock source, injectable for deterministic budget tests. */
-  now?: () => number;
-}
-
-/** Non-sensitive description of a failed attempt. */
-function reasonFor(err: unknown): string {
-  const status = horizonErrorStatus(err);
-  if (status !== undefined) {
-    return `http_${status}`;
-  }
-  if (typeof err === 'object' && err !== null) {
-    const code = (err as { code?: unknown }).code;
-    if (typeof code === 'string') {
-      return code;
-    }
-  }
-  return err instanceof Error ? err.name : 'unknown';
-}
-
-/**
- * Run an idempotent Horizon read with bounded exponential backoff + jitter.
- *
- * The operation must be safe to repeat: this helper is only used for
- * `GET`-shaped reads. Writes are intentionally out of scope so a retry can
- * never double-apply a mutation.
- *
- * @throws HorizonRetryExhaustedError when every attempt fails transiently.
- * @throws The original error immediately when it is not retryable.
- */
-export async function runWithHorizonRetry<T>(
-  operation: () => Promise<T>,
-  options: RunWithHorizonRetryOptions = {},
-): Promise<T> {
-  const config = options.config ?? resolveHorizonRetryConfig();
-  const sleep = options.sleep ?? realSleep;
-  const random = options.random ?? Math.random;
-  const now = options.now ?? (() => Date.now());
-
-  const startedAt = now();
-  let lastError: unknown;
-
-  // Total attempts = 1 initial + N retries.
-  for (let attempt = 1; attempt <= config.maxRetries + 1; attempt += 1) {
-    try {
-      return await operation();
-    } catch (err) {
-      lastError = err;
-
-      // Permanent failure: surface it without sleeping or retrying.
-      if (!isRetryableHorizonError(err)) {
-        throw err;
-      }
-
-      // Last allowed attempt: fall through to the exhausted error.
-      if (attempt > config.maxRetries) {
-        break;
-      }
-
-      // Exponential backoff with bounded jitter, honouring Retry-After.
-      const exponential = config.backoffMs * 2 ** (attempt - 1);
-      const jitter = Math.floor(random() * Math.max(0, config.jitterMs));
-      const retryAfterMs = horizonRetryAfterMs(err, now());
-      const delayMs = Math.max(0, retryAfterMs ?? exponential + jitter);
-
-      // Fail closed on the wall-clock budget: never sleep past it.
-      if (now() - startedAt + delayMs > config.budgetMs) {
-        break;
-      }
-
-      options.observer?.onRetry?.({
-        attempt,
-        delayMs,
-        reason: reasonFor(err),
-      });
-
-      await sleep(delayMs);
-    }
-  }
-
-  const attempts = config.maxRetries + 1;
-  const reason = reasonFor(lastError);
-  options.observer?.onExhausted?.({ attempts, reason });
-  throw new HorizonRetryExhaustedError(attempts, reason);
+export function horizonRetryDelayMs(
+  attempt: number,
+  config: HorizonRetryConfig,
+  random: HorizonRandomFn = Math.random,
+): number {
+  const safeAttempt = Math.max(1, Math.floor(attempt));
+  const base = config.backoffMs * 2 ** (safeAttempt - 1);
+  const jitter = config.jitterMs > 0 ? random() * config.jitterMs : 0;
+  return Math.floor(base + jitter);
 }
