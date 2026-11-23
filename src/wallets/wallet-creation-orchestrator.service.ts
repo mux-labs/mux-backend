@@ -289,6 +289,22 @@ export class WalletCreationOrchestrator {
       };
     }
 
+    return this.mint(userId, network, idempotencyKey);
+  }
+
+  /**
+   * Key generation + persistence. Split so failures can name their phase.
+   *
+   * Declared `async` because persistence is a database round-trip; the
+   * in-memory store resolves synchronously today, but callers must still await
+   * so the in-flight idempotency reservation is held for the real duration.
+   */
+  // eslint-disable-next-line @typescript-eslint/require-await
+  private async mint(
+    userId: string,
+    network: WalletNetwork,
+    idempotencyKey?: string,
+  ): Promise<WalletOrchestrationResult> {
     // Keygen phase: mint and encrypt the secret seed.
     let encryptedSecret: string;
     let publicKey: string;
