@@ -51,7 +51,10 @@ export interface IdempotencyCleanupConfig {
   batchSize: number;
 }
 
-const parseBoolean = (value: string | undefined, fallback: boolean): boolean => {
+export const parseBoolean = (
+  value: string | undefined,
+  fallback: boolean,
+): boolean => {
   if (value === undefined || value === null || value === '') {
     return fallback;
   }

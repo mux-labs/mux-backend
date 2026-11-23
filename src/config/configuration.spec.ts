@@ -1,6 +1,8 @@
 import {
   MAINNET_PAYMENT_FLAG_ERROR_CODES,
   mainnetPaymentFlagSnapshot,
+  parseBoolean,
+  resolveIdempotencyCleanupConfig,
   resolveMainnetPaymentFlag,
 } from './configuration';
 
@@ -130,5 +132,39 @@ describe('mainnetPaymentFlagSnapshot', () => {
     for (const sentinel of Object.values(sentinels)) {
       expect(serialized).not.toContain(sentinel);
     }
+  });
+});
+
+describe('resolveIdempotencyCleanupConfig / parseBoolean (issue #1328)', () => {
+  it('applies the documented defaults when a variable is absent', () => {
+    const config = resolveIdempotencyCleanupConfig({});
+
+    expect(config).toEqual({
+      enabled: false,
+      intervalMs: 3_600_000,
+      batchSize: 1000,
+    });
+  });
+
+  it('parseBoolean returns the fallback when the value is absent', () => {
+    expect(parseBoolean(undefined, false)).toBe(false);
+    expect(parseBoolean(undefined, true)).toBe(true);
+    expect(parseBoolean('', false)).toBe(false);
+  });
+
+  it('parseBoolean honors explicit boolean-like values instead of the fallback', () => {
+    expect(parseBoolean('true', false)).toBe(true);
+    expect(parseBoolean('1', false)).toBe(true);
+    expect(parseBoolean('yes', false)).toBe(true);
+    expect(parseBoolean('on', false)).toBe(true);
+    expect(parseBoolean('false', true)).toBe(false);
+    expect(parseBoolean('0', true)).toBe(false);
+    expect(parseBoolean('no', true)).toBe(false);
+    expect(parseBoolean('off', true)).toBe(false);
+  });
+
+  it('parseBoolean falls back on unrecognized values (validated at boot elsewhere)', () => {
+    expect(parseBoolean('garbage', true)).toBe(true);
+    expect(parseBoolean('garbage', false)).toBe(false);
   });
 });
