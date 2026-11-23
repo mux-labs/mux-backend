@@ -172,3 +172,40 @@ describe('ApiKeyService', () => {
     });
   });
 });
+
+describe('lifetime (key store)', () => {
+  it('the key store can be assigned by construction and replaced directly with a stub in tests', async () => {
+    const config = {
+      get: jest.fn().mockReturnValue(undefined),
+    } as unknown as ConfigService;
+    const service = new ApiKeyService(config);
+
+    const stubStore = {
+      apiKey: {
+        findUnique: jest.fn().mockResolvedValue({
+          id: 'key-1',
+          name: 'Test key',
+          projectId: 'proj-1',
+          network: null,
+          status: 'ACTIVE',
+          expiresAt: null,
+          lastFour: 'abcd',
+          keyPrefix: 'mux_test_',
+        }),
+      },
+    };
+
+    // Tests may replace the store directly with a stub.
+    (service as any).prisma = stubStore;
+
+    const result = await service.validateApiKey('mux_test_stubbed_key_123456');
+
+    expect(stubStore.apiKey.findUnique).toHaveBeenCalledTimes(1);
+    expect(result).toEqual(
+      expect.objectContaining({
+        id: 'key-1',
+        projectId: 'proj-1',
+      }),
+    );
+  });
+});
