@@ -206,6 +206,24 @@ export class KeyRotationService {
   }
 
   /**
+   * Deny-by-default write gate. Metadata reads work unflagged; rotations are
+   * refused until an operator explicitly opts in.
+   */
+  private assertRotationEnabled(): void {
+    if (this.isKeyRotationEnabled()) {
+      return;
+    }
+    this.metrics.incrementCounter('key_rotation_blocked_by_flag');
+    this.logger.warn(
+      `key.rotate refused: ${KEY_ROTATION_ENABLED_ENV} is not enabled`,
+    );
+    throw new ServiceUnavailableException({
+      code: KeyRotationErrorCode.FEATURE_FLAG_DISABLED,
+      message: `Key rotation is disabled; set ${KEY_ROTATION_ENABLED_ENV}=true to enable`,
+    });
+  }
+
+  /**
    * Read a wallet's key metadata. Requires owner/delegate/guardian/API-key.
    *
    * Returns versions only. There is deliberately no field through which key
