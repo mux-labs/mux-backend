@@ -277,13 +277,8 @@ export class KeyRotationService {
     // lands on another instance is still detected.
     if (idempotencyKey) {
       const replay = await this.findReplay(idempotencyKey);
+      this.assertNoIdempotencyConflict(replay, targetKeyVersion);
       if (replay) {
-        if (replay.targetKeyVersion !== targetKeyVersion) {
-          throw new ConflictException({
-            code: KeyRotationErrorCode.IDEMPOTENCY_CONFLICT,
-            message: 'Idempotency key reused for a different target version',
-          });
-        }
         return replay.result;
       }
     }
@@ -292,6 +287,28 @@ export class KeyRotationService {
     throw new ServiceUnavailableException({
       code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
       message: 'Key rotation is not available',
+    });
+  }
+
+  /**
+   * Rejects reuse of an idempotency key for a different target version.
+   *
+   * Silently re-running under a changed payload would leave the caller
+   * believing a rotation to version N happened when the recorded one targeted
+   * M, so this is surfaced as a conflict instead.
+   */
+  private assertNoIdempotencyConflict(
+    replay: { targetKeyVersion: number; result: KeyRotationResult } | null,
+    targetKeyVersion: number,
+  ): void {
+    if (!replay || replay.targetKeyVersion === targetKeyVersion) {
+      return;
+    }
+
+    this.metrics.incrementCounter('key_rotation_idempotency_conflict');
+    throw new ConflictException({
+      code: KeyRotationErrorCode.IDEMPOTENCY_CONFLICT,
+      message: 'Idempotency key reused for a different target version',
     });
   }
 
