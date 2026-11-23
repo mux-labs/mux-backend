@@ -1,3 +1,4 @@
+import 'reflect-metadata';
 import {
   BadRequestException,
   ConflictException,
@@ -5,13 +6,26 @@ import {
   NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
+import {
+  OPTIONAL_DEPS_METADATA,
+  PARAMTYPES_METADATA,
+  SELF_DECLARED_DEPS_METADATA,
+} from '@nestjs/common/constants';
 import { KeyRotationService } from './key-rotation.service';
 import type { WalletKeyRecord } from './key-rotation.service';
 import {
+  KEY_ENVELOPE_PROVIDER,
+  WALLET_KEY_STORE,
+  type KeyEnvelopeProvider,
+} from './key-rotation.service';
+import {
+  CURRENT_KEY_VERSION,
   KeyRotationErrorCode,
   KEY_ROTATION_ENABLED_ENV,
+  ROTATION_REPLAY_WINDOW_MS,
+  SUPPORTED_KEY_VERSIONS,
 } from './key-rotation.model';
-import type { KeyRotationActor } from './key-rotation.model';
+import type { KeyRotationActor, KeyRotationResult } from './key-rotation.model';
 import { MetricsService } from '../common/metrics/metrics.service';
 
 const WALLET_ID = 'wallet-1';
@@ -443,6 +457,363 @@ describe('KeyRotationService', () => {
       expect(metrics.incrementCounter).toHaveBeenCalledWith(
         'key_rotation_blocked_by_flag',
       );
+    });
+  });
+});
+
+/**
+ * Focused regressions for the four contracts documented on KeyRotationService:
+ * reEncrypt, the replay Map, the optional envelope provider, and metadata reads.
+ */
+describe('KeyRotationService documented contracts (regressions)', () => {
+  const originalFlag = process.env[KEY_ROTATION_ENABLED_ENV];
+
+  const newEnvelope = 'ENC:v2:YmF6cXV4';
+
+  function build(
+    overrides: {
+      wallet?: WalletKeyRecord | null;
+      envelopes?: KeyEnvelopeProvider | undefined;
+    } = {},
+  ) {
+    const row = overrides.wallet === undefined ? walletRow() : overrides.wallet;
+    const store = {
+      wallet: {
+        findUnique: jest.fn(() => Promise.resolve(row)),
+        update: jest.fn((args: { data: Record<string, unknown> }) =>
+          Promise.resolve(
+            walletRow({
+              keyVersion: args.data.keyVersion as number,
+              encryptionVersion: args.data.encryptionVersion as number,
+              secretVersion: args.data.secretVersion as number,
+              encryptedSecret: args.data.encryptedSecret as string,
+            }),
+          ),
+        ),
+      },
+    };
+    const metrics = { incrementCounter: jest.fn() };
+    const service = new KeyRotationService(
+      store,
+      overrides.envelopes,
+      metrics as unknown as MetricsService,
+    );
+    return { service, store, metrics };
+  }
+
+  function boundProvider(): KeyEnvelopeProvider {
+    return {
+      reEncrypt: jest.fn().mockResolvedValue({
+        encryptedSecret: newEnvelope,
+        encryptionVersion: 2,
+      }),
+    };
+  }
+
+  function rotationLogOf(
+    service: KeyRotationService,
+  ): Map<string, KeyRotationResult> {
+    return (
+      service as unknown as { rotationLog: Map<string, KeyRotationResult> }
+    ).rotationLog;
+  }
+
+  function findReplayOf(
+    service: KeyRotationService,
+    walletId: string,
+    targetKeyVersion: number,
+    idempotencyKey: string,
+  ): KeyRotationResult | null {
+    return (
+      service as unknown as {
+        findReplay(
+          walletId: string,
+          targetKeyVersion: number,
+          idempotencyKey: string,
+        ): KeyRotationResult | null;
+      }
+    ).findReplay(walletId, targetKeyVersion, idempotencyKey);
+  }
+
+  function recorded(rotatedAt: Date): KeyRotationResult {
+    return {
+      walletId: WALLET_ID,
+      previousKeyVersion: 1,
+      keyVersion: 2,
+      secretVersion: 2,
+      rotatedAt,
+      applied: true,
+    };
+  }
+
+  beforeEach(() => {
+    process.env[KEY_ROTATION_ENABLED_ENV] = 'true';
+  });
+
+  afterEach(() => {
+    if (originalFlag === undefined) {
+      delete process.env[KEY_ROTATION_ENABLED_ENV];
+    } else {
+      process.env[KEY_ROTATION_ENABLED_ENV] = originalFlag;
+    }
+  });
+
+  describe('reEncrypt (custody provider port)', () => {
+    it('re-encrypts the same opaque envelope under the new derivation scheme', async () => {
+      const envelopes = boundProvider();
+      const { service, store } = build({ envelopes });
+
+      const result = await service.rotateKeyVersion(
+        WALLET_ID,
+        2,
+        owner,
+        'idem-encrypt',
+      );
+
+      expect(envelopes.reEncrypt).toHaveBeenCalledTimes(1);
+      expect(envelopes.reEncrypt).toHaveBeenCalledWith({
+        encryptedSecret: ENVELOPE,
+        fromKeyVersion: 1,
+        toKeyVersion: 2,
+      });
+      expect(store.wallet.update).toHaveBeenCalledWith({
+        where: { id: WALLET_ID },
+        data: expect.objectContaining({
+          keyVersion: 2,
+          encryptionVersion: 2,
+          secretVersion: 2,
+          encryptedSecret: newEnvelope,
+        }),
+      });
+      expect(JSON.stringify(result)).not.toContain('ENC:');
+    });
+
+    it('fails closed when the provider refuses an envelope it cannot decrypt', async () => {
+      const reEncrypt = jest
+        .fn()
+        .mockRejectedValue(new Error('ciphertext authentication failed'));
+      const { service, store, metrics } = build({ envelopes: { reEncrypt } });
+
+      const rotation = service.rotateKeyVersion(
+        WALLET_ID,
+        2,
+        owner,
+        'idem-decrypt',
+      );
+
+      await expect(rotation).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      await expect(rotation).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: KeyRotationErrorCode.DECRYPT_FAILED,
+          // Provider crypto detail must not reach the caller.
+          message: expect.not.stringContaining(
+            'ciphertext authentication failed',
+          ),
+        }),
+      });
+      expect(store.wallet.update).not.toHaveBeenCalled();
+      expect(metrics.incrementCounter).toHaveBeenCalledWith(
+        'key_rotation_decrypt_failed',
+      );
+    });
+  });
+
+  describe('rotationLog (completed rotations Map)', () => {
+    it('keys completed rotations by idempotency key', async () => {
+      const { service } = build({ envelopes: boundProvider() });
+
+      await service.rotateKeyVersion(WALLET_ID, 2, owner, 'idem-a');
+      await service.rotateKeyVersion(WALLET_ID, 2, owner, 'idem-b');
+
+      const log = rotationLogOf(service);
+      expect([...log.keys()]).toEqual([
+        `${WALLET_ID}:idem-a`,
+        `${WALLET_ID}:idem-b`,
+      ]);
+      expect(log.get(`${WALLET_ID}:idem-a`)).toMatchObject({
+        walletId: WALLET_ID,
+        keyVersion: 2,
+        applied: true,
+      });
+    });
+
+    it('treats an entry older than the replay window as absent and removes it', async () => {
+      const { service } = build({ envelopes: boundProvider() });
+      const log = rotationLogOf(service);
+      log.set(
+        `${WALLET_ID}:idem-expired`,
+        recorded(new Date(Date.now() - ROTATION_REPLAY_WINDOW_MS - 1000)),
+      );
+
+      expect(findReplayOf(service, WALLET_ID, 2, 'idem-expired')).toBeNull();
+      expect(log.has(`${WALLET_ID}:idem-expired`)).toBe(false);
+    });
+
+    it('prunes expired entries on write without losing live replays', async () => {
+      const envelopes = boundProvider();
+      const { service } = build({ envelopes });
+      const log = rotationLogOf(service);
+      log.set(
+        `${WALLET_ID}:idem-expired`,
+        recorded(new Date(Date.now() - ROTATION_REPLAY_WINDOW_MS - 1000)),
+      );
+      const live = recorded(new Date());
+      log.set(`${WALLET_ID}:idem-live`, live);
+
+      await service.rotateKeyVersion(WALLET_ID, 2, owner, 'idem-new');
+
+      expect(log.has(`${WALLET_ID}:idem-expired`)).toBe(false);
+      expect(log.get(`${WALLET_ID}:idem-live`)).toEqual(live);
+      expect(log.has(`${WALLET_ID}:idem-new`)).toBe(true);
+      expect(log.size).toBe(2);
+
+      const replay = await service.rotateKeyVersion(
+        WALLET_ID,
+        2,
+        owner,
+        'idem-live',
+      );
+      expect(replay).toEqual({ ...live, applied: false });
+      expect(envelopes.reEncrypt).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('optional envelope provider (@Optional())', () => {
+    it('marks only the envelope provider parameter as optional at DI level', () => {
+      const optional = Reflect.getMetadata(
+        OPTIONAL_DEPS_METADATA,
+        KeyRotationService,
+      ) as number[];
+      expect(optional).toContain(1);
+      expect(optional).not.toContain(0);
+      expect(optional).not.toContain(2);
+
+      const injections = Reflect.getMetadata(
+        SELF_DECLARED_DEPS_METADATA,
+        KeyRotationService,
+      ) as Array<{ index: number; param: string }>;
+      expect(injections).toEqual(
+        expect.arrayContaining([
+          { index: 0, param: WALLET_KEY_STORE },
+          { index: 1, param: KEY_ENVELOPE_PROVIDER },
+        ]),
+      );
+      // The required `metrics` parameter still follows the optional one.
+      const paramTypes = Reflect.getMetadata(
+        PARAMTYPES_METADATA,
+        KeyRotationService,
+      ) as unknown[];
+      expect(paramTypes).toHaveLength(3);
+    });
+
+    it('still serves reads and the kill-switch gate when the provider is unbound', async () => {
+      const { service } = build({ envelopes: undefined });
+
+      expect(service.isKeyRotationEnabled()).toBe(true);
+      await expect(
+        service.getKeyMetadata(WALLET_ID, owner),
+      ).resolves.toMatchObject({ walletId: WALLET_ID, keyVersion: 1 });
+
+      delete process.env[KEY_ROTATION_ENABLED_ENV];
+      expect(service.isKeyRotationEnabled()).toBe(false);
+    });
+
+    it('refuses to rotate when the custody provider is unbound', async () => {
+      const { service, store, metrics } = build({ envelopes: undefined });
+
+      const rotation = service.rotateKeyVersion(
+        WALLET_ID,
+        2,
+        owner,
+        'idem-unbound',
+      );
+
+      await expect(rotation).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      await expect(rotation).rejects.toMatchObject({
+        response: expect.objectContaining({
+          code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
+        }),
+      });
+      expect(store.wallet.update).not.toHaveBeenCalled();
+      expect(metrics.incrementCounter).toHaveBeenCalledWith(
+        'key_rotation_envelope_provider_unbound',
+      );
+    });
+  });
+
+  describe('getKeyMetadata (versions only)', () => {
+    it('returns versions and network only — no field can carry key material', async () => {
+      const { service, store } = build();
+      const storedVersion = walletRow().keyVersion;
+
+      const metadata = await service.getKeyMetadata(WALLET_ID, owner);
+
+      expect(metadata).toEqual({
+        walletId: WALLET_ID,
+        keyVersion: storedVersion,
+        encryptionVersion: 1,
+        secretVersion: 1,
+        network: 'TESTNET',
+        supported: SUPPORTED_KEY_VERSIONS.includes(storedVersion),
+        upToDate: storedVersion === CURRENT_KEY_VERSION,
+      });
+      expect(Object.keys(metadata).sort()).toEqual([
+        'encryptionVersion',
+        'keyVersion',
+        'network',
+        'secretVersion',
+        'supported',
+        'upToDate',
+        'walletId',
+      ]);
+      expect(JSON.stringify(metadata)).not.toContain('ENC:');
+      expect(store.wallet.findUnique).toHaveBeenCalledWith({
+        where: { id: WALLET_ID },
+      });
+    });
+
+    const readers: Array<[string, KeyRotationActor]> = [
+      [
+        'delegate',
+        { subjectId: 'delegate-1', role: 'delegate', correlationId: 'c' },
+      ],
+      [
+        'guardian',
+        { subjectId: 'guardian-1', role: 'guardian', correlationId: 'c' },
+      ],
+      [
+        'api-key',
+        { subjectId: 'api-key-1', role: 'api-key', correlationId: 'c' },
+      ],
+      ['jwt', { subjectId: 'jwt-1', role: 'jwt', correlationId: 'c' }],
+    ];
+
+    it.each(readers)(
+      'allows a %s principal to read metadata',
+      async (_label, actor) => {
+        const { service } = build();
+
+        await expect(
+          service.getKeyMetadata(WALLET_ID, actor),
+        ).resolves.toMatchObject({ walletId: WALLET_ID, keyVersion: 1 });
+      },
+    );
+
+    it('refuses a caller claiming ownership of a wallet they do not own', async () => {
+      const { service } = build();
+      const intruder: KeyRotationActor = {
+        subjectId: 'intruder-1',
+        role: 'owner',
+        correlationId: 'c',
+      };
+
+      await expect(
+        service.getKeyMetadata(WALLET_ID, intruder),
+      ).rejects.toBeInstanceOf(ForbiddenException);
     });
   });
 });
