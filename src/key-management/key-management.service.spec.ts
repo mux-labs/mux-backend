@@ -83,4 +83,71 @@ describe('KeyManagementService', () => {
       expect(result.publicKey).not.toBe(result.encryptedSecret);
     });
   });
+  describe('sign regression (#1327)', () => {
+    it('signs data using the provided encrypted key material without exposing the private key in the response or logs', async () => {
+      const generated = await service.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+      });
+      const dataToSign = 'payment:123:approve';
+      const logSpy = jest.spyOn((service as any).logger, 'log').mockImplementation();
+      const errorSpy = jest
+        .spyOn((service as any).logger, 'error')
+        .mockImplementation();
+      const warnSpy = jest.spyOn((service as any).logger, 'warn').mockImplementation();
+
+      const result = await service.sign({
+        encryptedKeyMaterial: generated.encryptedSecret,
+        dataToSign,
+        publicKey: generated.publicKey,
+        keyType: KeyType.STELLAR_ED25519,
+      });
+
+      expect(result.signature).toEqual(expect.any(String));
+      expect(result.signature.length).toBeGreaterThan(0);
+      expect(result.publicKey).toBe(generated.publicKey);
+      expect(result.algorithm).toBe('ed25519');
+      expect(result.timestamp).toEqual(expect.any(String));
+
+      const serializedResult = JSON.stringify(result);
+      expect(serializedResult).not.toContain(generated.encryptedSecret);
+      expect(serializedResult).not.toContain('encryptedKeyMaterial');
+      expect(serializedResult).not.toContain('privateKey');
+      expect(serializedResult).not.toContain('secret');
+
+      const logOutput = JSON.stringify([
+        ...logSpy.mock.calls,
+        ...errorSpy.mock.calls,
+        ...warnSpy.mock.calls,
+      ]);
+      expect(logOutput).not.toContain(generated.encryptedSecret);
+
+      logSpy.mockRestore();
+      errorSpy.mockRestore();
+      warnSpy.mockRestore();
+    });
+
+    it('fails closed when key material cannot be used for signing and does not leak key material', async () => {
+      const generated = await service.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+      });
+      const badMaterial = 'not-a-valid-secret';
+      const errorSpy = jest
+        .spyOn((service as any).logger, 'error')
+        .mockImplementation();
+
+      await expect(
+        service.sign({
+          encryptedKeyMaterial: badMaterial,
+          dataToSign: 'payload',
+          publicKey: generated.publicKey,
+          keyType: KeyType.STELLAR_ED25519,
+        }),
+      ).rejects.toBeDefined();
+
+      const logOutput = JSON.stringify(errorSpy.mock.calls);
+      expect(logOutput).not.toContain(badMaterial);
+
+      errorSpy.mockRestore();
+    });
+  });
 });
