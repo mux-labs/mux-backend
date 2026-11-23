@@ -67,4 +67,20 @@ describe('KeyManagementService', () => {
       expect(JSON.stringify(entry)).not.toContain(result.encryptedSecret);
     });
   });
+
+  describe('generateKey regression (#1326)', () => {
+    it('generates a new Stellar Ed25519 keypair and returns the public key and encrypted secret', async () => {
+      const result = await service.generateKey({
+        keyType: KeyType.STELLAR_ED25519,
+      });
+
+      expect(result.publicKey).toEqual(expect.any(String));
+      expect(result.publicKey).toMatch(/^G[A-Z2-7]{55}$/);
+      expect(result.encryptedSecret).toEqual(expect.any(String));
+      expect(result.encryptedSecret.length).toBeGreaterThan(0);
+      expect(result.keyType).toBe(KeyType.STELLAR_ED25519);
+      expect(result.createdAt).toEqual(expect.any(String));
+      expect(result.publicKey).not.toBe(result.encryptedSecret);
+    });
+  });
 });
