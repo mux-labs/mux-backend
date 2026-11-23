@@ -63,21 +63,6 @@ export interface WalletKeyRecord {
 }
 
 /**
- * A persisted record of a completed rotation, keyed by idempotency key.
- *
- * Stored in the shared {@link WalletKeyStore} so a replay that lands on a
- * different instance still returns the original result. `expiresAt` bounds
- * how long a replay is honoured; expired rows are pruned on write.
- */
-export interface KeyRotationReplayRecord {
-  idempotencyKey: string;
-  walletId: string;
-  targetKeyVersion: number;
-  result: KeyRotationResult;
-  expiresAt: Date;
-}
-
-/**
  * Narrow persistence port for key rotation.
  *
  * Declared structurally so the service is unit-testable without Prisma, and so
@@ -93,24 +78,6 @@ export interface WalletKeyStore {
       where: { id: string };
       data: Record<string, unknown>;
     }): Promise<WalletKeyRecord>;
-  };
-  /**
-   * Shared, cross-instance store for completed rotations. Optional so existing
-   * stores that only implement `wallet` keep compiling; when absent the
-   * service falls back to a process-local map (single-instance behaviour).
-   */
-  keyRotationReplay?: {
-    findUnique(args: {
-      where: { idempotencyKey: string };
-    }): Promise<KeyRotationReplayRecord | null>;
-    upsert(args: {
-      where: { idempotencyKey: string };
-      create: KeyRotationReplayRecord;
-      update: KeyRotationReplayRecord;
-    }): Promise<KeyRotationReplayRecord>;
-    deleteMany(args: {
-      where: { expiresAt: { lt: Date } };
-    }): Promise<{ count: number }>;
   };
 }
 
@@ -170,10 +137,8 @@ export class KeyRotationService {
   private readonly logger = new Logger(KeyRotationService.name);
 
   /**
-   * Process-local fallback for completed rotations keyed by idempotency key.
-   * Only used when the store does not expose a shared `keyRotationReplay`
-   * table; otherwise replays are read from and written to the shared store so
-   * they are visible across instances.
+   * Completed rotations keyed by idempotency key. Time-expiring and pruned on
+   * write so a long-running process cannot accumulate entries indefinitely.
    */
   private readonly rotationLog = new Map<string, KeyRotationResult>();
 
@@ -255,107 +220,370 @@ export class KeyRotationService {
 
     // An idempotency key reused for a *different* target is a conflict, not a
     // silent re-run: the caller would otherwise believe a rotation happened
-    // that did not. Checked against the shared store first so a replay that
-    // lands on another instance is still detected.
-    if (idempotencyKey) {
-      const replay = await this.findReplay(idempotencyKey);
-      if (replay) {
-        if (replay.targetKeyVersion !== targetKeyVersion) {
-          throw new ConflictException({
-            code: KeyRotationErrorCode.IDEMPOTENCY_CONFLICT,
-            message: 'Idempotency key reused for a different target version',
-          });
-        }
-        return replay.result;
-      }
+    // that never did.
+    this.assertNoIdempotencyConflict(
+      walletId,
+      targetKeyVersion,
+      idempotencyKey,
+    );
+
+    // Fail closed on an unknown stored version rather than assuming "latest".
+    if (!SUPPORTED_KEY_VERSIONS.includes(wallet.keyVersion)) {
+      this.metrics.incrementCounter('key_rotation_version_unsupported');
+      this.logger.error(
+        `key.rotate refused wallet=${walletId} storedVersion=${wallet.keyVersion} ` +
+          `correlationId=${actor.correlationId}`,
+      );
+      throw new ServiceUnavailableException({
+        code: KeyRotationErrorCode.VERSION_UNSUPPORTED,
+        message: 'Wallet key version is not supported; rotation refused',
+        correlationId: actor.correlationId,
+      });
     }
 
-    // ... rest of the rotation path (unchanged) ...
+    // Monotonicity: refuse no-ops and downgrades. A replayed request therefore
+    // cannot walk a wallet backwards through derivation schemes.
+    if (targetKeyVersion <= wallet.keyVersion) {
+      this.metrics.incrementCounter('key_rotation_version_conflict');
+      throw new ConflictException({
+        code: KeyRotationErrorCode.VERSION_CONFLICT,
+        message:
+          `Rotation must increase keyVersion; wallet is at ${wallet.keyVersion}, ` +
+          `requested ${targetKeyVersion}`,
+        correlationId: actor.correlationId,
+      });
+    }
+
+    // An idempotent replay returns the original result without re-encrypting.
+    const replay = this.findReplay(walletId, targetKeyVersion, idempotencyKey);
+    if (replay) {
+      this.metrics.incrementCounter('key_rotation_replayed');
+      return { ...replay, applied: false };
+    }
+
+    // Fail closed when the custody layer has not bound the envelope provider:
+    // re-encryption without it is impossible, and silently skipping it would
+    // leave the wallet on the old scheme while reporting success.
+    if (!this.envelopes) {
+      this.metrics.incrementCounter('key_rotation_envelope_provider_unbound');
+      this.logger.error(
+        `key.rotate refused wallet=${walletId}: envelope provider unbound ` +
+          `correlationId=${actor.correlationId}`,
+      );
+      throw new ServiceUnavailableException({
+        code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Key envelope provider is not configured; rotation refused',
+        correlationId: actor.correlationId,
+      });
+    }
+
+    let reEncrypted: { encryptedSecret: string; encryptionVersion: number };
+    try {
+      reEncrypted = await this.envelopes.reEncrypt({
+        encryptedSecret: wallet.encryptedSecret,
+        fromKeyVersion: wallet.keyVersion,
+        toKeyVersion: targetKeyVersion,
+      });
+    } catch (err) {
+      // Fail closed: an undecryptable envelope must never yield a fallback key.
+      this.metrics.incrementCounter('key_rotation_decrypt_failed');
+      this.logger.error(
+        `key.rotate decrypt failed wallet=${walletId} ` +
+          `fromVersion=${wallet.keyVersion} toVersion=${targetKeyVersion} ` +
+          `correlationId=${actor.correlationId} reason=${this.errorName(err)}`,
+      );
+      throw new ServiceUnavailableException({
+        code: KeyRotationErrorCode.DECRYPT_FAILED,
+        message: 'Key material could not be decrypted; rotation refused',
+        correlationId: actor.correlationId,
+      });
+    }
+
+    const rotatedAt = new Date();
+    const updated = await this.withDependencyGuard(actor.correlationId, () =>
+      this.store.wallet.update({
+        where: { id: walletId },
+        data: {
+          keyVersion: targetKeyVersion,
+          encryptionVersion: reEncrypted.encryptionVersion,
+          // Bump the secret counter so the rotation is auditable and a later
+          // replay of the same envelope is detectable.
+          secretVersion: wallet.secretVersion + 1,
+          encryptedSecret: reEncrypted.encryptedSecret,
+        },
+      }),
+    );
+
+    const result: KeyRotationResult = {
+      walletId,
+      previousKeyVersion: wallet.keyVersion,
+      keyVersion: targetKeyVersion,
+      secretVersion: updated.secretVersion,
+      rotatedAt,
+      applied: true,
+    };
+
+    this.recordRotation(idempotencyKey, result);
+    this.metrics.incrementCounter('key_rotation_completed');
+    // Versions and ids only — never the envelope or any plaintext key.
+    this.logger.log(
+      `key.rotate wallet=${walletId} ${wallet.keyVersion}->${targetKeyVersion} ` +
+        `secretVersion=${updated.secretVersion} correlationId=${actor.correlationId}`,
+    );
+
+    return result;
+  }
+
+  // ── internals ────────────────────────────────────────────────────────────
+
+  /** Resolves a wallet row, converting a miss into a stable 404. */
+  private async requireWallet(
+    walletId: string,
+    operation: string,
+  ): Promise<WalletKeyRecord> {
+    let wallet: WalletKeyRecord | null;
+    try {
+      wallet = await this.store.wallet.findUnique({ where: { id: walletId } });
+    } catch (err) {
+      this.metrics.incrementCounter('key_rotation_store_error');
+      this.logger.error(
+        `${operation} store failure wallet=${walletId} reason=${this.errorName(err)}`,
+      );
+      throw new ServiceUnavailableException({
+        code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Key store unavailable; operation refused',
+      });
+    }
+
+    if (!wallet) {
+      throw new NotFoundException({
+        code: KeyRotationErrorCode.WALLET_NOT_FOUND,
+        message: `Wallet ${walletId} not found`,
+      });
+    }
+
+    return wallet;
+  }
+
+  /**
+   * Deny-by-default write gate. Metadata reads work unflagged; rotations are
+   * refused until an operator explicitly opts in.
+   */
+  private assertRotationEnabled(): void {
+    if (this.isKeyRotationEnabled()) {
+      return;
+    }
+    this.metrics.incrementCounter('key_rotation_blocked_by_flag');
+    this.logger.warn(
+      `key.rotate refused: ${KEY_ROTATION_ENABLED_ENV} is not enabled`,
+    );
     throw new ServiceUnavailableException({
-      code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
-      message: 'Key rotation is not available',
+      code: KeyRotationErrorCode.FEATURE_FLAG_DISABLED,
+      message: `Key rotation is disabled; set ${KEY_ROTATION_ENABLED_ENV}=true to enable`,
     });
   }
 
   /**
-   * Look up a completed rotation by idempotency key.
+   * Rotation is owner/guardian only.
    *
-   * Reads from the shared store when available so a replay that lands on a
-   * different instance sees the original result; falls back to the
-   * process-local map otherwise. Expired entries are treated as absent.
+   * Ownership is resolved server-side from the stored `userId`; a caller cannot
+   * assert it. A delegate is refused outright — a delegate may read metadata
+   * but must never be able to rewrite the material controlling the wallet.
    */
-  private async findReplay(
-    idempotencyKey: string,
-  ): Promise<{ targetKeyVersion: number; result: KeyRotationResult } | null> {
-    const replayStore = this.store.keyRotationReplay;
-    if (replayStore) {
-      const record = await replayStore.findUnique({
-        where: { idempotencyKey },
-      });
-      if (!record) {
-        return null;
-      }
-      if (record.expiresAt.getTime() <= Date.now()) {
-        return null;
-      }
-      return {
-        targetKeyVersion: record.targetKeyVersion,
-        result: record.result,
-      };
+  private assertRotationAuthorized(
+    wallet: WalletKeyRecord,
+    actor: KeyRotationActor,
+  ): void {
+    if (actor.role === 'owner' && wallet.userId === actor.subjectId) {
+      return;
     }
-
-    const cached = this.rotationLog.get(idempotencyKey);
-    if (!cached) {
-      return null;
-    }
-    return { targetKeyVersion: cached.toKeyVersion, result: cached };
-  }
-
-  /**
-   * Record a completed rotation so replays return the original result.
-   *
-   * Writes to the shared store when available (pruning expired rows on the
-   * same write) so the record is visible to every instance; otherwise falls
-   * back to the process-local map.
-   */
-  private async recordReplay(
-    idempotencyKey: string,
-    walletId: string,
-    targetKeyVersion: number,
-    result: KeyRotationResult,
-  ): Promise<void> {
-    const expiresAt = new Date(Date.now() + ROTATION_REPLAY_WINDOW_MS);
-    const replayStore = this.store.keyRotationReplay;
-    if (replayStore) {
-      await replayStore.deleteMany({ where: { expiresAt: { lt: new Date() } } });
-      const record: KeyRotationReplayRecord = {
-        idempotencyKey,
-        walletId,
-        targetKeyVersion,
-        result,
-        expiresAt,
-      };
-      await replayStore.upsert({
-        where: { idempotencyKey },
-        create: record,
-        update: record,
-      });
+    if (actor.role === 'guardian') {
       return;
     }
 
-    this.pruneRotationLog();
-    this.rotationLog.set(idempotencyKey, result);
+    this.metrics.incrementCounter('key_rotation_authz_denied');
+    this.logger.warn(
+      `key.rotate denied wallet=${wallet.id} role=${actor.role} ` +
+        `correlationId=${actor.correlationId}`,
+    );
+    throw new ForbiddenException({
+      code:
+        actor.role === 'owner'
+          ? KeyRotationErrorCode.NOT_AUTHORIZED
+          : KeyRotationErrorCode.INSUFFICIENT_ROLE,
+      message: 'You are not allowed to rotate this wallet key',
+      correlationId: actor.correlationId,
+    });
   }
 
-  /** Drop expired entries from the process-local fallback map. */
+  /**
+   * Reads are allowed for the owner, and for delegate/guardian/API-key/JWT
+   * principals. A caller claiming `owner` for a wallet they do not own is
+   * refused — the role is verified against the stored `userId`, not trusted.
+   */
+  private assertReadAuthorized(
+    wallet: WalletKeyRecord,
+    actor: KeyRotationActor,
+  ): void {
+    if (actor.role === 'owner' && wallet.userId !== actor.subjectId) {
+      this.metrics.incrementCounter('key_metadata_authz_denied');
+      throw new ForbiddenException({
+        code: KeyRotationErrorCode.NOT_AUTHORIZED,
+        message: 'You are not allowed to read this wallet key metadata',
+        correlationId: actor.correlationId,
+      });
+    }
+  }
+
+  /**
+   * Rejects reuse of an idempotency key for a different target version.
+   *
+   * Silently re-running under a changed payload would leave the caller
+   * believing a rotation to version N happened when the recorded one targeted
+   * M, so this is surfaced as a conflict instead.
+   */
+  private assertNoIdempotencyConflict(
+    walletId: string,
+    targetKeyVersion: number,
+    idempotencyKey?: string,
+  ): void {
+    if (!idempotencyKey) {
+      return;
+    }
+    const existing = this.rotationLog.get(
+      this.replayKey(walletId, idempotencyKey),
+    );
+    if (existing && existing.keyVersion !== targetKeyVersion) {
+      this.metrics.incrementCounter('key_rotation_idempotency_conflict');
+      throw new ConflictException({
+        code: KeyRotationErrorCode.IDEMPOTENCY_CONFLICT,
+        message:
+          `Idempotency key already used to rotate ${walletId} to version ` +
+          `${existing.keyVersion}; cannot reuse it for ${targetKeyVersion}`,
+      });
+    }
+  }
+
+  /**
+   * Returns the recorded rotation for a replayed request, or null.
+   *
+   * Only an exact (wallet, idempotency key, target version) match replays. A
+   * request without an idempotency key is treated as a fresh rotation and is
+   * still protected by the monotonicity check above.
+   */
+  private findReplay(
+    walletId: string,
+    targetKeyVersion: number,
+    idempotencyKey?: string,
+  ): KeyRotationResult | null {
+    if (!idempotencyKey) {
+      return null;
+    }
+    const key = this.replayKey(walletId, idempotencyKey);
+    const record = this.rotationLog.get(key);
+    if (!record) {
+      return null;
+    }
+    if (Date.now() - record.rotatedAt.getTime() > ROTATION_REPLAY_WINDOW_MS) {
+      this.rotationLog.delete(key);
+      return null;
+    }
+    return record.keyVersion === targetKeyVersion ? record : null;
+  }
+
+  /** Records a completed rotation and prunes expired entries. */
+  private recordRotation(
+    idempotencyKey: string | undefined,
+    result: KeyRotationResult,
+  ): void {
+    if (!idempotencyKey) {
+      return;
+    }
+    this.rotationLog.set(
+      this.replayKey(result.walletId, idempotencyKey),
+      result,
+    );
+    this.pruneRotationLog();
+  }
+
+  /**
+   * Drops expired entries so the in-process replay log cannot grow without
+   * bound in a long-running process.
+   */
   private pruneRotationLog(): void {
-    const now = Date.now();
-    for (const [key, result] of this.rotationLog) {
-      if (now - result.rotatedAt.getTime() >= ROTATION_REPLAY_WINDOW_MS) {
+    const cutoff = Date.now() - ROTATION_REPLAY_WINDOW_MS;
+    for (const [key, record] of this.rotationLog) {
+      if (record.rotatedAt.getTime() <= cutoff) {
         this.rotationLog.delete(key);
       }
     }
   }
 
-  // ... remaining helpers (assertValidWalletId, requireWallet, authz, etc.) unchanged ...
+  /** Namespaces the idempotency key by wallet so keys cannot collide across wallets. */
+  private replayKey(walletId: string, idempotencyKey: string): string {
+    return `${walletId}:${idempotencyKey}`;
+  }
+
+  /** Validates a caller-supplied wallet id: bounded and charset-restricted. */
+  private assertValidWalletId(walletId: string): void {
+    if (
+      typeof walletId !== 'string' ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(walletId)
+    ) {
+      throw new BadRequestException({
+        code: KeyRotationErrorCode.INVALID_INPUT,
+        message: 'walletId must be 1-128 characters of [A-Za-z0-9_-]',
+      });
+    }
+  }
+
+  /**
+   * Validates the requested target version.
+   *
+   * Rejects non-integers and any version outside the supported set, so a caller
+   * cannot ask the service to write a version no reader in this build
+   * understands.
+   */
+  private assertValidVersion(targetKeyVersion: number): void {
+    if (
+      !Number.isInteger(targetKeyVersion) ||
+      !SUPPORTED_KEY_VERSIONS.includes(targetKeyVersion)
+    ) {
+      throw new BadRequestException({
+        code: KeyRotationErrorCode.INVALID_INPUT,
+        message: `targetKeyVersion must be one of ${SUPPORTED_KEY_VERSIONS.join(', ')}`,
+      });
+    }
+  }
+
+  /**
+   * Runs a store write, translating infrastructure failures into a stable 503
+   * so a DB outage fails the rotation closed rather than surfacing as a 500.
+   */
+  private async withDependencyGuard<T>(
+    correlationId: string,
+    operation: () => Promise<T>,
+  ): Promise<T> {
+    try {
+      return await operation();
+    } catch (err) {
+      if (err instanceof HttpException) {
+        throw err;
+      }
+      this.metrics.incrementCounter('key_rotation_store_error');
+      this.logger.error(
+        `key.rotate store failure correlationId=${correlationId}`,
+      );
+      throw new ServiceUnavailableException({
+        code: KeyRotationErrorCode.DEPENDENCY_UNAVAILABLE,
+        message: 'Key store unavailable; rotation refused',
+        correlationId,
+      });
+    }
+  }
+
+  /** Class name only — never the message, which may carry crypto detail. */
+  private errorName(err: unknown): string {
+    return err instanceof Error ? err.constructor.name : 'unknown';
+  }
 }
