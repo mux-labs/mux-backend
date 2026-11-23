@@ -1,4 +1,4 @@
-import {
+import configuration, {
   MAINNET_PAYMENT_FLAG_ERROR_CODES,
   mainnetPaymentFlagSnapshot,
   parseBoolean,
@@ -166,5 +166,35 @@ describe('resolveIdempotencyCleanupConfig / parseBoolean (issue #1328)', () => {
   it('parseBoolean falls back on unrecognized values (validated at boot elsewhere)', () => {
     expect(parseBoolean('garbage', true)).toBe(true);
     expect(parseBoolean('garbage', false)).toBe(false);
+  });
+});
+
+describe('registerAs configuration snapshot (issue #1329)', () => {
+  const originalEnv = { ...process.env };
+
+  afterEach(() => {
+    process.env = { ...originalEnv };
+  });
+
+  it('produces an ops-safe, secret-free snapshot that never includes keys, JWTs, or webhook secrets', () => {
+    const sentinels = {
+      WALLET_ENCRYPTION_KEY: 'sentinel-wallet-key-1329',
+      JWT_SECRET: 'sentinel-jwt-1329',
+      WEBHOOK_SECRET: 'sentinel-webhook-secret-1329',
+      MAINNET_PAYMENT_ENABLED: 'true',
+      STELLAR_NETWORK: 'mainnet',
+    };
+    Object.assign(process.env, sentinels);
+
+    const config = configuration();
+    const snapshot = mainnetPaymentFlagSnapshot(config.mainnetPayment);
+    const serialized = JSON.stringify({ config, snapshot });
+
+    expect(Object.keys(snapshot).sort()).toEqual(
+      ['mainnetPaymentEnabled', 'network'].sort(),
+    );
+    for (const value of [sentinels.WALLET_ENCRYPTION_KEY, sentinels.JWT_SECRET, sentinels.WEBHOOK_SECRET]) {
+      expect(serialized).not.toContain(value);
+    }
   });
 });
