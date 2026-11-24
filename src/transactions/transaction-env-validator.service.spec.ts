@@ -99,6 +99,44 @@ describe('TransactionEnvValidatorService', () => {
       expect(JSON.stringify(result)).not.toMatch(/secret|key/i);
       expect(JSON.stringify(result)).not.toContain('https://');
     });
+
+    it('is pure validation: reads only low-cardinality env booleans/names and returns a secret-free snapshot (issue #1331)', () => {
+      const env: NodeJS.ProcessEnv = {
+        NODE_ENV: 'production',
+        STELLAR_NETWORK: 'mainnet',
+        FEATURE_MAINNET_PAYMENTS: 'true',
+        FEATURE_MAINNET_PAYMENT_SUBMIT: 'false',
+        STELLAR_HORIZON_MAINNET_URL: 'https://horizon.stellar.org',
+        JWT_SECRET: 'super-secret-jwt',
+        WEBHOOK_SECRET: 'super-secret-webhook',
+        WALLET_ENCRYPTION_KEY: 'super-secret-wallet-key',
+        DATABASE_URL: 'postgres://user:password@localhost:5432/db',
+      };
+
+      const snapshot = service.validate(env);
+
+      expect(snapshot).toEqual({
+        valid: true,
+        nodeEnv: 'production',
+        network: 'mainnet',
+        featureMainnetPaymentsEnabled: true,
+        featureMainnetPaymentSubmitEnabled: false,
+        mainnetHorizonUrlConfigured: true,
+        errors: [],
+      });
+
+      const serialized = JSON.stringify(snapshot);
+      for (const secret of [
+        env.JWT_SECRET,
+        env.WEBHOOK_SECRET,
+        env.WALLET_ENCRYPTION_KEY,
+        env.DATABASE_URL,
+        'password',
+        'super-secret',
+      ]) {
+        expect(serialized).not.toContain(secret as string);
+      }
+    });
   });
 
   describe('onModuleInit()', () => {
