@@ -1,10 +1,15 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
+import * as crypto from 'crypto';
 import {
   EncryptionService,
   DecryptionError,
   MIN_ENCRYPTION_KEY_LENGTH,
   PLACEHOLDER_ENCRYPTION_KEYS,
+} from './encryption.service';
+import type {
+  DecryptionErrorCode,
+  EncryptionResult,
 } from './encryption.service';
 
 const GOOD_KEY = 'a'.repeat(MIN_ENCRYPTION_KEY_LENGTH);
@@ -254,6 +259,190 @@ describe('EncryptionService', () => {
         DecryptionError,
       );
     });
+  });
+
+  describe('AAD context binding (Buffer.from("wallet-secret"))', () => {
+    // Mirror the service's key derivation so the test can act as an
+    // independent party holding the same master key but a different context.
+    const derivedKey = crypto.createHash('sha256').update(GOOD_KEY).digest();
+    const WALLET_AAD = Buffer.from('wallet-secret', 'utf8');
+
+    /** Encrypts `plaintext` under the master key with an arbitrary AAD. */
+    const encryptWithAad = (
+      plaintext: string,
+      aad: Buffer | null,
+    ): EncryptionResult => {
+      const iv = crypto.randomBytes(16);
+      const cipher = crypto.createCipheriv('aes-256-gcm', derivedKey, iv);
+      if (aad) {
+        cipher.setAAD(aad);
+      }
+      let encrypted = cipher.update(plaintext, 'utf8', 'hex');
+      encrypted += cipher.final('hex');
+      return {
+        encryptedData: encrypted,
+        iv: iv.toString('hex'),
+        tag: cipher.getAuthTag().toString('hex'),
+      };
+    };
+
+    /** Decrypts an envelope under the master key with an arbitrary AAD. */
+    const decryptWithAad = (
+      envelope: EncryptionResult,
+      aad: Buffer | null,
+    ): string => {
+      const decipher = crypto.createDecipheriv(
+        'aes-256-gcm',
+        derivedKey,
+        Buffer.from(envelope.iv, 'hex'),
+      );
+      if (aad) {
+        decipher.setAAD(aad);
+      }
+      decipher.setAuthTag(Buffer.from(envelope.tag, 'hex'));
+      let decrypted = decipher.update(envelope.encryptedData, 'hex', 'utf8');
+      decrypted += decipher.final('utf8');
+      return decrypted;
+    };
+
+    const expectDecryptionFailed = (fn: () => unknown): void => {
+      try {
+        fn();
+        throw new Error('expected a DecryptionError');
+      } catch (e) {
+        expect(e).toBeInstanceOf(DecryptionError);
+        expect((e as DecryptionError).code).toBe('DECRYPTION_FAILED');
+      }
+    };
+
+    it('binds every ciphertext to the fixed "wallet-secret" AAD', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const envelope = service.encrypt(SECRET);
+
+      // Same key, exact documented AAD: authenticates.
+      expect(decryptWithAad(envelope, WALLET_AAD)).toBe(SECRET);
+    });
+
+    it('fails the GCM tag when the ciphertext is read in a different context', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const envelope = service.encrypt(SECRET);
+
+      // Same key, but a different (or absent) AAD must not authenticate.
+      expect(() =>
+        decryptWithAad(envelope, Buffer.from('wallet-secret:row-2', 'utf8')),
+      ).toThrow(/unable to authenticate/);
+      expect(() => decryptWithAad(envelope, null)).toThrow(
+        /unable to authenticate/,
+      );
+    });
+
+    it('accepts ciphertext produced in the wallet-secret context', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+
+      expect(service.decrypt(encryptWithAad(SECRET, WALLET_AAD))).toBe(SECRET);
+    });
+
+    it.each([
+      ['a different AAD', Buffer.from('api-key-secret', 'utf8')],
+      ['no AAD at all', null],
+    ])(
+      'refuses a ciphertext transplanted from %s with DECRYPTION_FAILED',
+      async (_label, aad) => {
+        const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+        // Valid ciphertext under the *same* master key, minted for another
+        // context: only the AAD binding stops it from being accepted.
+        const foreign = encryptWithAad(SECRET, aad);
+
+        expectDecryptionFailed(() => service.decrypt(foreign));
+        expectDecryptionFailed(() =>
+          service.deserializeAndDecrypt(JSON.stringify(foreign)),
+        );
+      },
+    );
+  });
+
+  describe('classify (stable decryption error codes)', () => {
+    const classify = (service: EncryptionService, error: unknown) =>
+      (
+        service as unknown as { classify(e: unknown): DecryptionErrorCode }
+      ).classify(error);
+
+    it.each([
+      'Unsupported state or unable to authenticate data',
+      'error:1C800064:Provider routines::bad decrypt',
+    ])('maps a GCM auth-tag failure (%s) to DECRYPTION_FAILED', async (msg) => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(classify(service, new Error(msg))).toBe('DECRYPTION_FAILED');
+    });
+
+    it('classifies a non-Error auth-tag failure by its string form', async () => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(classify(service, 'bad decrypt')).toBe('DECRYPTION_FAILED');
+    });
+
+    it.each(['wrong key', 'bad key length'])(
+      'maps a key failure (%s) to INVALID_KEY',
+      async (msg) => {
+        const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+        expect(classify(service, new Error(msg))).toBe('INVALID_KEY');
+      },
+    );
+
+    it.each([
+      ['an unrelated Error', new Error('Invalid initialization vector')],
+      ['a TypeError', new TypeError('The "data" argument must be a string')],
+      ['a bare string', 'something odd'],
+      ['undefined', undefined],
+      ['null', null],
+      ['a plain object', { reason: 'nope' }],
+    ])('maps anything else (%s) to INVALID_DATA', async (_label, error) => {
+      const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      expect(classify(service, error)).toBe('INVALID_DATA');
+    });
+
+    it('reports a real wrong-key decrypt as DECRYPTION_FAILED (fail closed)', async () => {
+      const writer = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+      const reader = await build({ WALLET_ENCRYPTION_KEY: OTHER_KEY });
+      const envelope = writer.encrypt(SECRET);
+
+      let result: string | undefined;
+      let caught: unknown;
+      try {
+        result = reader.decrypt(envelope);
+      } catch (e) {
+        caught = e;
+      }
+      expect(result).toBeUndefined();
+      expect(caught).toBeInstanceOf(DecryptionError);
+      expect((caught as DecryptionError).code).toBe('DECRYPTION_FAILED');
+    });
+
+    it.each([
+      ['an empty IV', (e: EncryptionResult) => ({ ...e, iv: '' })],
+      [
+        'a truncated auth tag',
+        (e: EncryptionResult) => ({ ...e, tag: 'abcd' }),
+      ],
+    ])(
+      'reports malformed input (%s) as INVALID_DATA (fail closed)',
+      async (_label, corrupt) => {
+        const service = await build({ WALLET_ENCRYPTION_KEY: GOOD_KEY });
+        // Bypasses deserializeFromStorage on purpose so the crypto layer
+        // itself rejects the envelope and classify decides the code.
+        const malformed = corrupt(service.encrypt(SECRET));
+
+        let result: string | undefined;
+        let caught: unknown;
+        try {
+          result = service.decrypt(malformed);
+        } catch (e) {
+          caught = e;
+        }
+        expect(result).toBeUndefined();
+        expect(caught).toBeInstanceOf(DecryptionError);
+        expect((caught as DecryptionError).code).toBe('INVALID_DATA');
+      },
+    );
   });
 
   describe('self test', () => {
