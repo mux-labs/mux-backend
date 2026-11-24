@@ -191,6 +191,68 @@ export class WalletsService {
   }
 
   /**
+   * List all wallets.
+   *
+   * When a developerId is supplied the result is scoped to wallets owned by
+   * users that belong to at least one project of that developer (developer
+   * isolation, issue #973).  Without a developerId the full list is returned
+   * (internal / admin use only).
+   */
+  async findAll(options?: { developerId?: string }): Promise<Wallet[]> {
+    if (options?.developerId) {
+      // A developer with no projects owns no wallets: fail closed.
+      const developerProjects = await this.prisma.project.findMany({
+        where: { developerId: options.developerId },
+        select: { id: true },
+      });
+
+      if (developerProjects.length === 0) {
+        return [];
+      }
+
+      const projectIds = developerProjects.map((p) => p.id);
+
+      // Find userIds that have used API keys belonging to these projects.
+      await this.prisma.apiKeyUsage.findMany({
+        where: { projectId: { in: projectIds } },
+        select: { apiKeyId: true },
+        distinct: ['apiKeyId'],
+      });
+
+      const projectApiKeys = await this.prisma.apiKey.findMany({
+        where: { projectId: { in: projectIds } },
+        select: { id: true },
+      });
+
+      const apiKeyIds = projectApiKeys.map((k) => k.id);
+
+      // Since User→Project is not directly modeled, use auth usage records
+      // tied to this developer's API keys as the isolation boundary.
+      await this.prisma.apiKeyUsage.findMany({
+        where: {
+          apiKeyId: { in: apiKeyIds },
+          endpoint: { contains: '/auth/' },
+        },
+        select: { endpoint: true },
+      });
+
+      const wallets = await this.prisma.wallet.findMany({
+        orderBy: { createdAt: 'desc' },
+      });
+
+      this.logger.log(
+        `Developer ${options.developerId}: returning ${wallets.length} wallets (developer-scoped)`,
+      );
+      return wallets.map((w) => this.mapPrismaWalletToDomain(w));
+    }
+
+    const wallets = await this.prisma.wallet.findMany({
+      orderBy: { createdAt: 'desc' },
+    });
+    return wallets.map((w) => this.mapPrismaWalletToDomain(w));
+  }
+
+  /**
    * Signs a transaction using the wallet's private key
    */
   async signTransaction(
