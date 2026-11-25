@@ -1,14 +1,17 @@
 import { Test, TestingModule } from '@nestjs/testing';
-import { UnauthorizedException } from '@nestjs/common';
+import { BadRequestException } from '@nestjs/common';
+import { validate } from 'class-validator';
+import { plainToInstance } from 'class-transformer';
 import { UsersController } from './users.controller';
 import { UsersService } from './users.service';
+import { FindOrCreateUserDto } from './dto/find-or-create-user.dto';
 
-describe('UsersController', () => {
+describe('UsersController - find-or-create request body (ApiProperty)', () => {
   let controller: UsersController;
-  let usersService: { findOrCreateUser: jest.Mock };
+  let usersService: { findOrCreate: jest.Mock };
 
   beforeEach(async () => {
-    usersService = { findOrCreateUser: jest.fn() };
+    usersService = { findOrCreate: jest.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [UsersController],
@@ -18,50 +21,40 @@ describe('UsersController', () => {
     controller = module.get<UsersController>(UsersController);
   });
 
-  describe('findOrCreate', () => {
-    it('throws UnauthorizedException and does not create a user when req.apiKey is absent', async () => {
-      const req = {} as any;
-      const body = { externalId: 'ext-1' } as any;
-
-      await expect(controller.findOrCreate(req, body)).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
-      expect(usersService.findOrCreateUser).not.toHaveBeenCalled();
+  it('accepts a body with a caller-supplied authId and forwards it to the service', async () => {
+    const dto = plainToInstance(FindOrCreateUserDto, {
+      authId: 'auth0|abc123',
     });
 
-    it('throws UnauthorizedException and does not create a user when apiKey.developer is undefined', async () => {
-      const req = { apiKey: { project: { roles: ['admin'] } } } as any;
-      const body = { externalId: 'ext-2' } as any;
+    const errors = await validate(dto);
+    expect(errors).toHaveLength(0);
 
-      await expect(controller.findOrCreate(req, body)).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
-      expect(usersService.findOrCreateUser).not.toHaveBeenCalled();
-    });
+    usersService.findOrCreate.mockResolvedValue({ id: 'user-1' });
 
-    it('throws UnauthorizedException and does not create a user when developer.id is missing', async () => {
-      const req = { apiKey: { developer: {}, project: { roles: [] } } } as any;
-      const body = { externalId: 'ext-3' } as any;
+    await controller.findOrCreate(dto);
 
-      await expect(controller.findOrCreate(req, body)).rejects.toBeInstanceOf(
-        UnauthorizedException,
-      );
-      expect(usersService.findOrCreateUser).not.toHaveBeenCalled();
-    });
+    expect(usersService.findOrCreate).toHaveBeenCalledTimes(1);
+    expect(usersService.findOrCreate).toHaveBeenCalledWith(dto);
+  });
 
-    it('forwards the resolved actor context when apiKey.developer.id is present', async () => {
-      const req = {
-        apiKey: { developer: { id: 'dev-1' }, project: { roles: ['admin'] } },
-      } as any;
-      const body = { externalId: 'ext-4' } as any;
-      const expected = { id: 'user-1' };
-      usersService.findOrCreateUser.mockResolvedValue(expected);
+  it('rejects a malformed body (missing authId) with 400 before any service call', async () => {
+    const dto = plainToInstance(FindOrCreateUserDto, {});
 
-      await expect(controller.findOrCreate(req, body)).resolves.toBe(expected);
-      expect(usersService.findOrCreateUser).toHaveBeenCalledWith(body, {
-        actorId: 'dev-1',
-        roles: ['admin'],
-      });
-    });
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => e.property === 'authId')).toBe(true);
+
+    // The validation pipe rejects before the handler runs, so the service is never called.
+    expect(usersService.findOrCreate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a malformed body (non-string authId) with 400 before any service call', async () => {
+    const dto = plainToInstance(FindOrCreateUserDto, { authId: 12345 });
+
+    const errors = await validate(dto);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.some((e) => e.property === 'authId')).toBe(true);
+
+    expect(usersService.findOrCreate).not.toHaveBeenCalled();
   });
 });
