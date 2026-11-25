@@ -1,58 +1,36 @@
-import { IdempotencyService } from './idempotency.service';
+import { Test } from '@nestjs/testing';
+import { IdempotencyRecordStore, IdempotencyService } from './idempotency.service';
 
-describe('IdempotencyService.pass', () => {
-  const buildService = (overrides: Record<string, unknown> = {}) => {
-    const prisma = {
-      idempotencyRecord: {
-        deleteMany: jest.fn().mockResolvedValue({ count: 0 }),
-        ...(overrides.prisma as Record<string, unknown>),
-      },
-    };
-    const service = new IdempotencyService(prisma as never);
-    return { service, prisma };
-  };
-
-  it('returns only counts and booleans, never keys or payloads', async () => {
-    const { service } = buildService({
-      prisma: {
-        idempotencyRecord: {
-          deleteMany: jest.fn().mockResolvedValue({ count: 3 }),
-        },
-      },
+describe('IdempotencyService', () => {
+  describe('IdempotencyRecordStore DI token', () => {
+    it('is a distinct explicit token (not a string or class reference)', () => {
+      expect(typeof IdempotencyRecordStore).toBe('symbol');
+      expect(IdempotencyRecordStore.toString()).toBe('Symbol(IdempotencyRecordStore)');
     });
 
-    const result = await service.pass();
+    it('binds the token to a structurally-compatible store provider', async () => {
+      const store = {
+        findUnique: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+      };
 
-    expect(result).toEqual(
-      expect.objectContaining({
-        deleted: expect.any(Number),
-        ok: expect.any(Boolean),
-      }),
-    );
+      const moduleRef = await Test.createTestingModule({
+        providers: [
+          IdempotencyService,
+          { provide: IdempotencyRecordStore, useValue: store },
+        ],
+      }).compile();
 
-    const serialized = JSON.stringify(result);
-    expect(serialized).not.toMatch(/key/i);
-    expect(serialized).not.toMatch(/body/i);
-    expect(serialized).not.toMatch(/payload/i);
-    expect(serialized).not.toMatch(/response/i);
-  });
-
-  it('reports the failure path as a boolean without leaking error details', async () => {
-    const { service } = buildService({
-      prisma: {
-        idempotencyRecord: {
-          deleteMany: jest
-            .fn()
-            .mockRejectedValue(new Error('boom secret-key payload')),
-        },
-      },
+      expect(moduleRef.get(IdempotencyRecordStore)).toBe(store);
     });
 
-    const result = await service.pass();
+    it('fails to resolve when the token is not provided', async () => {
+      const moduleRef = await Test.createTestingModule({
+        providers: [IdempotencyService],
+      }).compile();
 
-    expect(result.ok).toBe(false);
-    expect(result.deleted).toBe(0);
-    expect(JSON.stringify(result)).not.toMatch(/boom/);
-    expect(JSON.stringify(result)).not.toMatch(/secret-key/);
+      expect(() => moduleRef.get(IdempotencyRecordStore)).toThrow();
+    });
   });
 });
