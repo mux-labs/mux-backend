@@ -30,7 +30,7 @@ const DEFAULT_IDEMPOTENCY_CLEANUP_INTERVAL_MS = 3_600_000;
  * values overflow and Node fires the callback immediately, which would turn
  * the prune into a hot loop.
  */
-const MAX_TIMER_DELAY_MS = 2_147_483_647;
+export const MAX_TIMER_DELAY_MS = 2_147_483_647;
 
 /**
  * IdempotencyCleanupWorker
