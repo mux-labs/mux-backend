@@ -1,53 +1,75 @@
-import { ConfigService } from '@nestjs/config';
-import {
-  IdempotencyCleanupWorker,
-  MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
-  resolveBatchSize,
-} from './idempotency-cleanup.worker';
-
-describe('resolveBatchSize', () => {
-  it('returns a positive integer no larger than the max batch size', () => {
-    const size = resolveBatchSize();
-
-    expect(Number.isInteger(size)).toBe(true);
-    expect(size).toBeGreaterThan(0);
-    expect(size).toBeLessThanOrEqual(MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE);
-  });
-
-  it('never returns a value the service would reject', () => {
-    const size = resolveBatchSize();
-
-    // A non-positive or oversized value would be rejected by the service.
-    expect(size).toBeGreaterThan(0);
-    expect(size).toBeLessThanOrEqual(MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE);
-  });
-});
+import { IdempotencyCleanupWorker } from './idempotency-cleanup.worker';
 
 describe('IdempotencyCleanupWorker', () => {
-  const buildWorker = (values: Record<string, unknown>) => {
-    const config = {
-      get: jest.fn((key: string) => values[key]),
-    } as unknown as ConfigService;
-    const service = {
-      cleanupExpired: jest.fn().mockResolvedValue(0),
-    };
+  const originalEnv = process.env;
 
-    const worker = new IdempotencyCleanupWorker(config, service as never);
+  afterEach(() => {
+    process.env = originalEnv;
+    jest.restoreAllMocks();
+  });
 
-    return { worker, service };
-  };
+  function buildWorker(overrides: {
+    enabled?: boolean;
+    deleteMany?: jest.Mock;
+  } = {}) {
+    const deleteMany =
+      overrides.deleteMany ?? jest.fn().mockResolvedValue({ count: 0 });
+    const prisma = {
+      idempotencyKey: { deleteMany },
+    } as unknown as ConstructorParameters<
+      typeof IdempotencyCleanupWorker
+    >[0];
 
-  it('passes a valid batch size to the service on run()', async () => {
-    const { worker, service } = buildWorker({});
+    const worker = new IdempotencyCleanupWorker(prisma);
 
-    await worker.run();
+    if (overrides.enabled === false) {
+      jest.spyOn(worker as any, 'isEnabled').mockReturnValue(false);
+    }
 
-    expect(service.cleanupExpired).toHaveBeenCalledTimes(1);
-    const batchSize = service.cleanupExpired.mock.calls[0][0];
-    expect(Number.isInteger(batchSize)).toBe(true);
-    expect(batchSize).toBeGreaterThan(0);
-    expect(batchSize).toBeLessThanOrEqual(
-      MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
-    );
+    return { worker, deleteMany };
+  }
+
+  describe('run', () => {
+    it('returns the number of rows deleted on a normal cleanup cycle', async () => {
+      const { worker, deleteMany } = buildWorker({
+        deleteMany: jest.fn().mockResolvedValue({ count: 7 }),
+      });
+
+      await expect(worker.run()).resolves.toBe(7);
+      expect(deleteMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns 0 without throwing when the worker is disabled', async () => {
+      const { worker, deleteMany } = buildWorker({ enabled: false });
+
+      await expect(worker.run()).resolves.toBe(0);
+      expect(deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('returns 0 without throwing when a previous pass is still in flight', async () => {
+      let resolveDelete: (value: { count: number }) => void = () => undefined;
+      const deleteMany = jest.fn().mockImplementation(
+        () =>
+          new Promise<{ count: number }>((resolve) => {
+            resolveDelete = resolve;
+          }),
+      );
+      const { worker } = buildWorker({ deleteMany });
+
+      const firstPass = worker.run();
+      await expect(worker.run()).resolves.toBe(0);
+
+      resolveDelete({ count: 3 });
+      await expect(firstPass).resolves.toBe(3);
+      expect(deleteMany).toHaveBeenCalledTimes(1);
+    });
+
+    it('returns 0 without throwing when the database is unavailable', async () => {
+      const { worker } = buildWorker({
+        deleteMany: jest.fn().mockRejectedValue(new Error('db down')),
+      });
+
+      await expect(worker.run()).resolves.toBe(0);
+    });
   });
 });
