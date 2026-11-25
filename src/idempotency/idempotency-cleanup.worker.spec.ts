@@ -78,3 +78,18 @@ describe('IdempotencyCleanupWorker interval', () => {
     expect(after.values[0]?.value).toBe(beforeValue);
   });
 });
+
+describe('IdempotencyCleanupWorker isEnabled', () => {
+  const getIsEnabled = (): (() => boolean) => {
+    const worker = Object.create(
+      IdempotencyCleanupWorker.prototype,
+    ) as IdempotencyCleanupWorker;
+    return (worker as unknown as { isEnabled: () => boolean }).isEnabled;
+  };
+
+  it('reports the in-process worker as enabled for this deployment', () => {
+    const isEnabled = getIsEnabled();
+
+    expect(isEnabled.call({})).toBe(true);
+  });
+});
