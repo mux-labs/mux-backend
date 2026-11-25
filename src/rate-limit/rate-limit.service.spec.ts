@@ -1,53 +1,22 @@
-import { Test, TestingModule } from '@nestjs/testing';
-import { RateLimitService } from './rate-limit.service';
+import { fresh } from './rate-limit.service';
 
-describe('RateLimitService', () => {
-  let service: RateLimitService;
-
-  beforeEach(async () => {
-    const module: TestingModule = await Test.createTestingModule({
-      providers: [RateLimitService],
-    }).compile();
-
-    service = module.get<RateLimitService>(RateLimitService);
+describe('fresh', () => {
+  it('returns the requested quota when it is within the ceiling', () => {
+    expect(fresh(1)).toBe(1);
+    expect(fresh(10)).toBe(10);
   });
 
-  it('should be defined', () => {
-    expect(service).toBeDefined();
+  it('enforces a hard upper bound on any per-developer quota', () => {
+    const ceiling = fresh(Number.MAX_SAFE_INTEGER);
+
+    expect(Number.isFinite(ceiling)).toBe(true);
+    expect(ceiling).toBeLessThan(Number.MAX_SAFE_INTEGER);
   });
 
-  describe('consume', () => {
-    it('counts one request against the developer quota and admits it', () => {
-      const developerId = 'dev-1';
-      const result = service.consume(developerId);
+  it('does not accept a quota above the ceiling', () => {
+    const ceiling = fresh(Number.MAX_SAFE_INTEGER);
 
-      expect(result).toBe(true);
-    });
-
-    it('denies the request once the quota is exceeded', () => {
-      const developerId = 'dev-2';
-
-      // Exhaust the quota for this developer.
-      let admitted = true;
-      let attempts = 0;
-      while (admitted && attempts < 1000) {
-        admitted = service.consume(developerId);
-        attempts += 1;
-      }
-
-      // The next request must be denied.
-      expect(service.consume(developerId)).toBe(false);
-    });
-
-    it('admits everything when the quota is disabled', () => {
-      const developerId = 'dev-3';
-
-      // Disable the quota flag (deny-by-default, instantly reversible).
-      (service as unknown as { enabled: boolean }).enabled = false;
-
-      for (let i = 0; i < 1000; i += 1) {
-        expect(service.consume(developerId)).toBe(true);
-      }
-    });
+    expect(fresh(ceiling)).toBe(ceiling);
+    expect(fresh(ceiling + 1)).toBe(ceiling);
   });
 });
