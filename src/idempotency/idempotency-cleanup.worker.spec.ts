@@ -1,50 +1,53 @@
-import { index, resolveIntervalMs } from './idempotency-cleanup.worker';
+import { ConfigService } from '@nestjs/config';
+import {
+  IdempotencyCleanupWorker,
+  MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
+  resolveBatchSize,
+} from './idempotency-cleanup.worker';
 
-describe('idempotency-cleanup.worker index', () => {
-  it('is the largest delay setInterval accepts (2^31 - 1 ms)', () => {
-    expect(index).toBe(2 ** 31 - 1);
-    expect(index).toBe(2147483647);
+describe('resolveBatchSize', () => {
+  it('returns a positive integer no larger than the max batch size', () => {
+    const size = resolveBatchSize();
+
+    expect(Number.isInteger(size)).toBe(true);
+    expect(size).toBeGreaterThan(0);
+    expect(size).toBeLessThanOrEqual(MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE);
   });
 
-  it('is the maximum safe interval delay before overflow', () => {
-    // Values larger than index overflow the 32-bit signed timer and Node
-    // fires the callback immediately, which would turn the prune into a hot
-    // loop. index must therefore be the largest value that does not overflow.
-    expect(index).toBeLessThanOrEqual(2 ** 31 - 1);
-    expect(index + 1).toBeGreaterThan(2 ** 31 - 1);
+  it('never returns a value the service would reject', () => {
+    const size = resolveBatchSize();
+
+    // A non-positive or oversized value would be rejected by the service.
+    expect(size).toBeGreaterThan(0);
+    expect(size).toBeLessThanOrEqual(MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE);
   });
 });
 
-describe('resolveIntervalMs', () => {
-  const DEFAULT_INTERVAL_MS = 60_000;
+describe('IdempotencyCleanupWorker', () => {
+  const buildWorker = (values: Record<string, unknown>) => {
+    const config = {
+      get: jest.fn((key: string) => values[key]),
+    } as unknown as ConfigService;
+    const service = {
+      cleanupExpired: jest.fn().mockResolvedValue(0),
+    };
 
-  it('returns a finite, positive delay within setInterval range for valid input', () => {
-    const result = resolveIntervalMs(5_000);
-    expect(Number.isFinite(result)).toBe(true);
-    expect(result).toBeGreaterThan(0);
-    expect(result).toBeLessThanOrEqual(index);
-    expect(result).toBe(5_000);
-  });
+    const worker = new IdempotencyCleanupWorker(config, service as never);
 
-  it('accepts the largest in-range delay', () => {
-    const result = resolveIntervalMs(index);
-    expect(result).toBe(index);
-    expect(result).toBeLessThanOrEqual(2 ** 31 - 1);
-  });
+    return { worker, service };
+  };
 
-  it('falls back to the default for non-finite values', () => {
-    expect(resolveIntervalMs(NaN)).toBe(DEFAULT_INTERVAL_MS);
-    expect(resolveIntervalMs(Infinity)).toBe(DEFAULT_INTERVAL_MS);
-    expect(resolveIntervalMs(-Infinity)).toBe(DEFAULT_INTERVAL_MS);
-  });
+  it('passes a valid batch size to the service on run()', async () => {
+    const { worker, service } = buildWorker({});
 
-  it('falls back to the default for non-positive values', () => {
-    expect(resolveIntervalMs(0)).toBe(DEFAULT_INTERVAL_MS);
-    expect(resolveIntervalMs(-1)).toBe(DEFAULT_INTERVAL_MS);
-  });
+    await worker.run();
 
-  it('falls back to the default for out-of-range values', () => {
-    expect(resolveIntervalMs(index + 1)).toBe(DEFAULT_INTERVAL_MS);
-    expect(resolveIntervalMs(2 ** 31)).toBe(DEFAULT_INTERVAL_MS);
+    expect(service.cleanupExpired).toHaveBeenCalledTimes(1);
+    const batchSize = service.cleanupExpired.mock.calls[0][0];
+    expect(Number.isInteger(batchSize)).toBe(true);
+    expect(batchSize).toBeGreaterThan(0);
+    expect(batchSize).toBeLessThanOrEqual(
+      MAX_IDEMPOTENCY_CLEANUP_BATCH_SIZE,
+    );
   });
 });
