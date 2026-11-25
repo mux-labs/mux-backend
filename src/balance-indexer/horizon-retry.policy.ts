@@ -141,7 +141,7 @@ export function isRetryableHorizonStatus(status: number): boolean {
 }
 
 /** Transport-level error codes that are safe to retry on an idempotent read. */
-const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
+export const RETRYABLE_NETWORK_CODES: ReadonlySet<string> = new Set([
   'ECONNRESET',
   'ECONNREFUSED',
   'ECONNABORTED',
@@ -228,39 +228,4 @@ export function parseRetryAfterMs(
   return undefined;
 }
 
-/** Extract a `Retry-After` hint (ms) from an axios-style error, if present. */
-export function horizonRetryAfterMs(
-  err: unknown,
-  now: number = Date.now(),
-): number | undefined {
-  if (typeof err !== 'object' || err === null) {
-    return undefined;
-  }
-  const headers = (err as { response?: { headers?: unknown } }).response
-    ?.headers;
-  if (typeof headers !== 'object' || headers === null) {
-    return undefined;
-  }
-  const raw = (headers as Record<string, unknown>)['retry-after'];
-  return parseRetryAfterMs(raw, now);
-}
-
-/**
- * Compute the delay before retry `attempt` (1-based).
- *
- * The base delay grows exponentially (`backoffMs * 2^(attempt-1)`) and a
- * bounded jitter in `[0, jitterMs)` is added. The jitter source is injectable
- * so tests can pass a deterministic generator: with `random() === 0` the
- * jitter is exactly `0` and the delay equals the documented lower bound
- * (`backoffMs * 2^(attempt-1)`).
- */
-export function horizonRetryDelayMs(
-  attempt: number,
-  config: HorizonRetryConfig,
-  random: HorizonRandomFn = Math.random,
-): number {
-  const safeAttempt = Math.max(1, Math.floor(attempt));
-  const base = config.backoffMs * 2 ** (safeAttempt - 1);
-  const jitter = config.jitterMs > 0 ? random() * config.jitterMs : 0;
-  return Math.floor(base + jitter);
-}
+/** Extract a `R
