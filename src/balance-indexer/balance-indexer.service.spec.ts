@@ -39,3 +39,43 @@ describe('BalanceIndexerService.assertWritesEnabled', () => {
     expect(() => service.assertWritesEnabled()).not.toThrow();
   });
 });
+
+describe('BalanceIndexerService.authorizationDenied', () => {
+  const buildService = async () => {
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        BalanceIndexerService,
+        {
+          provide: ConfigService,
+          useValue: {
+            get: jest.fn(() => undefined),
+          },
+        },
+      ],
+    }).compile();
+
+    return module.get<BalanceIndexerService>(BalanceIndexerService);
+  };
+
+  it('records a denial and builds the envelope the caller throws', async () => {
+    const service = await buildService();
+
+    const envelope = service.authorizationDenied('insufficient scope');
+
+    expect(envelope).toBeDefined();
+    expect(envelope).toMatchObject({
+      error: expect.any(String),
+      message: expect.stringContaining('insufficient scope'),
+    });
+  });
+
+  it('builds a throwable envelope for the failure path', async () => {
+    const service = await buildService();
+
+    const envelope = service.authorizationDenied('insufficient scope');
+
+    expect(() => {
+      throw envelope;
+    }).toThrow();
+  });
+});
