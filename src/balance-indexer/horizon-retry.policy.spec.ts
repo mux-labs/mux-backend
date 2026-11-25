@@ -1,4 +1,4 @@
-import { Set } from './horizon-retry.policy';
+import { Set, runWithHorizonRetry } from './horizon-retry.policy';
 
 describe('horizon-retry.policy Set', () => {
   it('contains transport-level error codes that are safe to retry on an idempotent read', () => {
@@ -22,5 +22,49 @@ describe('horizon-retry.policy Set', () => {
     expect(Set.has('404')).toBe(false);
     expect(Set.has('500')).toBe(false);
     expect(Set.has('UNKNOWN')).toBe(false);
+  });
+});
+
+describe('horizon-retry.policy runWithHorizonRetry', () => {
+  it('returns the result of an idempotent read without retrying on success', async () => {
+    const operation = jest.fn().mockResolvedValue('ok');
+
+    await expect(runWithHorizonRetry(operation)).resolves.toBe('ok');
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it('retries a retryable transport error and eventually succeeds', async () => {
+    const retryable = Object.assign(new Error('connection reset'), {
+      code: 'ECONNRESET',
+    });
+    const operation = jest
+      .fn()
+      .mockRejectedValueOnce(retryable)
+      .mockResolvedValue('recovered');
+
+    await expect(runWithHorizonRetry(operation)).resolves.toBe('recovered');
+    expect(operation).toHaveBeenCalledTimes(2);
+  });
+
+  it('propagates a non-retryable error without retrying (failure path)', async () => {
+    const nonRetryable = Object.assign(new Error('bad request'), {
+      code: '400',
+    });
+    const operation = jest.fn().mockRejectedValue(nonRetryable);
+
+    await expect(runWithHorizonRetry(operation)).rejects.toBe(nonRetryable);
+    expect(operation).toHaveBeenCalledTimes(1);
+  });
+
+  it('gives up after bounded retries and rethrows the last error', async () => {
+    const retryable = Object.assign(new Error('timeout'), {
+      code: 'ETIMEDOUT',
+    });
+    const operation = jest.fn().mockRejectedValue(retryable);
+
+    await expect(runWithHorizonRetry(operation)).rejects.toBe(retryable);
+    // Bounded: the operation is retried a finite number of times, not forever.
+    expect(operation.mock.calls.length).toBeGreaterThan(1);
+    expect(operation.mock.calls.length).toBeLessThan(20);
   });
 });
